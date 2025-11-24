@@ -1,0 +1,34 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model XeroConnection {
+  id                    String   @id @default(cuid())
+  organisationId        String
+  xeroTenantId          String
+  accessTokenEncrypted  String
+  refreshTokenEncrypted String
+  accessTokenExpiresAt  DateTime
+  status                String
+  createdAt             DateTime @default(now())
+  updatedAt             DateTime @updatedAt
+
+  locationLinks XeroLocationLink[]
+}
+
+model XeroLocationLink {
+  id               String         @id @default(cuid())
+  xeroConnection   XeroConnection @relation(fields: [xeroConnectionId], references: [id])
+  xeroConnectionId String
+  locationId       String
+  createdAt        DateTime       @default(now())
+  updatedAt        DateTime       @updatedAt
+
+  @@unique([xeroConnectionId, locationId])
+}
+
