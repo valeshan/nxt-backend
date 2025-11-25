@@ -1,6 +1,11 @@
 import Fastify, { FastifyInstance } from 'fastify';
+import cors from '@fastify/cors';
 import { serializerCompiler, validatorCompiler, ZodTypeProvider } from 'fastify-type-provider-zod';
 import xeroRoutes from './routes/xeroRoutes';
+import authRoutes from './routes/authRoutes';
+import organisationRoutes from './routes/organisationRoutes';
+import locationRoutes from './routes/locationRoutes';
+import { config } from './config/env';
 
 export function buildApp(): FastifyInstance {
   const app = Fastify({
@@ -11,8 +16,28 @@ export function buildApp(): FastifyInstance {
   app.setValidatorCompiler(validatorCompiler);
   app.setSerializerCompiler(serializerCompiler);
 
+  // Register CORS
+  if (config.NODE_ENV !== 'production') {
+    app.register(cors, {
+      origin: ['http://localhost:3000'],
+      methods: ['GET', 'POST', 'OPTIONS'],
+      allowedHeaders: ['Content-Type', 'Authorization', 'x-user-id', 'x-org-id'],
+    });
+  } else {
+    app.register(cors, {
+      origin: true, // TODO: Configure for production
+    });
+  }
+
   // Register Routes
-  app.register(xeroRoutes);
+  app.register(authRoutes, { prefix: '/auth' });
+  app.register(organisationRoutes, { prefix: '/organisations' });
+  // locationRoutes handles its own path prefix currently: /organisations/:organisationId/locations
+  // so we register it at root or verify if we want to nest it.
+  // Registering at root:
+  app.register(locationRoutes); 
+  
+  app.register(xeroRoutes, { prefix: '/xero' });
 
   // Health Check
   app.get('/health', async () => {
@@ -36,12 +61,8 @@ export function buildApp(): FastifyInstance {
     // If the error was explicitly thrown with a status code (like 401/403 from our logic)
     if (reply.statusCode && reply.statusCode >= 400 && reply.statusCode < 500) {
         // If response is already sent or set, we might just return.
-        // But here we format the error.
-        // If the error object already has the shape { error: { ... } } we should return it.
-        // However, standard Error objects don't.
-        // Our controller/plugins might send response directly.
     }
-
+    
     const statusCode = error.statusCode || 500;
     const code = (error as any).code || 'INTERNAL_ERROR';
     const message = error.message || 'Something went wrong';
@@ -56,4 +77,3 @@ export function buildApp(): FastifyInstance {
 
   return app;
 }
-

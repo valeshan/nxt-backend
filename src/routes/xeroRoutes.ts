@@ -1,6 +1,6 @@
 import { FastifyInstance } from 'fastify';
 import { ZodTypeProvider } from 'fastify-type-provider-zod';
-import { createConnectionRequestSchema, linkLocationsRequestSchema, listConnectionsQuerySchema } from '../dtos/xeroDtos';
+import { createConnectionRequestSchema, linkLocationsRequestSchema, listConnectionsQuerySchema, xeroAuthoriseCallbackRequestSchema } from '../dtos/xeroDtos';
 import { XeroController } from '../controllers/xeroController';
 import z from 'zod';
 import authFromJwt from '../plugins/authFromJwt';
@@ -14,7 +14,7 @@ export default async function xeroRoutes(fastify: FastifyInstance) {
   const app = fastify.withTypeProvider<ZodTypeProvider>();
 
   app.post(
-    '/xero/connections',
+    '/connections',
     {
       schema: {
         body: createConnectionRequestSchema,
@@ -24,7 +24,7 @@ export default async function xeroRoutes(fastify: FastifyInstance) {
   );
 
   app.post(
-    '/xero/connections/:connectionId/locations',
+    '/connections/:connectionId/locations',
     {
       schema: {
         params: z.object({ connectionId: z.string() }),
@@ -35,7 +35,7 @@ export default async function xeroRoutes(fastify: FastifyInstance) {
   );
 
   app.get(
-    '/xero/connections',
+    '/connections',
     {
       schema: {
         querystring: listConnectionsQuerySchema,
@@ -43,5 +43,21 @@ export default async function xeroRoutes(fastify: FastifyInstance) {
     },
     xeroController.listConnectionsHandler
   );
-}
 
+  // New Xero Auth Flow
+  app.post(
+    '/authorise/start',
+    {},
+    xeroController.authoriseStartHandler
+  );
+
+  app.post(
+    '/authorise',
+    {
+      schema: {
+        body: xeroAuthoriseCallbackRequestSchema
+      }
+    },
+    xeroController.authoriseCallbackHandler
+  );
+}

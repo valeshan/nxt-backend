@@ -1,35 +1,19 @@
-# Domain Model
+# Authentication & Tokens
 
-## Entities
+## User Model
+(No changes required, assume existing model fits)
 
-### XeroConnection
-Represents a link between an external Organisation (from BE1) and a Xero Tenant.
+## Token Types
 
-**Fields:**
-- `id`: Unique identifier (CUID).
-- `organisationId`: The external ID of the organisation in BE1.
-- `xeroTenantId`: The ID of the tenant in Xero.
-- `accessTokenEncrypted`: Encrypted OAuth2 access token.
-- `refreshTokenEncrypted`: Encrypted OAuth2 refresh token.
-- `accessTokenExpiresAt`: Timestamp when the current access token expires.
-- `status`: Current status (`active`, `revoked`, `error`).
-- `createdAt`, `updatedAt`: Timestamps.
+| Step | Access Token | Refresh Token |
+| :--- | :--- | :--- |
+| Login | `access_token_login` | `refresh_token_login` |
+| Org | `access_token_company` | `refresh_token_company` |
+| Location | `access_token` | `refresh_token` |
 
-**Invariants:**
-- An organisation can have multiple connections (though typically one per tenant).
-- Tokens are always stored encrypted.
+- **Login Level**: Returned by `/auth/login`. Used to select organisation.
+- **Organisation Level**: Returned by `/auth/select-organisation`. Used to select location.
+- **Location Level (Final)**: Returned by `/auth/select-location`. Used for all operational API calls.
 
-### XeroLocationLink
-Represents a link between a Xero Connection and an external Location (from BE1). This allows mapping specific locations in the main system to the connected Xero account (e.g., for payroll or accounting purposes).
-
-**Fields:**
-- `id`: Unique identifier (CUID).
-- `xeroConnectionId`: Foreign key to `XeroConnection`.
-- `locationId`: The external ID of the location in BE1.
-- `createdAt`, `updatedAt`: Timestamps.
-
-**Invariants:**
-- A location link must belong to a valid `XeroConnection`.
-- The pair `[xeroConnectionId, locationId]` is unique (no duplicate links).
-- **Business Rule**: A location should only be linked if it belongs to the same organisation as the connection (verified at application level during creation).
-
+## Claims
+(Standard JWT claims: `sub` (user_id), `exp`, `iat`, `type` (access/refresh + level), `orgId`, `locId` as applicable)

@@ -5,7 +5,7 @@ import { config } from '../../src/config/env';
 
 describe('Xero Routes Integration', () => {
   let app: any;
-  const token = jwt.sign({ sub: 'user_1', orgId: 'org_123' }, config.JWT_VERIFY_SECRET, { expiresIn: '1h' });
+  const token = jwt.sign({ sub: 'user_1', orgId: 'org_123', type: 'access_token_company' }, config.JWT_VERIFY_SECRET, { expiresIn: '1h' });
 
   beforeEach(async () => {
     await resetDb();
@@ -144,15 +144,14 @@ describe('Xero Routes Integration', () => {
       expect(listRes.json()).toHaveLength(1);
     });
 
-    it('should return empty list for other organisation', async () => {
+    it('should return 403 for other organisation', async () => {
       const listRes = await app.inject({
         method: 'GET',
         url: '/xero/connections?organisationId=org_other',
         headers: { Authorization: `Bearer ${token}` },
       });
 
-      expect(listRes.statusCode).toBe(200);
-      expect(listRes.json()).toHaveLength(0);
+      expect(listRes.statusCode).toBe(403);
     });
   });
 });

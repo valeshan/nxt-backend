@@ -7,6 +7,82 @@ datasource db {
   url      = env("DATABASE_URL")
 }
 
+model User {
+  id             String             @id @default(uuid())
+  email          String             @unique
+  passwordHash   String
+  name           String?
+  profilePicture String?
+  createdAt      DateTime           @default(now())
+  updatedAt      DateTime           @updatedAt
+
+  memberships    UserOrganisation[]
+  settings       UserSettings?
+}
+
+model Organisation {
+  id        String             @id @default(uuid())
+  name      String
+  createdAt DateTime           @default(now())
+  updatedAt DateTime           @updatedAt
+
+  locations Location[]
+  members   UserOrganisation[]
+}
+
+model Location {
+  id             String        @id @default(uuid())
+  name           String
+  organisationId String
+  organisation   Organisation  @relation(fields: [organisationId], references: [id])
+  createdAt      DateTime      @default(now())
+  updatedAt      DateTime      @updatedAt
+}
+
+model UserOrganisation {
+  id             String           @id @default(uuid())
+  userId         String
+  organisationId String
+  role           OrganisationRole
+  createdAt      DateTime         @default(now())
+  updatedAt      DateTime         @updatedAt
+
+  user         User         @relation(fields: [userId], references: [id])
+  organisation Organisation @relation(fields: [organisationId], references: [id])
+
+  @@unique([userId, organisationId])
+}
+
+model UserSettings {
+  id        String   @id @default(uuid())
+  userId    String   @unique
+
+  execDashboard        Boolean @default(false)
+  juniorDashboard      Boolean @default(false)
+  chat                 Boolean @default(false)
+  subscriptionPlan     Boolean @default(false)
+  contextAi            Boolean @default(false)
+  liveFeed             Boolean @default(true)
+  playbooks            Boolean @default(false)
+  dashboard            Boolean @default(true)
+  settings             Boolean @default(true)
+  notifications        Boolean @default(false)
+  forecast             Boolean @default(false)
+  productPerformance   Boolean @default(false)
+  jacobDashboard       Boolean @default(false)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  user User @relation(fields: [userId], references: [id])
+}
+
+enum OrganisationRole {
+  owner
+  admin
+  member
+}
+
 model XeroConnection {
   id                    String   @id @default(cuid())
   organisationId        String
@@ -31,4 +107,3 @@ model XeroLocationLink {
 
   @@unique([xeroConnectionId, locationId])
 }
-

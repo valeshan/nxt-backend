@@ -1,0 +1,46 @@
+import { FastifyInstance } from 'fastify';
+import { authController } from '../controllers/authController';
+import { LoginRequest, RegisterRequest, SelectOrganisationRequest, SelectLocationRequest, RefreshTokenRequest } from '../dtos/authDtos';
+import { ZodTypeProvider } from 'fastify-type-provider-zod';
+import authFromJwt from '../plugins/authFromJwt';
+
+export default async function authRoutes(fastify: FastifyInstance) {
+  const app = fastify.withTypeProvider<ZodTypeProvider>();
+
+  // Public Routes
+  app.post('/register', {
+    schema: {
+      body: RegisterRequest,
+    },
+  }, authController.register);
+
+  app.post('/login', {
+    schema: {
+      body: LoginRequest,
+    },
+  }, authController.login);
+
+  app.post('/refresh', {
+    schema: {
+      body: RefreshTokenRequest,
+    },
+  }, authController.refreshTokens);
+
+  // Protected Routes
+  app.register(async (protectedApp) => {
+    protectedApp.register(authFromJwt);
+    const typedApp = protectedApp.withTypeProvider<ZodTypeProvider>();
+
+    typedApp.post('/select-organisation', {
+      schema: {
+        body: SelectOrganisationRequest,
+      },
+    }, authController.selectOrganisation);
+
+    typedApp.post('/select-location', {
+      schema: {
+        body: SelectLocationRequest,
+      },
+    }, authController.selectLocation);
+  });
+}

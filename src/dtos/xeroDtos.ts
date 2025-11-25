@@ -17,7 +17,12 @@ export const listConnectionsQuerySchema = z.object({
   organisationId: z.string().min(1),
 });
 
+export const xeroAuthoriseCallbackRequestSchema = z.object({
+  code: z.string().min(1),
+  state: z.string().min(1),
+});
+
 export type CreateConnectionRequest = z.infer<typeof createConnectionRequestSchema>;
 export type LinkLocationsRequest = z.infer<typeof linkLocationsRequestSchema>;
 export type ListConnectionsQuery = z.infer<typeof listConnectionsQuerySchema>;
-
+export type XeroAuthoriseCallbackRequest = z.infer<typeof xeroAuthoriseCallbackRequestSchema>;
