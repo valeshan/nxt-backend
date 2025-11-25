@@ -7,24 +7,30 @@ import { z } from 'zod';
 
 const manualOnboardRequest = z.object({
   venueName: z.string().min(1),
+  onboardingSessionId: z.string().optional(),
 });
 
 export default async function organisationRoutes(fastify: FastifyInstance) {
-  fastify.register(authFromJwt);
   const app = fastify.withTypeProvider<ZodTypeProvider>();
 
-  app.post('/', {
-    schema: {
-      body: CreateOrganisationRequest,
-    },
-  }, organisationController.create);
-
-  app.get('/', organisationController.list);
-
-  // Manual Onboarding Endpoint
+  // Public Routes
   app.post('/onboard/manual', {
     schema: {
         body: manualOnboardRequest
     }
   }, organisationController.manualOnboard);
+
+  // Protected Routes
+  app.register(async (protectedApp) => {
+    protectedApp.register(authFromJwt);
+    const typedApp = protectedApp.withTypeProvider<ZodTypeProvider>();
+
+    typedApp.post('/', {
+      schema: {
+        body: CreateOrganisationRequest,
+      },
+    }, organisationController.create);
+
+    typedApp.get('/', organisationController.list);
+  });
 }

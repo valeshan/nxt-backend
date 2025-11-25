@@ -20,6 +20,7 @@ export const listConnectionsQuerySchema = z.object({
 export const xeroAuthoriseCallbackRequestSchema = z.object({
   code: z.string().min(1),
   state: z.string().min(1),
+  scope: z.string().optional(),
 });
 
 export type CreateConnectionRequest = z.infer<typeof createConnectionRequestSchema>;

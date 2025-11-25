@@ -5,6 +5,7 @@ import { z } from 'zod';
 
 const manualOnboardSchema = z.object({
   venueName: z.string().min(1),
+  onboardingSessionId: z.string().optional(),
 });
 
 export const organisationController = {
@@ -22,15 +23,10 @@ export const organisationController = {
   },
 
   async manualOnboard(request: FastifyRequest<{ Body: z.infer<typeof manualOnboardSchema> }>, reply: FastifyReply) {
-    const { venueName } = request.body;
-    const userId = request.user.userId;
+    const { venueName, onboardingSessionId } = request.body;
     
-    // Only allow login tokens for onboarding
-    if (request.user.tokenType !== 'access_token_login') {
-        return reply.status(403).send({ message: 'Login token required' });
-    }
-
-    const result = await organisationService.manualOnboard(userId, venueName);
+    // No user ID check required for onboarding as it's public/pre-auth
+    const result = await organisationService.manualOnboard(venueName, onboardingSessionId);
     return reply.code(201).send(result);
   }
 };

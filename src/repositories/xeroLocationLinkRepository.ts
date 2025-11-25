@@ -1,8 +1,12 @@
 import prisma from '../infrastructure/prismaClient';
-import { XeroLocationLink } from '@prisma/client';
+import { Prisma, XeroLocationLink } from '@prisma/client';
 
 export class XeroLocationLinkRepository {
-  async createLinks(xeroConnectionId: string, locationIds: string[]): Promise<XeroLocationLink[]> {
+  async createLinks(
+    xeroConnectionId: string,
+    organisationId: string,
+    locationIds: string[]
+  ): Promise<XeroLocationLink[]> {
     // Create multiple links. 
     // We use createMany but Prisma createMany does not return the created records in all DBs (Postgres does supports it but Prisma only returns count).
     // The requirement says "Return created connection plus its location links".
@@ -12,6 +16,7 @@ export class XeroLocationLinkRepository {
     await prisma.xeroLocationLink.createMany({
       data: locationIds.map((locationId) => ({
         xeroConnectionId,
+        organisationId,
         locationId,
       })),
       skipDuplicates: true,
@@ -29,6 +34,12 @@ export class XeroLocationLinkRepository {
     return prisma.xeroLocationLink.findMany({
       where: { xeroConnectionId },
     });
+  }
+
+  async createLink(
+    data: Prisma.XeroLocationLinkUncheckedCreateInput
+  ): Promise<XeroLocationLink> {
+    return prisma.xeroLocationLink.create({ data });
   }
 }
 

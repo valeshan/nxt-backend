@@ -1,17 +1,29 @@
 import prisma from '../infrastructure/prismaClient';
-import { XeroConnection } from '@prisma/client';
+import { Prisma, XeroConnection } from '@prisma/client';
 
 export class XeroConnectionRepository {
-  async createConnection(data: {
-    organisationId: string;
-    xeroTenantId: string;
-    accessTokenEncrypted: string;
-    refreshTokenEncrypted: string;
-    accessTokenExpiresAt: Date;
-    status: string;
-  }): Promise<XeroConnection> {
-    return prisma.xeroConnection.create({
+  async createConnection(
+    data: Prisma.XeroConnectionUncheckedCreateInput
+  ): Promise<XeroConnection> {
+    return prisma.xeroConnection.create({ data });
+  }
+
+  async updateConnection(
+    id: string,
+    data: Prisma.XeroConnectionUncheckedUpdateInput
+  ): Promise<XeroConnection> {
+    return prisma.xeroConnection.update({
+      where: { id },
       data,
+    });
+  }
+
+  async findByOrganisationAndTenant(
+    organisationId: string,
+    xeroTenantId: string
+  ): Promise<XeroConnection | null> {
+    return prisma.xeroConnection.findFirst({
+      where: { organisationId, xeroTenantId },
     });
   }
 

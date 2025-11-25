@@ -1,7 +1,10 @@
 import { XeroConnectionRepository } from '../repositories/xeroConnectionRepository';
 import { XeroLocationLinkRepository } from '../repositories/xeroLocationLinkRepository';
 import { encryptToken } from '../utils/crypto';
-import { XeroConnection, XeroLocationLink } from '@prisma/client';
+import { XeroConnection, XeroLocationLink, OnboardingMode } from '@prisma/client';
+import { onboardingSessionRepository } from '../repositories/onboardingSessionRepository';
+import { organisationRepository } from '../repositories/organisationRepository';
+import { locationRepository } from '../repositories/locationRepository';
 
 const connectionRepo = new XeroConnectionRepository();
 const linkRepo = new XeroLocationLinkRepository();
@@ -69,35 +72,73 @@ export class XeroService {
     throw new Error('Not Implemented');
   }
 
-  async generateAuthUrl(userId: string): Promise<{ redirectUrl: string }> {
-    // Stub implementation - integrate actual Xero SDK later
+  async generateAuthUrl(onboardingSessionId?: string): Promise<{ redirectUrl: string }> {
+    // Check session if provided
+    if (onboardingSessionId) {
+        const session = await onboardingSessionRepository.findById(onboardingSessionId);
+        if (!session || session.completedAt || session.expiresAt < new Date()) {
+            throw new Error('Invalid or expired onboarding session');
+        }
+    } else {
+        // Create new session
+        const session = await onboardingSessionRepository.createSession(OnboardingMode.xero);
+        onboardingSessionId = session.id;
+    }
+
     const clientId = process.env.XERO_CLIENT_ID || 'stub_client_id';
-    const redirectUri = process.env.XERO_REDIRECT_URI || 'http://localhost:3000/xero/callback';
+    // Prioritize env var, fallback to frontend URL
+    const redirectUri = process.env.XERO_REDIRECT_URI || 'http://localhost:3000/xero/authorise';
     const scopes = 'offline_access accounting.settings.read accounting.transactions.read';
     
-    // Ideally state should be random and stored associated with userId to verify on callback
-    const state = `user_${userId}_${Date.now()}`; 
+    // Store session ID in state to verify on callback
+    // Format: onboard_<sessionId>_<timestamp>
+    const state = `onboard_${onboardingSessionId}_${Date.now()}`; 
     
     const url = `https://login.xero.com/identity/connect/authorize?response_type=code&client_id=${clientId}&redirect_uri=${encodeURIComponent(redirectUri)}&scope=${encodeURIComponent(scopes)}&state=${state}`;
     
     return { redirectUrl: url };
   }
 
-  async processCallback(userId: string, code: string, state: string): Promise<any> {
-    // Stub implementation - would normally exchange code for tokens
+  async processCallback(code: string, state: string): Promise<any> {
+    // Extract session ID from state
+    // Expected format: onboard_<sessionId>_<timestamp>
+    const parts = state.split('_');
+    if (parts.length < 3 || parts[0] !== 'onboard') {
+        throw new Error('Invalid state parameter');
+    }
+    const onboardingSessionId = parts[1];
+
+    const session = await onboardingSessionRepository.findById(onboardingSessionId);
+    if (!session || session.mode !== OnboardingMode.xero || session.completedAt || session.expiresAt < new Date()) {
+        throw new Error('Invalid or expired onboarding session');
+    }
+
+    // TODO: Exchange code for tokens via Xero API
+    // For now, we stub the Xero API calls and creation of org/locations
     
-    // 1. Validate state (if stored)
-    // 2. Exchange code for tokens via Xero API
-    // 3. Fetch Tenants
-    // 4. Create Organisation, Locations, UserOrganisation links
+    // Stub: Create Organisation and Locations directly linked to session (no user yet)
+    // In reality, we would fetch org details from Xero
+    const mockOrgName = 'Xero Imported Org';
+    const org = await organisationRepository.createOrganisation({ name: mockOrgName });
     
-    // Mock Response structure matching spec
+    // Stub: Create locations found in Xero
+    const loc1 = await locationRepository.createLocation({ organisationId: org.id, name: 'Main Branch' });
+    const loc2 = await locationRepository.createLocation({ organisationId: org.id, name: 'Second Branch' });
+
+    // Attach to session
+    await onboardingSessionRepository.attachOrganisationAndLocation(
+        session.id,
+        org.id,
+        loc1.id // Defaulting to first location
+    );
+    
     return {
-      organisationId: 'mock-org-uuid',
-      organisationName: 'Mock Xero Organisation',
+      onboardingSessionId: session.id,
+      organisationId: org.id,
+      organisationName: org.name,
       locations: [
-        { id: 'mock-loc-1', name: 'Main Branch' },
-        { id: 'mock-loc-2', name: 'Downtown Kiosk' }
+        { id: loc1.id, name: loc1.name },
+        { id: loc2.id, name: loc2.name }
       ]
     };
   }

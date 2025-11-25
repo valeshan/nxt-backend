@@ -66,26 +66,20 @@ export class XeroController {
   // New Xero Auth Flow Endpoints
 
   authoriseStartHandler = async (
-    request: FastifyRequest,
+    request: FastifyRequest<{ Querystring: { onboardingSessionId?: string } }>,
     reply: FastifyReply
   ) => {
-    const userId = request.user.userId;
-    if (!userId) {
-        return reply.status(401).send({ message: 'User context required' });
-    }
-    const result = await xeroService.generateAuthUrl(userId);
+    // Public route - no user context required
+    const result = await xeroService.generateAuthUrl(request.query.onboardingSessionId);
     return reply.status(200).send(result);
   }
 
   authoriseCallbackHandler = async (
-    request: FastifyRequest<{ Body: XeroAuthoriseCallbackRequest }>,
+    request: FastifyRequest<{ Querystring: XeroAuthoriseCallbackRequest }>,
     reply: FastifyReply
   ) => {
-    const userId = request.user.userId;
-    if (!userId) {
-        return reply.status(401).send({ message: 'User context required' });
-    }
-    const result = await xeroService.processCallback(userId, request.body.code, request.body.state);
+    // Public route - no user context required
+    const result = await xeroService.processCallback(request.query.code, request.query.state);
     return reply.status(200).send(result);
   }
 }

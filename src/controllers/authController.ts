@@ -1,6 +1,6 @@
 import { FastifyRequest, FastifyReply } from 'fastify';
 import { authService } from '../services/authService';
-import { LoginRequest, RegisterRequest, SelectOrganisationRequest, SelectLocationRequest, RefreshTokenRequest } from '../dtos/authDtos';
+import { LoginRequest, RegisterRequest, SelectOrganisationRequest, SelectLocationRequest, RefreshTokenRequest, RegisterOnboardRequestSchema } from '../dtos/authDtos';
 import { z } from 'zod';
 
 export const authController = {
@@ -14,6 +14,18 @@ export const authController = {
     const name = `${firstName} ${lastName}`;
     const user = await authService.registerUser(email, password, name);
     return reply.code(201).send(user);
+  },
+
+  async registerOnboardHandler(request: FastifyRequest<{ Body: z.infer<typeof RegisterOnboardRequestSchema> }>, reply: FastifyReply) {
+    try {
+      const result = await authService.registerWithOnboarding(request.body);
+      return reply.code(201).send(result);
+    } catch (error: any) {
+      if (error.statusCode) {
+        return reply.code(error.statusCode).send({ message: error.message });
+      }
+      throw error;
+    }
   },
 
   async login(request: FastifyRequest<{ Body: z.infer<typeof LoginRequest> }>, reply: FastifyReply) {

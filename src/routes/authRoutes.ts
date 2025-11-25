@@ -1,6 +1,6 @@
 import { FastifyInstance } from 'fastify';
 import { authController } from '../controllers/authController';
-import { LoginRequest, RegisterRequest, SelectOrganisationRequest, SelectLocationRequest, RefreshTokenRequest } from '../dtos/authDtos';
+import { LoginRequest, RegisterRequest, SelectOrganisationRequest, SelectLocationRequest, RefreshTokenRequest, RegisterOnboardRequestSchema } from '../dtos/authDtos';
 import { ZodTypeProvider } from 'fastify-type-provider-zod';
 import authFromJwt from '../plugins/authFromJwt';
 
@@ -13,6 +13,13 @@ export default async function authRoutes(fastify: FastifyInstance) {
       body: RegisterRequest,
     },
   }, authController.register);
+
+  // New Registration with Onboarding Endpoint
+  app.post('/register-onboard', {
+    schema: {
+      body: RegisterOnboardRequestSchema,
+    }
+  }, authController.registerOnboardHandler);
 
   app.post('/login', {
     schema: {

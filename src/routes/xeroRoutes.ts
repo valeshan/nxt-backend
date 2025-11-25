@@ -8,56 +8,59 @@ import authFromJwt from '../plugins/authFromJwt';
 const xeroController = new XeroController();
 
 export default async function xeroRoutes(fastify: FastifyInstance) {
-  // Register Auth Plugin for this scope
-  fastify.register(authFromJwt);
-
   const app = fastify.withTypeProvider<ZodTypeProvider>();
 
-  app.post(
-    '/connections',
-    {
-      schema: {
-        body: createConnectionRequestSchema,
-      },
-    },
-    xeroController.createConnectionHandler
-  );
-
-  app.post(
-    '/connections/:connectionId/locations',
-    {
-      schema: {
-        params: z.object({ connectionId: z.string() }),
-        body: linkLocationsRequestSchema,
-      },
-    },
-    xeroController.linkLocationsHandler
-  );
-
+  // Public Routes (Xero OAuth)
   app.get(
-    '/connections',
-    {
-      schema: {
-        querystring: listConnectionsQuerySchema,
-      },
-    },
-    xeroController.listConnectionsHandler
-  );
-
-  // New Xero Auth Flow
-  app.post(
     '/authorise/start',
     {},
     xeroController.authoriseStartHandler
   );
 
-  app.post(
+  app.get(
     '/authorise',
     {
       schema: {
-        body: xeroAuthoriseCallbackRequestSchema
+        querystring: xeroAuthoriseCallbackRequestSchema
       }
     },
     xeroController.authoriseCallbackHandler
   );
+
+  // Protected Routes
+  app.register(async (protectedApp) => {
+    protectedApp.register(authFromJwt);
+    const typedApp = protectedApp.withTypeProvider<ZodTypeProvider>();
+
+    typedApp.post(
+      '/connections',
+      {
+        schema: {
+          body: createConnectionRequestSchema,
+        },
+      },
+      xeroController.createConnectionHandler
+    );
+
+    typedApp.post(
+      '/connections/:connectionId/locations',
+      {
+        schema: {
+          params: z.object({ connectionId: z.string() }),
+          body: linkLocationsRequestSchema,
+        },
+      },
+      xeroController.linkLocationsHandler
+    );
+
+    typedApp.get(
+      '/connections',
+      {
+        schema: {
+          querystring: listConnectionsQuerySchema,
+        },
+      },
+      xeroController.listConnectionsHandler
+    );
+  });
 }

@@ -18,6 +18,7 @@ model User {
 
   memberships    UserOrganisation[]
   settings       UserSettings?
+  xeroConnections XeroConnection[]
 }
 
 model Organisation {
@@ -28,6 +29,8 @@ model Organisation {
 
   locations Location[]
   members   UserOrganisation[]
+  xeroConnections XeroConnection[]
+  xeroLocationLinks XeroLocationLink[]
 }
 
 model Location {
@@ -37,6 +40,8 @@ model Location {
   organisation   Organisation  @relation(fields: [organisationId], references: [id])
   createdAt      DateTime      @default(now())
   updatedAt      DateTime      @updatedAt
+
+  xeroLocationLinks XeroLocationLink[]
 }
 
 model UserOrganisation {
@@ -84,26 +89,48 @@ enum OrganisationRole {
 }
 
 model XeroConnection {
-  id                    String   @id @default(cuid())
-  organisationId        String
-  xeroTenantId          String
-  accessTokenEncrypted  String
-  refreshTokenEncrypted String
-  accessTokenExpiresAt  DateTime
-  status                String
-  createdAt             DateTime @default(now())
-  updatedAt             DateTime @updatedAt
+  id             String   @id @default(uuid())
+  userId         String
+  organisationId String
+  xeroTenantId   String
+  tenantName     String
+  accessToken    String
+  refreshToken   String
+  expiresAt      DateTime
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
 
+  organisation  Organisation @relation(fields: [organisationId], references: [id])
+  user          User         @relation(fields: [userId], references: [id])
   locationLinks XeroLocationLink[]
 }
 
 model XeroLocationLink {
-  id               String         @id @default(cuid())
-  xeroConnection   XeroConnection @relation(fields: [xeroConnectionId], references: [id])
+  id               String         @id @default(uuid())
   xeroConnectionId String
+  organisationId   String
   locationId       String
   createdAt        DateTime       @default(now())
   updatedAt        DateTime       @updatedAt
 
-  @@unique([xeroConnectionId, locationId])
+  xeroConnection XeroConnection @relation(fields: [xeroConnectionId], references: [id])
+  organisation   Organisation   @relation(fields: [organisationId], references: [id])
+  location       Location       @relation(fields: [locationId], references: [id])
+}
+
+model OnboardingSession {
+  id               String         @id @default(uuid())
+  mode             OnboardingMode
+  email            String?
+  organisationId   String?
+  locationId       String?
+  xeroConnectionId String?
+  createdAt        DateTime       @default(now())
+  expiresAt        DateTime
+  completedAt      DateTime?
+}
+
+enum OnboardingMode {
+  xero
+  manual
 }
