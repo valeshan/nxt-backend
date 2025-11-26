@@ -25,20 +25,23 @@ export const RegisterOnboardRequestSchema = z.object({
   confirmPassword: z.string().min(8),
   acceptedTerms: z.literal(true, { errorMap: () => ({ message: "Must accept Terms" }) }),
   acceptedPrivacy: z.literal(true, { errorMap: () => ({ message: "Must accept Privacy Policy" }) }),
-  onboardingSessionId: z.string().uuid().optional(),
-  selectedLocationId: z.string().uuid().optional(),
+  // Exactly one onboarding mode required:
+  // Xero mode: xeroCode + xeroState (no venueName)
+  // Manual mode: venueName (no xeroCode/xeroState)
   xeroCode: z.string().optional(),
   xeroState: z.string().optional(),
+  venueName: z.string().min(1).optional(),
 }).refine(
   (data) => data.password === data.confirmPassword,
   { path: ["confirmPassword"], message: "Passwords do not match" }
 ).refine(
   (data) => {
-    const hasSession = Boolean(data.onboardingSessionId && data.selectedLocationId);
-    const hasXeroCode = Boolean(data.xeroCode && data.xeroState);
-    return hasSession || hasXeroCode;
+    const hasXero = Boolean(data.xeroCode && data.xeroState);
+    const hasManual = Boolean(data.venueName);
+    // Exactly one mode: (Xero && !Manual) || (Manual && !Xero)
+    return (hasXero && !hasManual) || (hasManual && !hasXero);
   },
-  { message: "Provide either onboarding session + location or Xero code + state" }
+  { message: "Provide either Xero code + state OR venue name, but not both" }
 );
 
 export const SelectOrganisationRequest = z.object({

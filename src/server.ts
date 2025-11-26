@@ -1,5 +1,9 @@
 import { buildApp } from './app';
 import { config } from './config/env';
+import { initSentry } from './config/sentry';
+
+// Initialize Sentry before anything else
+initSentry();
 
 const start = async () => {
   const app = buildApp();

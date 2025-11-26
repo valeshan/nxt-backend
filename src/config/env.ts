@@ -6,6 +6,9 @@ const envSchema = z.object({
   TOKEN_ENCRYPTION_KEY: z.string().min(32), // Enforce some length for security
   PORT: z.coerce.number().default(4001),
   NODE_ENV: z.enum(['development', 'production', 'test']).default('development'),
+  XERO_CLIENT_ID: z.string().optional(),
+  XERO_CLIENT_SECRET: z.string().optional(),
+  XERO_REDIRECT_URI: z.string().optional(),
 });
 
 const parsed = envSchema.safeParse(process.env);

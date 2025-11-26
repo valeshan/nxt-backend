@@ -10,6 +10,7 @@ import { Prisma, OrganisationRole } from '@prisma/client';
 import { RegisterOnboardRequestSchema } from '../dtos/authDtos';
 import { z } from 'zod';
 import { XeroService } from './xeroService';
+import prisma from '../infrastructure/prismaClient';
 
 type RegisterOnboardInput = z.infer<typeof RegisterOnboardRequestSchema>;
 
@@ -37,122 +38,205 @@ export const authService = {
     return userSafe;
   },
 
-  async registerWithOnboarding(input: RegisterOnboardInput) {
-    let session = null;
-    let location = null;
+  /**
+   * Atomic onboarding: Creates User, Organisation, Location, and optionally XeroConnection
+   * in a single Prisma transaction to prevent orphan records.
+   */
+  async registerOnboard(input: RegisterOnboardInput) {
+    console.log('[AuthService] registerOnboard called', {
+      email: input.email,
+      hasXeroCode: !!input.xeroCode,
+      hasXeroState: !!input.xeroState,
+      hasVenueName: !!input.venueName,
+    });
 
-    const hasSessionPath = Boolean(input.onboardingSessionId && input.selectedLocationId);
-    const hasXeroPath = Boolean(input.xeroCode && input.xeroState);
+    // Validate input mode
+    const hasXero = Boolean(input.xeroCode && input.xeroState);
+    const hasManual = Boolean(input.venueName);
 
-    if (hasSessionPath) {
-      session = await onboardingSessionRepository.findById(input.onboardingSessionId!);
-      if (!session || session.completedAt || session.expiresAt < new Date()) {
-        throw { statusCode: 400, message: 'Invalid or expired onboarding session' };
-      }
-
-      if (!session.locationId || !session.organisationId) {
-        throw { statusCode: 400, message: 'Onboarding session is incomplete (missing venue)' };
-      }
-
-      location = await locationRepository.findById(input.selectedLocationId!);
-      if (!location || location.organisationId !== session.organisationId) {
-        throw { statusCode: 400, message: 'Invalid location selection' };
-      }
-    } else if (hasXeroPath) {
-      // Process Xero callback directly via backend
-      const xeroResult = await xeroService.processCallback(input.xeroCode!, input.xeroState!);
-      session = await onboardingSessionRepository.findById(xeroResult.onboardingSessionId);
-
-      if (!session || session.completedAt || session.expiresAt < new Date()) {
-        throw { statusCode: 400, message: 'Invalid or expired onboarding session' };
-      }
-
-      if (!session.organisationId) {
-        throw { statusCode: 400, message: 'Organisation missing from onboarding session' };
-      }
-
-      const resolvedLocationId =
-        xeroResult.locations?.[0]?.id ||
-        session.locationId;
-
-      if (!resolvedLocationId) {
-        throw { statusCode: 400, message: 'No locations available from Xero onboarding' };
-      }
-
-      location = await locationRepository.findById(resolvedLocationId);
-      if (!location || location.organisationId !== session.organisationId) {
-        throw { statusCode: 400, message: 'Invalid location derived from Xero onboarding' };
-      }
-    } else {
-      throw { statusCode: 400, message: 'Provide onboarding session or Xero code to register' };
+    if (!hasXero && !hasManual) {
+      console.error('[AuthService] No onboarding mode provided');
+      throw { statusCode: 400, message: 'Provide either Xero code + state OR venue name' };
     }
 
-    // 3. Create User
-    if (!session || !location) {
-      throw { statusCode: 500, message: 'Unable to resolve onboarding context' };
-    }
-
+    // Check if user already exists
     const existingUser = await userRepository.findByEmail(input.email);
     if (existingUser) {
+      console.error('[AuthService] User already exists', { email: input.email });
       throw { statusCode: 409, message: 'User already exists' };
     }
 
+    // Prepare user data
     const passwordHash = await hashPassword(input.password);
     const name = `${input.firstName} ${input.lastName}`.trim();
-    
-    const user = await userRepository.createUser({
-      email: input.email,
-      passwordHash,
-      name,
-    });
 
-    // 4. Create UserSettings
-    await userSettingsRepository.upsertForUser(user.id, {});
+    // For Xero path: exchange code for tokens first (outside transaction - external API call)
+    let xeroData: {
+      tenantId: string;
+      tenantName: string;
+      accessToken: string;
+      refreshToken: string;
+      expiresAt: Date;
+    } | null = null;
 
-    // 5. Create UserOrganisation (Owner)
-    await userOrganisationRepository.addUserToOrganisation(user.id, session.organisationId, OrganisationRole.owner);
-
-    // 6. Mark Session Completed
-    await onboardingSessionRepository.markCompleted(session.id);
-    // Update session email if not set
-    if (!session.email) {
-        await onboardingSessionRepository.updateEmail(session.id, user.email);
+    if (hasXero) {
+      console.log('[AuthService] Starting Xero OAuth exchange');
+      try {
+        xeroData = await xeroService.exchangeCodeAndPrepareOrgForOnboard({
+          xeroCode: input.xeroCode!,
+          xeroState: input.xeroState!,
+        });
+        console.log('[AuthService] Xero OAuth exchange successful', {
+          tenantId: xeroData.tenantId,
+          tenantName: xeroData.tenantName,
+        });
+      } catch (error: any) {
+        console.error('[AuthService] Xero OAuth exchange failed', {
+          error: error.message,
+          stack: error.stack,
+        });
+        throw { statusCode: 400, message: `Xero OAuth failed: ${error.message}` };
+      }
     }
 
-    // 7. Issue Tokens (Final Access/Refresh Tokens for the selected location)
-    // We skip login/org tokens and go straight to location token as per new flow requirement
-    const accessToken = signAccessToken({ 
-      sub: user.id, 
-      orgId: session.organisationId, 
-      locId: location.id, 
-      type: 'access_token' 
-    });
-    const refreshToken = signRefreshToken({ 
-      sub: user.id, 
-      orgId: session.organisationId, 
-      locId: location.id, 
-      type: 'refresh_token' 
+    // Execute all DB operations in a single transaction
+    console.log('[AuthService] Starting database transaction');
+    const result = await prisma.$transaction(async (tx) => {
+      // Determine organisation and location names
+      const orgName = hasXero ? xeroData!.tenantName : input.venueName!;
+      const locationName = orgName; // Same name for both
+
+      console.log('[AuthService] Creating records in transaction', { orgName, locationName });
+
+      // 1. Create Organisation
+      const organisation = await tx.organisation.create({
+        data: { name: orgName },
+      });
+      console.log('[AuthService] Organisation created', { id: organisation.id, name: organisation.name });
+
+      // 2. Create Location (default location for Xero, or venue location for manual)
+      const location = await tx.location.create({
+        data: {
+          name: locationName,
+          organisationId: organisation.id,
+        },
+      });
+      console.log('[AuthService] Location created', { id: location.id, name: location.name });
+
+      // 3. Create User
+      const user = await tx.user.create({
+        data: {
+          email: input.email,
+          passwordHash,
+          name,
+        },
+      });
+      console.log('[AuthService] User created', { id: user.id, email: user.email });
+
+      // 4. Create UserSettings
+      await tx.userSettings.create({
+        data: {
+          userId: user.id,
+        },
+      });
+      console.log('[AuthService] UserSettings created');
+
+      // 5. Create UserOrganisation (Owner role)
+      await tx.userOrganisation.create({
+        data: {
+          userId: user.id,
+          organisationId: organisation.id,
+          role: OrganisationRole.owner,
+        },
+      });
+      console.log('[AuthService] UserOrganisation created');
+
+      // 6. For Xero path: Create XeroConnection and XeroLocationLink
+      if (hasXero && xeroData) {
+        console.log('[AuthService] Creating XeroConnection');
+        await xeroService.persistXeroConnectionForOrg({
+          tx,
+          userId: user.id,
+          organisationId: organisation.id,
+          locationId: location.id,
+          tenantId: xeroData.tenantId,
+          tenantName: xeroData.tenantName,
+          accessToken: xeroData.accessToken,
+          refreshToken: xeroData.refreshToken,
+          expiresAt: xeroData.expiresAt,
+          xeroCode: input.xeroCode,   // Store for audit/debugging
+          xeroState: input.xeroState, // Store for audit/debugging
+        });
+        console.log('[AuthService] XeroConnection created');
+      }
+
+      // 7. Issue final location-level tokens
+      const accessToken = signAccessToken({
+        sub: user.id,
+        orgId: organisation.id,
+        locId: location.id,
+        type: 'access_token',
+      });
+      const refreshToken = signRefreshToken({
+        sub: user.id,
+        orgId: organisation.id,
+        locId: location.id,
+        type: 'refresh_token',
+      });
+
+      return {
+        user,
+        organisation,
+        location,
+        accessToken,
+        refreshToken,
+      };
     });
 
-    // Get Org details for response
-    const org = await organisationRepository.findById(session.organisationId);
+    console.log('[AuthService] Transaction completed successfully');
 
+    // 8. For Xero path: Test the API connection to verify it works
+    if (hasXero && xeroData) {
+      console.log('[AuthService] Testing Xero API connection');
+      try {
+        await xeroService.testXeroConnection({
+          accessToken: xeroData.accessToken,
+          refreshToken: xeroData.refreshToken,
+          tenantId: xeroData.tenantId,
+        });
+        console.log('[AuthService] Xero API connection test successful');
+      } catch (testError: any) {
+        // Log error but don't fail signup - connection is created, test is just verification
+        console.error('[AuthService] Xero API connection test failed (non-blocking)', {
+          error: testError.message,
+          tenantId: xeroData.tenantId,
+        });
+      }
+    }
+
+    // Return response in BE2 format
     return {
-      user_id: user.id,
-      profile_picture: user.profilePicture,
+      user_id: result.user.id,
+      profile_picture: result.user.profilePicture,
       organisation: {
-        id: org?.id,
-        name: org?.name
+        id: result.organisation.id,
+        name: result.organisation.name,
       },
       location: {
-        id: location.id,
-        name: location.name
+        id: result.location.id,
+        name: result.location.name,
       },
-      access_token: accessToken,
-      refresh_token: refreshToken,
+      access_token: result.accessToken,
+      refresh_token: result.refreshToken,
       type: 'bearer',
       expires_in: 900, // 15m
     };
+  },
+
+  // Keep old method for backward compatibility (deprecated)
+  async registerWithOnboarding(input: RegisterOnboardInput) {
+    // Redirect to new atomic method
+    return this.registerOnboard(input);
   },
 
   async login(email: string, pass: string) {

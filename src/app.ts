@@ -1,6 +1,7 @@
 import Fastify, { FastifyInstance } from 'fastify';
 import cors from '@fastify/cors';
 import { serializerCompiler, validatorCompiler, ZodTypeProvider } from 'fastify-type-provider-zod';
+import * as Sentry from '@sentry/node';
 import xeroRoutes from './routes/xeroRoutes';
 import authRoutes from './routes/authRoutes';
 import organisationRoutes from './routes/organisationRoutes';
@@ -47,6 +48,36 @@ export function buildApp(): FastifyInstance {
   // Global Error Handler
   app.setErrorHandler((error, request, reply) => {
     request.log.error(error);
+
+    // Capture error in Sentry with context
+    Sentry.withScope((scope) => {
+      // Add request context
+      scope.setContext('request', {
+        method: request.method,
+        url: request.url,
+        headers: {
+          'user-id': request.headers['x-user-id'],
+          'org-id': request.headers['x-org-id'],
+        },
+      });
+
+      // Add user context if available
+      const userId = request.headers['x-user-id'];
+      const orgId = request.headers['x-org-id'];
+      if (userId) {
+        scope.setUser({
+          id: userId as string,
+          organization_id: orgId as string,
+        });
+      }
+
+      // Set tags
+      scope.setTag('error_code', (error as any).code || 'INTERNAL_ERROR');
+      scope.setTag('status_code', String(error.statusCode || 500));
+
+      // Capture the error
+      Sentry.captureException(error);
+    });
 
     if (error.validation) {
        return reply.status(400).send({

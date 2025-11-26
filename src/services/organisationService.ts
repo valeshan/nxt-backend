@@ -15,7 +15,13 @@ export const organisationService = {
     return organisationRepository.listForUser(userId);
   },
 
+  /**
+   * @deprecated This method creates orphan records (org/location without user) and should NOT be used for signup.
+   * For signup, use /auth/register-onboard which creates everything atomically in a transaction.
+   * This method is kept for backward compatibility with existing tests only.
+   */
   async manualOnboard(venueName: string, onboardingSessionId?: string) {
+    // DEPRECATED: This creates orphan records. Use /auth/register-onboard instead.
     // Ensure session exists or create one
     let session;
     if (onboardingSessionId) {
@@ -27,10 +33,10 @@ export const organisationService = {
       session = await onboardingSessionRepository.createSession(OnboardingMode.manual);
     }
 
-    // Create Organisation (NO User yet)
+    // Create Organisation (NO User yet) - ORPHAN RECORD
     const org = await organisationRepository.createOrganisation({ name: venueName });
     
-    // Create Location
+    // Create Location - ORPHAN RECORD
     const location = await locationRepository.createLocation({
         organisationId: org.id,
         name: venueName

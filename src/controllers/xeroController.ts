@@ -79,7 +79,19 @@ export class XeroController {
     reply: FastifyReply
   ) => {
     // Public route - no user context required
-    const result = await xeroService.processCallback(request.query.code, request.query.state);
-    return reply.status(200).send(result);
+    // NOTE: For signup flow, this endpoint should NOT be used.
+    // The frontend should extract code/state and pass them directly to /auth/register-onboard.
+    // This endpoint is reserved for future "re-link Xero" flows for existing users.
+    try {
+      const result = await xeroService.processCallback(request.query.code, request.query.state);
+      return reply.status(200).send(result);
+    } catch (error: any) {
+      return reply.status(400).send({
+        error: {
+          code: 'INVALID_USAGE',
+          message: error.message || 'This endpoint is not used for signup. Use /auth/register-onboard with xeroCode and xeroState instead.',
+        },
+      });
+    }
   }
 }

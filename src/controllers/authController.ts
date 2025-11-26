@@ -18,7 +18,7 @@ export const authController = {
 
   async registerOnboardHandler(request: FastifyRequest<{ Body: z.infer<typeof RegisterOnboardRequestSchema> }>, reply: FastifyReply) {
     try {
-      const result = await authService.registerWithOnboarding(request.body);
+      const result = await authService.registerOnboard(request.body);
       return reply.code(201).send(result);
     } catch (error: any) {
       if (error.statusCode) {

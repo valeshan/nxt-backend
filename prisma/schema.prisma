@@ -31,6 +31,8 @@ model Organisation {
   members   UserOrganisation[]
   xeroConnections XeroConnection[]
   xeroLocationLinks XeroLocationLink[]
+  suppliers Supplier[]
+  xeroInvoices XeroInvoice[]
 }
 
 model Location {
@@ -97,6 +99,8 @@ model XeroConnection {
   accessToken    String
   refreshToken   String
   expiresAt      DateTime
+  xeroCode       String?  // OAuth authorization code used (for audit/debugging)
+  xeroState      String?  // OAuth state parameter used (for audit/debugging)
   createdAt      DateTime @default(now())
   updatedAt      DateTime @updatedAt
 
@@ -133,4 +137,111 @@ model OnboardingSession {
 enum OnboardingMode {
   xero
   manual
+}
+
+// Supplier Management Models
+
+model Supplier {
+  id             String             @id @default(uuid())
+  organisationId String
+  name           String
+  normalizedName String
+  abn            String?
+  email          String?
+  phone          String?
+  website        String?
+  country        String?
+  city           String?
+  sourceType     SupplierSourceType
+  status         SupplierStatus     @default(ACTIVE)
+  createdAt      DateTime           @default(now())
+  updatedAt      DateTime           @updatedAt
+
+  organisation Organisation         @relation(fields: [organisationId], references: [id])
+  invoices     XeroInvoice[]
+  sourceLinks  SupplierSourceLink[]
+
+  @@index([organisationId])
+  @@index([normalizedName])
+}
+
+model SupplierSourceLink {
+  id             String             @id @default(uuid())
+  supplierId     String
+  organisationId String
+  sourceSystem   SupplierSourceSystem
+  externalId     String?            // e.g. Xero ContactID
+  rawName        String?            // e.g. OCR extracted supplier name
+  confidence     Float?             // 0-1
+  createdAt      DateTime           @default(now())
+
+  supplier Supplier @relation(fields: [supplierId], references: [id])
+
+  @@index([organisationId, sourceSystem, externalId])
+}
+
+model XeroInvoice {
+  id              String                @id @default(uuid())
+  organisationId  String
+  xeroInvoiceId   String                @unique // Xero InvoiceID
+  invoiceNumber   String?
+  reference       String?
+  type            String?               // ACCPAY, etc.
+  status          String?               // AUTHORISED, PAID, VOIDED
+  date            DateTime?
+  dueDate         DateTime?
+  total           Decimal?              @db.Decimal(19, 4)
+  subTotal        Decimal?              @db.Decimal(19, 4)
+  taxAmount       Decimal?              @db.Decimal(19, 4)
+  amountDue       Decimal?              @db.Decimal(19, 4)
+  amountPaid      Decimal?              @db.Decimal(19, 4)
+  currencyCode    String?
+  updatedDateUTC  DateTime?
+  
+  supplierId      String?
+  supplier        Supplier?             @relation(fields: [supplierId], references: [id])
+  organisation    Organisation          @relation(fields: [organisationId], references: [id])
+  
+  lineItems       XeroInvoiceLineItem[]
+  
+  createdAt       DateTime              @default(now())
+  updatedAt       DateTime              @updatedAt
+
+  @@index([organisationId])
+  @@index([supplierId])
+}
+
+model XeroInvoiceLineItem {
+  id           String      @id @default(uuid())
+  invoiceId    String
+  description  String?
+  quantity     Decimal?    @db.Decimal(19, 4)
+  unitAmount   Decimal?    @db.Decimal(19, 4)
+  lineAmount   Decimal?    @db.Decimal(19, 4)
+  taxAmount    Decimal?    @db.Decimal(19, 4)
+  itemCode     String?
+  accountCode  String?
+  
+  invoice      XeroInvoice @relation(fields: [invoiceId], references: [id], onDelete: Cascade)
+
+  @@index([invoiceId])
+}
+
+enum SupplierSourceType {
+  XERO
+  OCR
+  MANUAL
+  MERGED
+}
+
+enum SupplierStatus {
+  ACTIVE
+  ARCHIVED
+  PENDING_REVIEW
+}
+
+enum SupplierSourceSystem {
+  XERO
+  OCR
+  MANUAL
 }

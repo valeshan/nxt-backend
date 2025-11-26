@@ -23,7 +23,9 @@
     "fastify-plugin": "^4.5.1",
     "fastify-type-provider-zod": "^1.1.9",
     "jsonwebtoken": "^9.0.2",
-    "zod": "^3.22.4"
+    "xero-node": "^13.3.0",
+    "zod": "^3.22.4",
+    "@sentry/node": "^8.0.0"
   },
   "devDependencies": {
     "@types/bcrypt": "^6.0.0",
