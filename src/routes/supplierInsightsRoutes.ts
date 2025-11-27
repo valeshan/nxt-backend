@@ -29,9 +29,19 @@ export default async function supplierInsightsRoutes(app: FastifyInstance) {
                 })),
                 averagePriceMovementLast3mPercent: z.number(),
                 averageMonthlyVariancePercent: z.number(),
-                canCalculateVariance: z.boolean()
+                canCalculateVariance: z.boolean(),
+                priceMovementSeries: z.array(z.object({
+                    monthLabel: z.string(),
+                    percentChange: z.number().nullable()
+                })),
+                canCalculatePriceMovement: z.boolean(),
+                forecastedSpendNext30Days: z.number(),
+                forecastedSpendFixedNext30Days: z.number(),
+                forecastedSpendVariableNext30Days: z.number(),
+                forecastConfidence: z.enum(['low', 'medium', 'high'])
             }),
             recentPriceChanges: z.array(z.object({
+                productId: z.string(),
                 productName: z.string(),
                 supplierName: z.string(),
                 latestUnitPrice: z.number(),
@@ -151,7 +161,7 @@ export default async function supplierInsightsRoutes(app: FastifyInstance) {
                 }),
                 priceHistory: z.array(z.object({
                     monthLabel: z.string(),
-                    averageUnitPrice: z.number()
+                    averageUnitPrice: z.number().nullable()
                 }))
             }),
             404: z.object({

@@ -44,11 +44,142 @@ export class SupplierController {
       prisma.supplier.count({ where }),
     ]);
 
-    // Calculate basic spend metrics for list view (optional, can be heavy)
-    // For now, we'll just return the list. Real-time spend calc for list might need aggregation table.
+    // Calculate metrics for the fetched suppliers
+    const supplierIds = suppliers.map(s => s.id);
+    
+    // Date Logic for Spend Trend
+    const now = new Date();
+    const startOfCurrentMonth = new Date(now.getFullYear(), now.getMonth(), 1);
+    
+    // Current Period: Last 6 full months (Months -1 to -6)
+    const endOfCurrentPeriod = new Date(startOfCurrentMonth);
+    endOfCurrentPeriod.setDate(0); // End of Month -1
+    endOfCurrentPeriod.setHours(23, 59, 59, 999);
+
+    const startOfCurrentPeriod = new Date(startOfCurrentMonth);
+    startOfCurrentPeriod.setMonth(startOfCurrentPeriod.getMonth() - 6); // Start of Month -6
+
+    // Prior Period: Previous 6 full months (Months -7 to -12)
+    const endOfPriorPeriod = new Date(startOfCurrentPeriod);
+    endOfPriorPeriod.setDate(0); // End of Month -7
+    endOfPriorPeriod.setHours(23, 59, 59, 999);
+
+    const startOfPriorPeriod = new Date(startOfCurrentPeriod);
+    startOfPriorPeriod.setMonth(startOfPriorPeriod.getMonth() - 6); // Start of Month -12
+
+    // Metrics for Current Period (Spend)
+    const currentPeriodMetrics = await prisma.xeroInvoice.groupBy({
+      by: ['supplierId'],
+      where: {
+        supplierId: { in: supplierIds },
+        date: { gte: startOfCurrentPeriod, lte: endOfCurrentPeriod },
+        status: { in: ['AUTHORISED', 'PAID'] }
+      },
+      _sum: { total: true },
+    });
+
+    // Metrics for Prior Period (Spend)
+    const priorPeriodMetrics = await prisma.xeroInvoice.groupBy({
+      by: ['supplierId'],
+      where: {
+        supplierId: { in: supplierIds },
+        date: { gte: startOfPriorPeriod, lte: endOfPriorPeriod },
+        status: { in: ['AUTHORISED', 'PAID'] }
+      },
+      _sum: { total: true },
+    });
+
+    // Standard 12m Metrics (Rolling, for Total Spend)
+    const twelveMonthsAgo = new Date(now.getFullYear() - 1, now.getMonth(), now.getDate());
+    const sixMonthsAgo = new Date(now.getFullYear(), now.getMonth() - 6, now.getDate());
+
+    const metrics12m = await prisma.xeroInvoice.groupBy({
+      by: ['supplierId'],
+      where: {
+        supplierId: { in: supplierIds },
+        date: { gte: twelveMonthsAgo },
+        status: { in: ['AUTHORISED', 'PAID'] }
+      },
+      _sum: { total: true },
+      _count: { id: true }
+    });
+
+    // Metrics for Recurring Logic (Rolling 6m count)
+    const metrics6m = await prisma.xeroInvoice.groupBy({
+      by: ['supplierId'],
+      where: {
+        supplierId: { in: supplierIds },
+        date: { gte: sixMonthsAgo },
+        status: { in: ['AUTHORISED', 'PAID'] }
+      },
+      _count: { id: true }
+    });
+
+    // Calculate item counts (distinct products) per supplier
+    let itemCountsMap = new Map<string, number>();
+    
+    if (supplierIds.length > 0) {
+      const itemCounts: any[] = await prisma.$queryRaw`
+        SELECT i."supplierId", COUNT(DISTINCT COALESCE("itemCode", LOWER(TRIM("description"))))::int as "count"
+        FROM "XeroInvoiceLineItem" li
+        JOIN "XeroInvoice" i ON li."invoiceId" = i.id
+        WHERE i."supplierId" IN (${Prisma.join(supplierIds)})
+        AND i."status" IN ('AUTHORISED', 'PAID')
+        GROUP BY i."supplierId"
+      `;
+      itemCountsMap = new Map(itemCounts.map((c: any) => [c.supplierId, c.count]));
+    }
+
+    // Maps
+    const currentPeriodMap = new Map(currentPeriodMetrics.map(m => [m.supplierId, Number(m._sum.total || 0)]));
+    const priorPeriodMap = new Map(priorPeriodMetrics.map(m => [m.supplierId, Number(m._sum.total || 0)]));
+    const metrics12mMap = new Map(metrics12m.map(m => [m.supplierId, { total: Number(m._sum.total || 0), count: m._count.id }]));
+    const metrics6mMap = new Map(metrics6m.map(m => [m.supplierId, m._count.id]));
+
+    const MIN_BASELINE = 200;
+
+    const data = suppliers.map(s => {
+      const m12 = metrics12mMap.get(s.id) || { total: 0, count: 0 };
+      const count6m = metrics6mMap.get(s.id) || 0;
+      
+      // Recurring logic
+      const isRecurring = count6m >= 3;
+      const purchaseFrequency = isRecurring ? m12.count : 0;
+
+      // Spend Trend Logic
+      const currentPeriodSpend = currentPeriodMap.get(s.id) || 0;
+      const priorPeriodSpend = priorPeriodMap.get(s.id) || 0;
+
+      let spendTrendPercent = 0;
+      let isNewSupplier = false;
+      let isEmergingSupplier = false;
+
+      if (priorPeriodSpend === 0 && currentPeriodSpend > 0) {
+        isNewSupplier = true;
+      } else if (priorPeriodSpend > 0 && priorPeriodSpend < MIN_BASELINE) {
+        isEmergingSupplier = true;
+        spendTrendPercent = ((currentPeriodSpend - priorPeriodSpend) / priorPeriodSpend) * 100;
+      } else if (priorPeriodSpend > 0) {
+        spendTrendPercent = ((currentPeriodSpend - priorPeriodSpend) / priorPeriodSpend) * 100;
+      }
+
+      return {
+        ...s,
+        totalSpend: m12.total,
+        purchaseFrequency,
+        totalOrders: s._count.invoices,
+        avgInvoiceSize: m12.count > 0 ? m12.total / m12.count : 0, // Use 12m count for avg invoice size if recurring logic not used for this
+        yoySpendChange: 0, // Replaced by spendTrendPercent in UI but kept for type compatibility if needed
+        spendTrendPercent,
+        isNewSupplier,
+        isEmergingSupplier,
+        itemCount: itemCountsMap.get(s.id) || 0, 
+        potentialSavings: 0 
+      };
+    });
     
     return reply.send({
-      data: suppliers,
+      data,
       pagination: { total, page: Number(page), limit: Number(limit) }
     });
   }
@@ -127,12 +258,12 @@ export class SupplierController {
     }
 
     // Raw query to aggregate products
-    // We use COALESCE(itemCode, normalizedDesc) as key
+    // We prioritise using the real Product UUID (XeroInvoiceLineItem.productId) if available.
     // Note: Postgres specific SQL
     const products = await prisma.$queryRaw`
         SELECT 
-            COALESCE("itemCode", LOWER(TRIM("description"))) as "productId",
-            MAX("description") as "name",
+            MAX("XeroInvoiceLineItem"."productId") as "productId",
+            COALESCE(MAX("description"), 'Unknown Product') as "name",
             SUM("lineAmount") as "totalSpend",
             SUM("quantity") as "totalQuantity",
             AVG("unitAmount") as "averageCost"
@@ -182,9 +313,7 @@ export class SupplierController {
                     { itemCode: null },
                     { description: { contains: decodedProductId, mode: 'insensitive' } } // Fuzzy match or strict?
                     // Strictly we used normalized description. Prisma doesn't support function on column in where easily.
-                    // We'll fetch possible matches or rely on exact description match?
-                    // Creating a view or computed column is better but schema is fixed.
-                    // Let's fetch raw matching logic.
+                    // We'll fetch raw matching logic.
                   ]
                 }
             ]
@@ -227,4 +356,3 @@ export class SupplierController {
     });
   }
 }
-

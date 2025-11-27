@@ -2,6 +2,7 @@ import { PrismaClient, Prisma } from '@prisma/client';
 import prisma from '../infrastructure/prismaClient';
 import { getCategoryName } from '../config/categoryMap';
 import { startOfMonth, subMonths } from 'date-fns';
+import { forecastService } from './forecast/forecastService';
 
 // --- Types & DTOs ---
 
@@ -12,9 +13,16 @@ export interface SpendSummary {
   averagePriceMovementLast3mPercent: number;
   averageMonthlyVariancePercent: number;
   canCalculateVariance: boolean;
+  priceMovementSeries: { monthLabel: string; percentChange: number | null }[];
+  canCalculatePriceMovement: boolean;
+  forecastedSpendNext30Days: number;
+  forecastedSpendFixedNext30Days: number;
+  forecastedSpendVariableNext30Days: number;
+  forecastConfidence: 'low' | 'medium' | 'high';
 }
 
 export interface PriceChangeItem {
+  productId: string;
   productName: string;
   supplierName: string;
   latestUnitPrice: number;
@@ -53,7 +61,11 @@ export interface ProductDetail {
     quantityPurchased12m: number;
     spendTrend12mPercent: number;
   };
-  priceHistory: { monthLabel: string; averageUnitPrice: number }[];
+  priceHistory: { monthLabel: string; averageUnitPrice: number | null }[];
+  // New fields for trend tile
+  unitPriceHistory: { monthLabel: string; averageUnitPrice: number | null }[];
+  productPriceTrendPercent: number;
+  canCalculateProductPriceTrend: boolean;
 }
 
 export interface GetProductsParams {
@@ -97,6 +109,85 @@ function getCurrentMonthRange() {
 function getMonthLabel(date: Date): string {
   return date.toLocaleString('default', { month: 'short', year: 'numeric' });
 }
+
+// --- Helper Logic ---
+
+/**
+ * Computes monthly weighted average unit prices for a set of products.
+ * Returns a nested map: ProductID -> MonthKey (YYYY-MM) -> WeightedAvgPrice
+ */
+async function computeWeightedAveragePrices(
+    organisationId: string, 
+    productIds: string[], 
+    startDate: Date, 
+    endDate: Date
+) {
+    // Fetch all line items for these products in the window
+    const lineItems = await prisma.xeroInvoiceLineItem.findMany({
+        where: {
+            productId: { in: productIds },
+            quantity: { gt: 0 }, // Rule 1 & 4: Ignore zero/negative quantity
+            invoice: {
+                organisationId,
+                status: { in: ['AUTHORISED', 'PAID'] },
+                date: { gte: startDate, lte: endDate }
+            }
+        },
+        select: {
+            productId: true,
+            lineAmount: true,
+            quantity: true,
+            unitAmount: true,
+            invoice: { select: { date: true } }
+        }
+    });
+
+    // Aggregation buckets: productId -> monthKey -> { totalAmount, totalQty }
+    const buckets = new Map<string, Map<string, { totalAmount: number, totalQty: number }>>();
+
+    for (const item of lineItems) {
+        if (!item.productId || !item.invoice.date) continue;
+
+        // Rule 1: Use unitAmount if reliable? 
+        // Requirement says: "Define unitPrice... as lineAmount / quantity" to be safe against tax/total issues.
+        // We use the sum of lineAmounts divided by sum of quantities for the month (Weighted Average).
+        const amount = Number(item.lineAmount || 0);
+        const qty = Number(item.quantity || 0);
+
+        if (qty <= 0) continue;
+
+        const date = item.invoice.date;
+        const monthKey = `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}`;
+
+        if (!buckets.has(item.productId)) {
+            buckets.set(item.productId, new Map());
+        }
+        const prodMap = buckets.get(item.productId)!;
+        
+        if (!prodMap.has(monthKey)) {
+            prodMap.set(monthKey, { totalAmount: 0, totalQty: 0 });
+        }
+        const current = prodMap.get(monthKey)!;
+        
+        current.totalAmount += amount;
+        current.totalQty += qty;
+    }
+
+    // Compute final averages
+    const results = new Map<string, Map<string, number>>();
+    for (const [pid, months] of buckets.entries()) {
+        const monthMap = new Map<string, number>();
+        for (const [mKey, data] of months.entries()) {
+            if (data.totalQty > 0) {
+                monthMap.set(mKey, data.totalAmount / data.totalQty);
+            }
+        }
+        results.set(pid, monthMap);
+    }
+    
+    return results;
+}
+
 
 // --- Service Functions ---
 
@@ -170,72 +261,125 @@ export const supplierInsightsService = {
         averageMonthlyVariancePercent = avg * 100;
     }
 
-    // 4. Average Price Movement Last 3m (vs prior 3m)
-    const last3m = getFullCalendarMonths(3);
-    const prev3mStart = new Date(last3m.start);
-    prev3mStart.setMonth(prev3mStart.getMonth() - 3);
-    const prev3mEnd = new Date(last3m.start);
-    prev3mEnd.setDate(prev3mEnd.getDate() - 1);
+    // 4. Average Price Movement Last 6m (Recurring Items)
+    const last6mForPrice = getFullCalendarMonths(6);
+    const priceMovementStart = last6mForPrice.start;
+    const priceMovementEnd = last6mForPrice.end;
 
-    const getAvgPrices = async (start: Date, end: Date) => {
-      // Group by Product ID now!
-      // We only care about items linked to products for stable tracking.
-      const items = await prisma.xeroInvoiceLineItem.findMany({
-        where: {
-          productId: { not: null }, // Only linked items
-          invoice: {
-            organisationId,
-            date: { gte: start, lte: end },
-            status: { in: ['AUTHORISED', 'PAID'] }
-          },
-          quantity: { not: 0 }
+    // Fetch all line items for the last 6 months
+    const allLineItems = await prisma.xeroInvoiceLineItem.findMany({
+      where: {
+        invoice: {
+          organisationId,
+          date: { gte: priceMovementStart, lte: priceMovementEnd },
+          status: { in: ['AUTHORISED', 'PAID'] }
         },
-        select: {
-          productId: true,
-          quantity: true,
-          lineAmount: true
-        }
-      });
-      
-      const productMap = new Map<string, { totalQty: number, totalAmount: number }>();
-      
-      for (const item of items) {
-        const key = item.productId!;
-        const entry = productMap.get(key) || { totalQty: 0, totalAmount: 0 };
-        entry.totalQty += Number(item.quantity);
-        entry.totalAmount += Number(item.lineAmount);
-        productMap.set(key, entry);
-      }
-      
-      const prices = new Map<string, number>();
-      for (const [key, val] of productMap.entries()) {
-        if (val.totalQty > 0) {
-          prices.set(key, val.totalAmount / val.totalQty);
+        quantity: { gt: 0 }
+      },
+      select: {
+        description: true,
+        quantity: true,
+        lineAmount: true,
+        invoice: {
+          select: {
+            date: true,
+            supplierId: true
+          }
         }
       }
-      return prices;
-    };
+    });
 
-    const [pricesLast3m, pricesPrev3m] = await Promise.all([
-      getAvgPrices(last3m.start, last3m.end),
-      getAvgPrices(prev3mStart, prev3mEnd)
-    ]);
+    // Normalize and bucket by month & key
+    const monthKeyData: Record<string, Record<string, { totalLineAmount: number; totalQuantity: number }>> = {};
 
-    let sumPctChangePrices = 0;
-    let countMatches = 0;
-    
-    for (const [key, priceLast] of pricesLast3m.entries()) {
-      const pricePrev = pricesPrev3m.get(key);
-      if (pricePrev && pricePrev > 0) {
-        const change = (priceLast - pricePrev) / pricePrev;
-        if (Math.abs(change) < 5) { // Filter outliers
-            sumPctChangePrices += change;
-            countMatches++;
+    for (const item of allLineItems) {
+        const desc = (item.description || '').trim().toLowerCase();
+        if (!desc) continue;
+        
+        const supplierId = item.invoice.supplierId || 'unknown';
+        const key = `${supplierId}::${desc}`;
+        
+        const date = item.invoice.date;
+        if (!date) continue;
+        
+        const monthStart = new Date(date.getFullYear(), date.getMonth(), 1).toISOString();
+        
+        if (!monthKeyData[monthStart]) {
+            monthKeyData[monthStart] = {};
         }
-      }
+        if (!monthKeyData[monthStart][key]) {
+            monthKeyData[monthStart][key] = { totalLineAmount: 0, totalQuantity: 0 };
+        }
+        
+        monthKeyData[monthStart][key].totalLineAmount += Number(item.lineAmount || 0);
+        monthKeyData[monthStart][key].totalQuantity += Number(item.quantity || 0);
     }
+
+    // Sort months chronologically
+    const sortedMonths = Object.keys(monthKeyData).sort();
     
-    const averagePriceMovementLast3mPercent = countMatches > 0 ? (sumPctChangePrices / countMatches) * 100 : 0;
+    const priceMovementSeries: { monthLabel: string; percentChange: number | null }[] = [];
+    const validPriceChanges: number[] = [];
+
+    for (let i = 1; i < sortedMonths.length; i++) {
+        const prevMonthIso = sortedMonths[i - 1];
+        const currMonthIso = sortedMonths[i];
+        const prevMonthData = monthKeyData[prevMonthIso];
+        const currMonthData = monthKeyData[currMonthIso];
+        
+        const prevKeys = Object.keys(prevMonthData);
+        const currKeys = Object.keys(currMonthData);
+        const overlappingKeys = prevKeys.filter(k => currKeys.includes(k));
+        
+        let weightedSumChange = 0;
+        let totalWeight = 0;
+        
+        for (const key of overlappingKeys) {
+            const prevItem = prevMonthData[key];
+            const currItem = currMonthData[key];
+            
+            if (prevItem.totalQuantity <= 0 || currItem.totalQuantity <= 0) continue;
+            
+            const prevPrice = prevItem.totalLineAmount / prevItem.totalQuantity;
+            const currPrice = currItem.totalLineAmount / currItem.totalQuantity;
+            
+            if (prevPrice <= 0) continue;
+            
+            const priceChange = (currPrice - prevPrice) / prevPrice;
+            const weight = currItem.totalLineAmount; // Weight by current spend
+            
+            weightedSumChange += priceChange * weight;
+            totalWeight += weight;
+        }
+        
+        let percentChange: number | null = null;
+        if (overlappingKeys.length > 0 && totalWeight > 0) {
+            const weightedChange = weightedSumChange / totalWeight;
+            percentChange = weightedChange * 100;
+            validPriceChanges.push(percentChange);
+        }
+        
+        priceMovementSeries.push({
+            monthLabel: getMonthLabel(new Date(currMonthIso)),
+            percentChange
+        });
+    }
+
+    let averagePriceMovementLast3mPercent = 0;
+    let canCalculatePriceMovement = false;
+
+    if (validPriceChanges.length >= 3) {
+        const lastUpToThree = validPriceChanges.slice(-3); // Get last 3
+        const sum = lastUpToThree.reduce((a, b) => a + b, 0);
+        averagePriceMovementLast3mPercent = sum / lastUpToThree.length;
+        canCalculatePriceMovement = true;
+    } else {
+        averagePriceMovementLast3mPercent = 0;
+        canCalculatePriceMovement = false;
+    }
+
+    // 5. Forecast
+    const forecast = await forecastService.getForecastForOrgAndLocation(organisationId, locationId);
 
     return {
       totalSupplierSpendPerMonth,
@@ -243,7 +387,13 @@ export const supplierInsightsService = {
       totalSpendTrendSeries: series,
       averagePriceMovementLast3mPercent,
       averageMonthlyVariancePercent,
-      canCalculateVariance
+      canCalculateVariance,
+      priceMovementSeries,
+      canCalculatePriceMovement,
+      forecastedSpendNext30Days: forecast.forecast30DaysTotal,
+      forecastedSpendFixedNext30Days: forecast.forecast30DaysFixed,
+      forecastedSpendVariableNext30Days: forecast.forecast30DaysVariable,
+      forecastConfidence: forecast.forecastConfidence
     };
   },
 
@@ -308,6 +458,7 @@ export const supplierInsightsService = {
         
         if (Math.abs(percentChange) > 0.5) {
              results.push({
+               productId: latest.productId || latest.product?.id || 'unknown',
                productName: latest.product?.name || latest.description || 'Unknown',
                supplierName: latest.invoice.supplier?.name || 'Unknown',
                latestUnitPrice: latestPrice,
@@ -475,47 +626,31 @@ export const supplierInsightsService = {
     const skip = (page - 1) * pageSize;
     const last12m = getFullCalendarMonths(12);
 
-    // Build Where Clause for Products
+    // Build Where Clause
     const whereClause: Prisma.ProductWhereInput = {
         organisationId,
-        ...(locationId ? { locationId } : {}), // Strict location filtering if provided
+        ...(locationId ? { locationId } : {}),
     };
     
     if (params.search) {
         whereClause.OR = [
             { name: { contains: params.search, mode: 'insensitive' } },
             { productKey: { contains: params.search, mode: 'insensitive' } },
-            // Search by supplier name via relation (if set) OR invoices?
-            // Searching via invoices is heavy. 
-            // Ideally we search Product.supplier (primary).
             { supplier: { name: { contains: params.search, mode: 'insensitive' } } }
         ];
     }
 
-    // We need to get spend stats for these products.
-    // Option 1: Fetch all matching products, then aggregate stats (can be heavy if many products).
-    // Option 2: Aggregate line items first? No, we want Product list as source of truth now.
+    // 1. Fetch Paginated Products
+    // Note: Sorting by Spend still requires pre-aggregation if we want it perfect, 
+    // but for this fix we focus on Unit Cost accuracy.
     
-    // Let's fetch Products first (pagination applies here).
-    // BUT sorting by 'spend12m' requires knowing spend.
-    // If sorting by spend, we must aggregate first or join.
-    // Prisma doesn't support sorting by related aggregation easily.
-    
-    // Strategy:
-    // 1. If sort by static field (name), fetch paginated products, then hydration.
-    // 2. If sort by dynamic field (spend, price change), we must fetch ALL matching products stats, sort in memory, then paginate.
-    
-    // Given the requirement to scale, fetching ALL stats every time is risky if 10k products.
-    // However, for "Supplier Insights" usually < 1000 items active.
-    // We'll assume memory sort is okay for MVP of this refactor.
-    
-    // Fetch ALL matching products (lightweight)
+    // Lightweight fetch first
     const allProducts = await prisma.product.findMany({
         where: whereClause,
         select: { id: true, name: true, supplierId: true, supplier: { select: { name: true } } }
     });
     
-    // Bulk aggregate stats for these products
+    // We need Spend to sort by spend (default).
     const productIds = allProducts.map(p => p.id);
     
     const stats = await prisma.xeroInvoiceLineItem.groupBy({
@@ -523,7 +658,7 @@ export const supplierInsightsService = {
         where: {
             productId: { in: productIds },
             invoice: {
-                organisationId, // Redundant but safe
+                organisationId,
                 date: { gte: last12m.start, lte: last12m.end },
                 status: { in: ['AUTHORISED', 'PAID'] }
             }
@@ -536,26 +671,16 @@ export const supplierInsightsService = {
         if (s.productId) spendMap.set(s.productId, s._sum.lineAmount?.toNumber() || 0);
     });
     
-    // We also need "latest unit cost".
-    // This requires a query per product or a complex window function.
-    // Window function via raw query is best.
-    // OR: fetch latest line item for each product (in bulk? impossible in prisma easily).
-    // We can fetch all products' latest line ID?
-    // Let's lazily hydrate latest cost ONLY for the displayed page if we don't sort by it.
-    // If we sort by unitCost or priceChange, we are stuck.
-    // Let's assume we sort by Spend (default) or Name mostly.
-    
-    // If sort by Spend:
     let items = allProducts.map(p => ({
         productId: p.id,
         productName: p.name,
-        supplierName: p.supplier?.name || 'Unknown', // Primary supplier
-        latestUnitCost: 0, // Hydrate later
-        lastPriceChangePercent: 0, // Hydrate later
+        supplierName: p.supplier?.name || 'Unknown',
+        latestUnitCost: 0, 
+        lastPriceChangePercent: 0, 
         spend12m: spendMap.get(p.id) || 0
     }));
     
-    // Filter out zero spend if desired? Usually yes for "Insights".
+    // Default filter: only show items with spend (optional, but common for insights)
     items = items.filter(i => i.spend12m > 0);
     
     // Sort
@@ -565,106 +690,119 @@ export const supplierInsightsService = {
             const valB = b[params.sortBy as keyof typeof b] as string;
             return params.sortDirection === 'asc' ? valA.localeCompare(valB) : valB.localeCompare(valA);
         });
-    } else if (params.sortBy === 'spend12m') {
-        items.sort((a, b) => params.sortDirection === 'asc' ? a.spend12m - b.spend12m : b.spend12m - a.spend12m);
-    } 
-    // Note: Sorting by unitCost or lastPriceChangePercent is not supported efficiently here yet.
-    // We would need to hydrate all. For now, we ignore those sorts or treat as secondary.
-    // If user requests sort by cost, we could limit to top 500 then sort?
-    // Let's stick to spend/name for now as primary use cases.
-    else {
-         items.sort((a, b) => b.spend12m - a.spend12m);
+    } else {
+         // Default sort by spend desc
+         items.sort((a, b) => params.sortDirection === 'asc' ? a.spend12m - b.spend12m : b.spend12m - a.spend12m);
     }
     
     const totalItems = items.length;
     const totalPages = Math.ceil(totalItems / pageSize);
     const paginatedItems = items.slice(skip, skip + pageSize);
-    
-    // Hydrate Details for the slice
-    const hydratedItems = await Promise.all(paginatedItems.map(async (item) => {
-        // Fetch latest line for cost and supplier fallback
-        const latestLine = await prisma.xeroInvoiceLineItem.findFirst({
+
+    // 1.5 Resolve Missing Suppliers from Invoice History
+    const unknownProductIds = paginatedItems
+        .filter(p => p.supplierName === 'Unknown')
+        .map(p => p.productId);
+
+    if (unknownProductIds.length > 0) {
+        const resolvedSuppliers = await prisma.xeroInvoiceLineItem.findMany({
             where: {
-                productId: item.productId,
-                invoice: { organisationId, status: { in: ['AUTHORISED', 'PAID'] } }
+                productId: { in: unknownProductIds },
+                invoice: {
+                    status: { not: 'VOIDED' }
+                }
             },
-            include: { invoice: { include: { supplier: true } } },
-            orderBy: { invoice: { date: 'desc' } }
+            distinct: ['productId'],
+            orderBy: {
+                invoice: { date: 'desc' }
+            },
+            select: {
+                productId: true,
+                invoice: {
+                    select: {
+                        supplier: {
+                            select: { name: true }
+                        }
+                    }
+                }
+            }
         });
-        
-        let latestUnitCost = 0;
-        let supplierName = item.supplierName;
-        
-        if (latestLine) {
-            latestUnitCost = Number(latestLine.unitAmount || 0);
-            if (supplierName === 'Unknown' && latestLine.invoice.supplier) {
-                supplierName = latestLine.invoice.supplier.name;
+
+        const resolvedMap = new Map<string, string>();
+        for (const res of resolvedSuppliers) {
+            if (res.productId && res.invoice.supplier?.name) {
+                resolvedMap.set(res.productId, res.invoice.supplier.name);
             }
         }
-        
-        // Price Change
-        let lastPriceChangePercent = 0;
-        if (latestUnitCost > 0 && latestLine) {
-             // Find previous line (different price? or just previous in time)
-             // We need previous relative to latestLine
-             const prevLine = await prisma.xeroInvoiceLineItem.findFirst({
-                 where: {
-                     productId: item.productId,
-                     invoice: { 
-                         organisationId, 
-                         status: { in: ['AUTHORISED', 'PAID'] },
-                         date: { lt: latestLine.invoice.date || undefined } // strictly older
-                     }
-                 },
-                 orderBy: { invoice: { date: 'desc' } }
-             });
-             
-             if (prevLine && prevLine.unitAmount) {
-                 const prevCost = Number(prevLine.unitAmount);
-                 if (prevCost > 0) {
-                     lastPriceChangePercent = ((latestUnitCost - prevCost) / prevCost) * 100;
-                 }
-             }
+
+        for (const item of paginatedItems) {
+            if (item.supplierName === 'Unknown' && resolvedMap.has(item.productId)) {
+                item.supplierName = resolvedMap.get(item.productId)!;
+            }
         }
-        
-        return { ...item, latestUnitCost, supplierName, lastPriceChangePercent };
-    }));
+    }
+    
+    // 2. Hydrate Price Data Efficiently (Bulk)
+    // Fetch price history for the items on THIS page only, going back 3-6 months to find recent changes.
+    const pageProductIds = paginatedItems.map(p => p.productId);
+    const priceLookbackDate = subMonths(new Date(), 6); // Look back 6 months to find at least 2 data points
+    
+    const priceMap = await computeWeightedAveragePrices(organisationId, pageProductIds, priceLookbackDate, new Date());
+
+    const hydratedItems = paginatedItems.map(item => {
+        const productPrices = priceMap.get(item.productId);
+        let latestUnitCost = 0;
+        let lastPriceChangePercent = 0;
+
+        if (productPrices && productPrices.size > 0) {
+            // Sort months desc
+            const sortedMonths = Array.from(productPrices.keys()).sort().reverse();
+            
+            // Latest month with data
+            const latestMonth = sortedMonths[0];
+            latestUnitCost = productPrices.get(latestMonth) || 0;
+
+            // Previous month with data
+            if (sortedMonths.length > 1) {
+                const prevMonth = sortedMonths[1];
+                const prevCost = productPrices.get(prevMonth) || 0;
+                if (prevCost > 0) {
+                    lastPriceChangePercent = ((latestUnitCost - prevCost) / prevCost) * 100;
+                }
+            }
+        }
+
+        return { ...item, latestUnitCost, lastPriceChangePercent };
+    });
     
     return {
         items: hydratedItems,
-        pagination: {
-            page,
-            pageSize,
-            totalItems,
-            totalPages
-        }
+        pagination: { page, pageSize, totalItems, totalPages }
     };
   },
 
   async getProductDetail(organisationId: string, productId: string): Promise<ProductDetail | null> {
-    // 1. Verify Product ownership
     const product = await prisma.product.findUnique({
         where: { id: productId },
         include: { supplier: true }
     });
     
-    if (!product || product.organisationId !== organisationId) {
-        // 404 or null
-        return null;
-    }
+    if (!product || product.organisationId !== organisationId) return null;
     
-    // 2. Fetch Line Items
+    // Date ranges
     const now = new Date();
-    const currentMonthStart = startOfMonth(now);
-    const windowStart = startOfMonth(subMonths(currentMonthStart, 12));
+    const startOfCurrentMonth = startOfMonth(now); 
+    const windowStart = startOfMonth(subMonths(startOfCurrentMonth, 12)); // Last 12 full months
     
+    // 1. Calculate Stats (Spend, Qty) using raw aggregation
+    // We can reuse the raw line items for everything
     const lineItems = await prisma.xeroInvoiceLineItem.findMany({
         where: {
             productId: product.id,
             invoice: {
                 organisationId,
                 status: { in: ['AUTHORISED', 'PAID'] },
-                date: { gte: windowStart, lt: currentMonthStart }
+                date: { gte: windowStart } // Get up to now for stats?
             }
         },
         include: {
@@ -673,52 +811,60 @@ export const supplierInsightsService = {
         orderBy: { invoice: { date: 'asc' } }
     });
     
-    // Defaults
     let totalSpend12m = 0;
     let quantityPurchased12m = 0;
     let spendFirst6m = 0;
     let spendLast6m = 0;
-    const splitDate = subMonths(currentMonthStart, 6);
-    const supplierSpendMap = new Map<string, { name: string, total: number }>();
+    const splitDate = subMonths(now, 6);
     const categorySpendMap = new Map<string, number>();
-    const priceHistoryMap = new Map<string, { totalAmount: number, totalQty: number, date: Date }>();
-    
+    const supplierSpendMap = new Map<string, { name: string, total: number }>();
+
+    // Price history buckets
+    const monthlyBuckets = new Map<string, { totalAmount: number, totalQty: number, date: Date }>();
+
     for (const item of lineItems) {
         const amount = Number(item.lineAmount || 0);
         const qty = Number(item.quantity || 0);
         const date = item.invoice.date;
         if (!date) continue;
         
+        // Stats
         totalSpend12m += amount;
         quantityPurchased12m += qty;
         
         if (date < splitDate) spendFirst6m += amount;
         else spendLast6m += amount;
-        
+
+        // Supplier resolution
         if (item.invoice.supplier) {
-            const s = item.invoice.supplier;
-            const current = supplierSpendMap.get(s.id) || { name: s.name, total: 0 };
-            current.total += amount;
-            supplierSpendMap.set(s.id, current);
+             const s = item.invoice.supplier;
+             const cur = supplierSpendMap.get(s.id) || { name: s.name, total: 0 };
+             cur.total += amount;
+             supplierSpendMap.set(s.id, cur);
         }
-        
+
+        // Category
         const catName = getCategoryName(item.accountCode);
         categorySpendMap.set(catName, (categorySpendMap.get(catName) || 0) + amount);
-        
-        const sortKey = `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}`;
-        const hist = priceHistoryMap.get(sortKey) || { totalAmount: 0, totalQty: 0, date };
-        hist.totalAmount += amount;
-        hist.totalQty += qty;
-        priceHistoryMap.set(sortKey, hist);
+
+        // Price History (Only if qty > 0)
+        if (qty > 0) {
+            const monthKey = `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}`;
+            const bucket = monthlyBuckets.get(monthKey) || { totalAmount: 0, totalQty: 0, date };
+            bucket.totalAmount += amount;
+            bucket.totalQty += qty;
+            monthlyBuckets.set(monthKey, bucket);
+        }
     }
-    
+
+    // Averages
     const averageMonthlySpend = totalSpend12m / 12;
     let spendTrend12mPercent = 0;
     if (spendFirst6m > 0) {
         spendTrend12mPercent = ((spendLast6m - spendFirst6m) / spendFirst6m) * 100;
     }
-    
-    // Resolve Supplier (Product.supplierId > highest spend)
+
+    // Resolve Supplier Name (Primary or Most Spend)
     let supplierName = product.supplier?.name || 'Unknown';
     if (!product.supplier) {
         let max = -1;
@@ -729,7 +875,7 @@ export const supplierInsightsService = {
             }
         }
     }
-    
+
     // Resolve Category
     let categoryName = 'Uncategorized';
     let maxCat = -1;
@@ -739,17 +885,40 @@ export const supplierInsightsService = {
             categoryName = name;
         }
     }
-    
-    const sortedMonths = Array.from(priceHistoryMap.keys()).sort();
-    const priceHistory = sortedMonths.map(key => {
-        const val = priceHistoryMap.get(key)!;
-        const avgPrice = val.totalQty !== 0 ? val.totalAmount / val.totalQty : 0;
+
+    // Build History Array
+    const sortedKeys = Array.from(monthlyBuckets.keys()).sort();
+    const priceHistory = sortedKeys.map(key => {
+        const b = monthlyBuckets.get(key)!;
         return {
-            monthLabel: getMonthLabel(val.date),
-            averageUnitPrice: avgPrice
+            monthLabel: getMonthLabel(b.date),
+            averageUnitPrice: b.totalQty > 0 ? b.totalAmount / b.totalQty : null // Weighted Average or null
         };
     });
-    
+
+    // Calculate Smoothed Trend (Rolling 3-month)
+    const validPriceHistory = priceHistory.filter(p => p.averageUnitPrice !== null && p.averageUnitPrice > 0);
+    let productPriceTrendPercent = 0;
+    let canCalculateProductPriceTrend = false;
+
+    if (validPriceHistory.length >= 4) {
+        const windowSize = Math.min(validPriceHistory.length, 6);
+        const recentHistory = validPriceHistory.slice(-windowSize);
+
+        const wLatest = recentHistory.slice(-3);
+        const wPrev = recentHistory.slice(0, recentHistory.length - 3); // Whatever remains before latest 3
+
+        if (wLatest.length > 0 && wPrev.length > 0) {
+            const avgLatest = wLatest.reduce((sum, p) => sum + (p.averageUnitPrice || 0), 0) / wLatest.length;
+            const avgPrev = wPrev.reduce((sum, p) => sum + (p.averageUnitPrice || 0), 0) / wPrev.length;
+
+            if (avgPrev > 0) {
+                productPriceTrendPercent = ((avgLatest - avgPrev) / avgPrev) * 100;
+                canCalculateProductPriceTrend = true;
+            }
+        }
+    }
+
     return {
         productId: product.id,
         productName: product.name,
@@ -761,7 +930,11 @@ export const supplierInsightsService = {
             quantityPurchased12m,
             spendTrend12mPercent
         },
-        priceHistory
+        priceHistory,
+        // New Fields for Trend Tile
+        unitPriceHistory: priceHistory, // Same as priceHistory but explicit per plan
+        productPriceTrendPercent,
+        canCalculateProductPriceTrend
     };
   }
 };
