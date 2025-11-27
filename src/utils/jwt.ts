@@ -1,19 +1,14 @@
 import jwt from 'jsonwebtoken';
 import { config } from '../config/env';
 
-export type TokenType = 
-  | 'access_token_login'
-  | 'refresh_token_login'
-  | 'access_token_company'
-  | 'refresh_token_company'
-  | 'access_token'
-  | 'refresh_token';
+export type AuthTokenType = 'login' | 'organisation' | 'location';
 
 export interface TokenPayload {
   sub: string; // userId
   orgId?: string;
   locId?: string;
-  type: TokenType;
+  tokenType: AuthTokenType;
+  roles: string[];
   // Standard JWT claims
   iat?: number;
   exp?: number;
@@ -30,4 +25,3 @@ export function signRefreshToken(payload: Omit<TokenPayload, 'iat' | 'exp'>, exp
 export function verifyToken(token: string): TokenPayload {
   return jwt.verify(token, config.JWT_VERIFY_SECRET) as TokenPayload;
 }
-

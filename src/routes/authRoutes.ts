@@ -2,7 +2,7 @@ import { FastifyInstance } from 'fastify';
 import { authController } from '../controllers/authController';
 import { LoginRequest, RegisterRequest, SelectOrganisationRequest, SelectLocationRequest, RefreshTokenRequest, RegisterOnboardRequestSchema } from '../dtos/authDtos';
 import { ZodTypeProvider } from 'fastify-type-provider-zod';
-import authFromJwt from '../plugins/authFromJwt';
+import authContextPlugin from '../plugins/authContext';
 
 export default async function authRoutes(fastify: FastifyInstance) {
   const app = fastify.withTypeProvider<ZodTypeProvider>();
@@ -35,7 +35,7 @@ export default async function authRoutes(fastify: FastifyInstance) {
 
   // Protected Routes
   app.register(async (protectedApp) => {
-    protectedApp.register(authFromJwt);
+    protectedApp.register(authContextPlugin);
     const typedApp = protectedApp.withTypeProvider<ZodTypeProvider>();
 
     typedApp.post('/select-organisation', {

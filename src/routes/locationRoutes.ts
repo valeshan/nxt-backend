@@ -2,11 +2,11 @@ import { FastifyInstance } from 'fastify';
 import { locationController } from '../controllers/locationController';
 import { CreateLocationRequest } from '../dtos/authDtos';
 import { ZodTypeProvider } from 'fastify-type-provider-zod';
-import authFromJwt from '../plugins/authFromJwt';
+import authContextPlugin from '../plugins/authContext';
 import z from 'zod';
 
 export default async function locationRoutes(fastify: FastifyInstance) {
-  fastify.register(authFromJwt);
+  fastify.register(authContextPlugin);
   const app = fastify.withTypeProvider<ZodTypeProvider>();
 
   app.post('/organisations/:organisationId/locations', {

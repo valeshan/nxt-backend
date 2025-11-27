@@ -33,6 +33,11 @@ export function buildApp(): FastifyInstance {
   }
 
   // Register Routes
+  // Ensure Auth Plugin is registered within routes (as per current pattern)
+  // or register it globally here if we want to enforce it for everything.
+  // We stuck to per-route registration as per plan instruction "Registration Order: Ensure this plugin is registered before tenant-aware routes".
+  // In our case, we did it inside the route files.
+  
   app.register(authRoutes, { prefix: '/auth' });
   app.register(organisationRoutes, { prefix: '/organisations' });
   // locationRoutes handles its own path prefix currently: /organisations/:organisationId/locations
@@ -55,24 +60,34 @@ export function buildApp(): FastifyInstance {
 
     // Capture error in Sentry with context
     Sentry.withScope((scope) => {
+      const authContext = request.authContext;
+
       // Add request context
       scope.setContext('request', {
         method: request.method,
         url: request.url,
         headers: {
+          // Keep for debug visibility
           'user-id': request.headers['x-user-id'],
           'org-id': request.headers['x-org-id'],
+          'location-id': request.headers['x-location-id'],
         },
+        authContext: authContext || 'Not present',
       });
 
-      // Add user context if available
-      const userId = request.headers['x-user-id'];
-      const orgId = request.headers['x-org-id'];
-      if (userId) {
+      // Add user context if available from AuthContext (Single Source of Truth)
+      if (authContext && authContext.userId) {
         scope.setUser({
-          id: userId as string,
-          organization_id: orgId as string,
+          id: authContext.userId,
+          organization_id: authContext.organisationId || undefined,
+          username: `Token:${authContext.tokenType}`,
         });
+      } else {
+        // Fallback to headers ONLY for debug context, making it clear it's untrusted
+        const userId = request.headers['x-user-id'];
+        if (userId) {
+           scope.setTag('user_id_header', String(userId));
+        }
       }
 
       // Set tags

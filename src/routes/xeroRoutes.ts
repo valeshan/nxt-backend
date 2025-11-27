@@ -3,7 +3,7 @@ import { ZodTypeProvider } from 'fastify-type-provider-zod';
 import { createConnectionRequestSchema, linkLocationsRequestSchema, listConnectionsQuerySchema, xeroAuthoriseCallbackRequestSchema } from '../dtos/xeroDtos';
 import { XeroController } from '../controllers/xeroController';
 import z from 'zod';
-import authFromJwt from '../plugins/authFromJwt';
+import authContextPlugin from '../plugins/authContext';
 
 const xeroController = new XeroController();
 
@@ -29,7 +29,7 @@ export default async function xeroRoutes(fastify: FastifyInstance) {
 
   // Protected Routes
   app.register(async (protectedApp) => {
-    protectedApp.register(authFromJwt);
+    protectedApp.register(authContextPlugin);
     const typedApp = protectedApp.withTypeProvider<ZodTypeProvider>();
 
     typedApp.post(

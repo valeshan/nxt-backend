@@ -1,7 +1,7 @@
 import { FastifyInstance } from 'fastify';
 import { ZodTypeProvider } from 'fastify-type-provider-zod';
 import { SupplierController } from '../controllers/supplierController';
-import authFromJwt from '../plugins/authFromJwt';
+import authContextPlugin from '../plugins/authContext';
 import z from 'zod';
 
 const supplierController = new SupplierController();
@@ -10,7 +10,7 @@ export default async function supplierRoutes(fastify: FastifyInstance) {
   const app = fastify.withTypeProvider<ZodTypeProvider>();
 
   app.register(async (protectedApp) => {
-      protectedApp.register(authFromJwt);
+      protectedApp.register(authContextPlugin);
       const typedApp = protectedApp.withTypeProvider<ZodTypeProvider>();
 
       typedApp.get(
@@ -77,4 +77,3 @@ export default async function supplierRoutes(fastify: FastifyInstance) {
       );
   });
 }
-

@@ -5,7 +5,7 @@ import { organisationRepository } from '../repositories/organisationRepository';
 import { locationRepository } from '../repositories/locationRepository';
 import { onboardingSessionRepository } from '../repositories/onboardingSessionRepository';
 import { hashPassword, verifyPassword } from '../utils/password';
-import { signAccessToken, signRefreshToken, verifyToken, TokenType } from '../utils/jwt';
+import { signAccessToken, signRefreshToken, verifyToken, AuthTokenType } from '../utils/jwt';
 import { Prisma, OrganisationRole } from '@prisma/client';
 import { RegisterOnboardRequestSchema } from '../dtos/authDtos';
 import { z } from 'zod';
@@ -180,13 +180,15 @@ export const authService = {
         sub: user.id,
         orgId: organisation.id,
         locId: location.id,
-        type: 'access_token',
+        tokenType: 'location',
+        roles: [OrganisationRole.owner],
       });
       const refreshToken = signRefreshToken({
         sub: user.id,
         orgId: organisation.id,
         locId: location.id,
-        type: 'refresh_token',
+        tokenType: 'location',
+        roles: [OrganisationRole.owner],
       });
 
       // 8. Update Onboarding Session if present
@@ -278,8 +280,8 @@ export const authService = {
       role: m.role,
     }));
 
-    const accessToken = signAccessToken({ sub: user.id, type: 'access_token_login' });
-    const refreshToken = signRefreshToken({ sub: user.id, type: 'refresh_token_login' });
+    const accessToken = signAccessToken({ sub: user.id, tokenType: 'login', roles: [] });
+    const refreshToken = signRefreshToken({ sub: user.id, tokenType: 'login', roles: [] });
 
     return {
       user_id: user.id,
@@ -300,14 +302,11 @@ export const authService = {
 
     const locations = await locationRepository.listForOrganisation(organisationId);
     
-    const accessToken = signAccessToken({ sub: userId, orgId: organisationId, type: 'access_token_company' });
-    const refreshToken = signRefreshToken({ sub: userId, orgId: organisationId, type: 'refresh_token_company' });
+    const roles = [membership.role];
+    const accessToken = signAccessToken({ sub: userId, orgId: organisationId, tokenType: 'organisation', roles });
+    const refreshToken = signRefreshToken({ sub: userId, orgId: organisationId, tokenType: 'organisation', roles });
 
     // Return structure similar to BE1 (implied based on login return + locations)
-    // BE1 select-organisation usually returns token + maybe locations?
-    // The prompt says: "return identical structure to BE1".
-    // Usually this means: access_token, refresh_token, locations?
-    // I will assume standard token response + locations.
     return {
       access_token: accessToken,
       refresh_token: refreshToken,
@@ -330,18 +329,21 @@ export const authService = {
     }
 
     const settings = await userSettingsRepository.getForUser(userId);
-
+    
+    const roles = [membership.role];
     const accessToken = signAccessToken({ 
       sub: userId, 
       orgId: location.organisationId, 
       locId: locationId, 
-      type: 'access_token' 
+      tokenType: 'location',
+      roles
     });
     const refreshToken = signRefreshToken({ 
       sub: userId, 
       orgId: location.organisationId, 
       locId: locationId, 
-      type: 'refresh_token' 
+      tokenType: 'location',
+      roles
     });
 
     return {
@@ -362,8 +364,8 @@ export const authService = {
     }
 
     // Check types
-    const validTypes = ['refresh_token_login', 'refresh_token_company', 'refresh_token'];
-    if (!validTypes.includes(decoded.type)) {
+    const validTypes: AuthTokenType[] = ['login', 'organisation', 'location'];
+    if (!validTypes.includes(decoded.tokenType)) {
       throw { statusCode: 401, message: 'Invalid token type for refresh' };
     }
 
@@ -373,14 +375,14 @@ export const authService = {
       throw { statusCode: 401, message: 'User not found' };
     }
 
-    let newAccessType: TokenType;
-    let newRefreshType: TokenType;
+    let newTokenTokenType: AuthTokenType;
     let extraPayload: any = {};
+    let roles: string[] = [];
 
-    if (decoded.type === 'refresh_token_login') {
-      newAccessType = 'access_token_login';
-      newRefreshType = 'refresh_token_login';
-    } else if (decoded.type === 'refresh_token_company') {
+    if (decoded.tokenType === 'login') {
+      newTokenTokenType = 'login';
+      roles = [];
+    } else if (decoded.tokenType === 'organisation') {
       const orgId = decoded.orgId;
       if (!orgId) throw { statusCode: 401, message: 'Missing orgId in token' };
 
@@ -388,11 +390,11 @@ export const authService = {
       const membership = await userOrganisationRepository.findMembership(userId, orgId);
       if (!membership) throw { statusCode: 403, message: 'Membership invalid' };
 
-      newAccessType = 'access_token_company';
-      newRefreshType = 'refresh_token_company';
+      newTokenTokenType = 'organisation';
       extraPayload = { orgId };
+      roles = [membership.role];
     } else {
-      // refresh_token (final)
+      // location
       const orgId = decoded.orgId;
       const locId = decoded.locId;
       if (!orgId || !locId) throw { statusCode: 401, message: 'Missing context in token' };
@@ -407,13 +409,13 @@ export const authService = {
       const membership = await userOrganisationRepository.findMembership(userId, orgId);
       if (!membership) throw { statusCode: 403, message: 'Membership invalid' };
 
-      newAccessType = 'access_token';
-      newRefreshType = 'refresh_token';
+      newTokenTokenType = 'location';
       extraPayload = { orgId, locId };
+      roles = [membership.role];
     }
 
-    const newAccessToken = signAccessToken({ sub: userId, type: newAccessType, ...extraPayload });
-    const newRefreshToken = signRefreshToken({ sub: userId, type: newRefreshType, ...extraPayload });
+    const newAccessToken = signAccessToken({ sub: userId, tokenType: newTokenTokenType, roles, ...extraPayload });
+    const newRefreshToken = signRefreshToken({ sub: userId, tokenType: newTokenTokenType, roles, ...extraPayload });
 
     return {
       access_token: newAccessToken,

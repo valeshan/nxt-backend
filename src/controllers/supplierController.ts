@@ -7,17 +7,23 @@ export class SupplierController {
   
   // Helper for org access validation
   private validateOrgAccess(request: FastifyRequest, targetOrgId?: string) {
-    const user = request.user as any; // Using any as types might need adjustment
-    if (!user || !user.orgId) {
-       throw { statusCode: 401, message: 'Unauthorized' };
+    const { organisationId, tokenType } = request.authContext;
+    
+    // Require org context
+    if (!organisationId) {
+       throw { statusCode: 403, message: 'Forbidden: Organisation context required' };
     }
     
+    // Ensure token type is appropriate (org or location)
+    if (tokenType !== 'organisation' && tokenType !== 'location') {
+        throw { statusCode: 403, message: 'Forbidden: Invalid token type' };
+    }
+
     // If a specific target org is requested, check against token
-    // Otherwise, we usually just use the token's orgId
-    if (targetOrgId && targetOrgId !== user.orgId) {
+    if (targetOrgId && targetOrgId !== organisationId) {
        throw { statusCode: 403, message: 'Forbidden' };
     }
-    return user.orgId;
+    return organisationId;
   }
 
   listSuppliers = async (request: FastifyRequest, reply: FastifyReply) => {

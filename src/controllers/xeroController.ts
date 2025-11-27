@@ -6,16 +6,21 @@ const xeroService = new XeroService();
 
 export class XeroController {
   private validateOrgAccess(request: FastifyRequest, targetOrgId: string) {
-    const { orgId, tokenType } = request.user;
-    const allowedTypes = ['access_token_company', 'access_token'];
+    const { organisationId, tokenType } = request.authContext;
     
-    if (!orgId || !tokenType || !allowedTypes.includes(tokenType)) {
+    if (!organisationId) {
        const error: any = new Error('Organisation context required');
        error.statusCode = 403;
        throw error;
     }
+    
+    if (tokenType !== 'organisation' && tokenType !== 'location') {
+       const error: any = new Error('Forbidden: Invalid token type');
+       error.statusCode = 403;
+       throw error;
+    }
 
-    if (orgId !== targetOrgId) {
+    if (organisationId !== targetOrgId) {
        const error: any = new Error('Token organisation mismatch');
        error.statusCode = 403;
        throw error;
@@ -27,8 +32,7 @@ export class XeroController {
     reply: FastifyReply
   ) => {
     this.validateOrgAccess(request, request.body.organisationId);
-    // request.user is populated by authFromJwt, userId is mapped from sub
-    const userId = request.user?.userId;
+    const userId = request.authContext.userId;
     const result = await xeroService.createConnection({
         ...request.body,
         userId

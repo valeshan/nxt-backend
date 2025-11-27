@@ -36,15 +36,14 @@ export const authController = {
 
   async selectOrganisation(request: FastifyRequest<{ Body: z.infer<typeof SelectOrganisationRequest> }>, reply: FastifyReply) {
     const { organisationId } = request.body;
-    // User ID comes from the auth token (login token expected)
-    const userId = request.user.userId; 
+    const userId = request.authContext.userId; 
     const result = await authService.selectOrganisation(userId, organisationId);
     return reply.send(result);
   },
 
   async selectLocation(request: FastifyRequest<{ Body: z.infer<typeof SelectLocationRequest> }>, reply: FastifyReply) {
     const { locationId } = request.body;
-    const userId = request.user.userId;
+    const userId = request.authContext.userId;
     const result = await authService.selectLocation(userId, locationId);
     return reply.send(result);
   },

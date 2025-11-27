@@ -2,22 +2,19 @@ import { FastifyInstance } from 'fastify';
 import { ZodTypeProvider } from 'fastify-type-provider-zod';
 import { z } from 'zod';
 import { supplierInsightsService } from '../services/supplierInsightsService';
+import authContextPlugin from '../plugins/authContext';
 
-export default async function supplierInsightsRoutes(app: FastifyInstance) {
-  const server = app.withTypeProvider<ZodTypeProvider>();
+export default async function supplierInsightsRoutes(fastify: FastifyInstance) {
+  // Register Auth Plugin for all routes in this file
+  fastify.register(authContextPlugin);
 
-  // Middleware/hook to ensure x-org-id is present?
-  // Assuming global auth middleware or per-route check. 
-  // For now, we extract from headers.
+  const app = fastify.withTypeProvider<ZodTypeProvider>();
 
-  server.get('/summary', {
+  app.get('/summary', {
     schema: {
       tags: ['Supplier Insights'],
       summary: 'Get supplier spend summary and charts data',
-      headers: z.object({
-        'x-org-id': z.string().uuid(),
-        'x-location-id': z.string().uuid().optional()
-      }).passthrough(), // allow other headers
+      // Removed headers validation
       response: {
         200: z.object({
             summaryCards: z.object({
@@ -69,11 +66,17 @@ export default async function supplierInsightsRoutes(app: FastifyInstance) {
       }
     }
   }, async (request, reply) => {
-    const organisationId = request.headers['x-org-id'] as string;
-    const locationId = request.headers['x-location-id'] as string | undefined;
+    const { organisationId, locationId, tokenType } = request.authContext;
 
     if (!organisationId) {
+      // Should not happen if auth passed and we enforce org token, but safer to check
       return reply.status(400).send({ error: { code: 'MISSING_ORG_ID', message: 'Organisation ID is required' } } as any);
+    }
+
+    // Guard: Must be location token for this route (as per plan)
+    // "In location-only routes (e.g. /supplier-insights/...), explicitly assert: tokenType === 'location' && locationId"
+    if (tokenType !== 'location' || !locationId) {
+       return reply.status(403).send({ error: { code: 'FORBIDDEN', message: 'Location context required' } } as any);
     }
 
     const [summary, recentPriceChanges, spendBreakdown, alerts] = await Promise.all([
@@ -91,14 +94,11 @@ export default async function supplierInsightsRoutes(app: FastifyInstance) {
     };
   });
 
-  server.get('/products', {
+  app.get('/products', {
     schema: {
       tags: ['Supplier Insights'],
       summary: 'Get all products with pagination',
-      headers: z.object({
-        'x-org-id': z.string().uuid(),
-        'x-location-id': z.string().uuid().optional()
-      }).passthrough(),
+      // Removed headers validation
       querystring: z.object({
         page: z.coerce.number().default(1),
         pageSize: z.coerce.number().default(20),
@@ -126,24 +126,24 @@ export default async function supplierInsightsRoutes(app: FastifyInstance) {
       }
     }
   }, async (request, reply) => {
-    const organisationId = request.headers['x-org-id'] as string;
-    const locationId = request.headers['x-location-id'] as string | undefined;
+    const { organisationId, locationId, tokenType } = request.authContext;
 
     if (!organisationId) {
         return reply.status(400).send({ error: { code: 'MISSING_ORG_ID', message: 'Organisation ID is required' } } as any);
+    }
+    
+    if (tokenType !== 'location' || !locationId) {
+       return reply.status(403).send({ error: { code: 'FORBIDDEN', message: 'Location context required' } } as any);
     }
 
     return supplierInsightsService.getProducts(organisationId, locationId, request.query);
   });
 
-  server.get('/products/:productId', {
+  app.get('/products/:productId', {
     schema: {
         tags: ['Supplier Insights'],
         summary: 'Get product details',
-        headers: z.object({
-            'x-org-id': z.string().uuid(),
-            'x-location-id': z.string().uuid().optional()
-        }).passthrough(),
+        // Removed headers validation
         params: z.object({
             productId: z.string().uuid()
         }),
@@ -173,11 +173,15 @@ export default async function supplierInsightsRoutes(app: FastifyInstance) {
         }
     }
   }, async (request, reply) => {
-    const organisationId = request.headers['x-org-id'] as string;
+    const { organisationId, locationId, tokenType } = request.authContext;
     const { productId } = request.params;
 
     if (!organisationId) {
         return reply.status(400).send({ error: { code: 'MISSING_ORG_ID', message: 'Organisation ID is required' } } as any);
+    }
+
+    if (tokenType !== 'location' || !locationId) {
+       return reply.status(403).send({ error: { code: 'FORBIDDEN', message: 'Location context required' } } as any);
     }
 
     try {
@@ -191,4 +195,3 @@ export default async function supplierInsightsRoutes(app: FastifyInstance) {
     }
   });
 }
-
