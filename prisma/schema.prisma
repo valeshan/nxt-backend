@@ -33,6 +33,7 @@ model Organisation {
   xeroLocationLinks XeroLocationLink[]
   suppliers Supplier[]
   xeroInvoices XeroInvoice[]
+  products  Product[]
 }
 
 model Location {
@@ -160,6 +161,7 @@ model Supplier {
   organisation Organisation         @relation(fields: [organisationId], references: [id])
   invoices     XeroInvoice[]
   sourceLinks  SupplierSourceLink[]
+  products     Product[]
 
   @@index([organisationId])
   @@index([normalizedName])
@@ -178,6 +180,25 @@ model SupplierSourceLink {
   supplier Supplier @relation(fields: [supplierId], references: [id])
 
   @@index([organisationId, sourceSystem, externalId])
+}
+
+model Product {
+  id             String   @id @default(uuid())
+  organisationId String
+  locationId     String
+  supplierId     String?
+  productKey     String   // normalized stable key (lowercase description/itemCode)
+  name           String   // human-friendly label
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  organisation Organisation @relation(fields: [organisationId], references: [id])
+  supplier     Supplier?    @relation(fields: [supplierId], references: [id])
+  
+  lineItems    XeroInvoiceLineItem[]
+
+  @@unique([organisationId, locationId, productKey])
+  @@index([organisationId, locationId])
 }
 
 model XeroInvoice {
@@ -222,9 +243,13 @@ model XeroInvoiceLineItem {
   itemCode     String?
   accountCode  String?
   
+  productId    String?
+  product      Product?    @relation(fields: [productId], references: [id])
+  
   invoice      XeroInvoice @relation(fields: [invoiceId], references: [id], onDelete: Cascade)
 
   @@index([invoiceId])
+  @@index([productId])
 }
 
 enum SupplierSourceType {
@@ -244,4 +269,17 @@ enum SupplierSourceSystem {
   XERO
   OCR
   MANUAL
+}
+
+model XeroSyncLog {
+  id             String   @id @default(uuid())
+  organisationId String
+  xeroConnectionId String
+  lastModifiedDateProcessed DateTime?
+  lastRunAt      DateTime @default(now())
+  status         String   // SUCCESS, FAILED, IN_PROGRESS
+  message        String?
+  
+  @@index([organisationId])
+  @@index([xeroConnectionId])
 }

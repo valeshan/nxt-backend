@@ -10,11 +10,13 @@ import { Prisma, OrganisationRole } from '@prisma/client';
 import { RegisterOnboardRequestSchema } from '../dtos/authDtos';
 import { z } from 'zod';
 import { XeroService } from './xeroService';
+import { XeroSyncService } from './xeroSyncService';
 import prisma from '../infrastructure/prismaClient';
 
 type RegisterOnboardInput = z.infer<typeof RegisterOnboardRequestSchema>;
 
 const xeroService = new XeroService();
+const xeroSyncService = new XeroSyncService();
 
 export const authService = {
   async registerUser(email: string, password: string, name?: string) {
@@ -101,6 +103,8 @@ export const authService = {
 
     // Execute all DB operations in a single transaction
     console.log('[AuthService] Starting database transaction');
+    let connectionId: string | undefined;
+    
     const result = await prisma.$transaction(async (tx) => {
       // Determine organisation and location names
       const orgName = hasXero ? xeroData!.tenantName : input.venueName!;
@@ -154,7 +158,7 @@ export const authService = {
       // 6. For Xero path: Create XeroConnection and XeroLocationLink
       if (hasXero && xeroData) {
         console.log('[AuthService] Creating XeroConnection');
-        await xeroService.persistXeroConnectionForOrg({
+        const conn = await xeroService.persistXeroConnectionForOrg({
           tx,
           userId: user.id,
           organisationId: organisation.id,
@@ -167,7 +171,8 @@ export const authService = {
           xeroCode: input.xeroCode,   // Store for audit/debugging
           xeroState: input.xeroState, // Store for audit/debugging
         });
-        console.log('[AuthService] XeroConnection created');
+        connectionId = conn.connectionId;
+        console.log('[AuthService] XeroConnection created', { connectionId });
       }
 
       // 7. Issue final location-level tokens
@@ -184,6 +189,16 @@ export const authService = {
         type: 'refresh_token',
       });
 
+      // 8. Update Onboarding Session if present
+      if (input.onboardingSessionId) {
+         try {
+           await onboardingSessionRepository.completeSession(input.onboardingSessionId, user.email);
+           console.log('[AuthService] Onboarding session marked complete', { sessionId: input.onboardingSessionId });
+         } catch (e) {
+           console.warn('[AuthService] Failed to complete onboarding session (non-fatal)', e);
+         }
+      }
+
       return {
         user,
         organisation,
@@ -195,10 +210,11 @@ export const authService = {
 
     console.log('[AuthService] Transaction completed successfully');
 
-    // 8. For Xero path: Test the API connection to verify it works
-    if (hasXero && xeroData) {
-      console.log('[AuthService] Testing Xero API connection');
+    // 8. For Xero path: Trigger Backfill & Test Connection
+    if (hasXero && xeroData && connectionId) {
+      // Test Connection (Verification)
       try {
+        console.log('[AuthService] Testing Xero API connection');
         await xeroService.testXeroConnection({
           accessToken: xeroData.accessToken,
           refreshToken: xeroData.refreshToken,
@@ -206,12 +222,16 @@ export const authService = {
         });
         console.log('[AuthService] Xero API connection test successful');
       } catch (testError: any) {
-        // Log error but don't fail signup - connection is created, test is just verification
         console.error('[AuthService] Xero API connection test failed (non-blocking)', {
           error: testError.message,
-          tenantId: xeroData.tenantId,
         });
       }
+
+      // Trigger Async Backfill
+      console.log('[AuthService] Triggering initial backfill sync');
+      xeroSyncService.syncInvoices(result.organisation.id, connectionId)
+        .then(() => console.log(`[AuthService] Initial sync completed for org ${result.organisation.id}`))
+        .catch(err => console.error(`[AuthService] Initial sync failed for org ${result.organisation.id}`, err));
     }
 
     // Return response in BE2 format

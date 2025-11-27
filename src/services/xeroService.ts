@@ -1,6 +1,6 @@
 import { XeroConnectionRepository } from '../repositories/xeroConnectionRepository';
 import { XeroLocationLinkRepository } from '../repositories/xeroLocationLinkRepository';
-import { encryptToken } from '../utils/crypto';
+import { encryptToken, decryptToken } from '../utils/crypto';
 import { XeroConnection, XeroLocationLink, OnboardingMode, Prisma } from '@prisma/client';
 import { onboardingSessionRepository } from '../repositories/onboardingSessionRepository';
 import { organisationRepository } from '../repositories/organisationRepository';
@@ -15,6 +15,7 @@ const linkRepo = new XeroLocationLinkRepository();
 export class XeroService {
   async createConnection(params: {
     organisationId: string;
+    userId?: string;
     xeroTenantId: string;
     accessToken: string;
     refreshToken: string;
@@ -26,6 +27,7 @@ export class XeroService {
 
     return connectionRepo.createConnection({
       organisationId: params.organisationId,
+      userId: params.userId || undefined, // Pass userId if available
       xeroTenantId: params.xeroTenantId,
       accessToken: accessTokenEncrypted, // Field name is accessToken, value is encrypted
       refreshToken: refreshTokenEncrypted, // Field name is refreshToken, value is encrypted
@@ -52,7 +54,7 @@ export class XeroService {
       throw error;
     }
 
-    await linkRepo.createLinks(params.connectionId, params.locationIds);
+    await linkRepo.createLinks(params.connectionId, params.organisationId, params.locationIds);
 
     // Return updated connection with links
     const updatedConnection = await connectionRepo.findById(params.connectionId);
@@ -68,12 +70,52 @@ export class XeroService {
   }
 
   async refreshAccessToken(connectionId: string): Promise<void> {
-    // TODO: Implement OAuth token rotation
-    // 1. Load connection
-    // 2. Decrypt refresh token
-    // 3. Call Xero API to refresh
-    // 4. Encrypt new tokens and update DB
-    throw new Error('Not Implemented');
+    const connection = await connectionRepo.findById(connectionId);
+    if (!connection) {
+      throw new Error('Connection not found');
+    }
+
+    // Decrypt refresh token
+    const refreshToken = decryptToken(connection.refreshToken);
+
+    const clientId = config.XERO_CLIENT_ID || process.env.XERO_CLIENT_ID;
+    const clientSecret = config.XERO_CLIENT_SECRET || process.env.XERO_CLIENT_SECRET;
+    
+    if (!clientId || !clientSecret) {
+        throw new Error('Xero credentials missing');
+    }
+
+    const xero = new XeroClient({
+      clientId,
+      clientSecret,
+      grantType: 'refresh_token',
+    });
+
+    // Xero Node SDK refreshWithRefreshToken
+    const tokenSet = await xero.refreshWithRefreshToken(clientId, clientSecret, refreshToken);
+    
+    // Handle token set response structure variations
+    const newAccessToken = tokenSet.access_token || tokenSet.accessToken || (tokenSet as any)?.body?.access_token;
+    const newRefreshToken = tokenSet.refresh_token || tokenSet.refreshToken || (tokenSet as any)?.body?.refresh_token;
+    
+    if (!newAccessToken || !newRefreshToken) {
+      throw new Error('Failed to refresh token: missing tokens in response');
+    }
+
+    const newAccessTokenEncrypted = encryptToken(newAccessToken);
+    const newRefreshTokenEncrypted = encryptToken(newRefreshToken);
+    
+    // Calculate expiresAt
+    const expiresAtValue = tokenSet.expires_at || tokenSet.expiresAt || (tokenSet as any)?.body?.expires_at;
+    const expiresAt = expiresAtValue 
+      ? new Date(typeof expiresAtValue === 'number' ? expiresAtValue * 1000 : expiresAtValue)
+      : new Date(Date.now() + 30 * 60 * 1000); // Default 30 mins
+
+    await connectionRepo.updateConnection(connectionId, {
+      accessToken: newAccessTokenEncrypted,
+      refreshToken: newRefreshTokenEncrypted,
+      expiresAt: expiresAt,
+    });
   }
 
   async generateAuthUrl(onboardingSessionId?: string): Promise<{ redirectUrl: string }> {

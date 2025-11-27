@@ -5,7 +5,29 @@ export class XeroConnectionRepository {
   async createConnection(
     data: Prisma.XeroConnectionUncheckedCreateInput
   ): Promise<XeroConnection> {
-    return prisma.xeroConnection.create({ data });
+    // Ensure tenantName is present
+    if (!data.tenantName) {
+        data.tenantName = 'Unknown';
+    }
+    
+    const { organisationId, userId, ...rest } = data;
+    
+    const createData: any = {
+        ...rest,
+        organisation: {
+            connect: { id: organisationId }
+        }
+    };
+
+    if (userId) {
+        createData.user = {
+            connect: { id: userId }
+        };
+    }
+    
+    return prisma.xeroConnection.create({
+         data: createData
+    });
   }
 
   async updateConnection(

@@ -31,6 +31,7 @@ export const RegisterOnboardRequestSchema = z.object({
   xeroCode: z.string().optional(),
   xeroState: z.string().optional(),
   venueName: z.string().min(1).optional(),
+  onboardingSessionId: z.string().optional(),
 }).refine(
   (data) => data.password === data.confirmPassword,
   { path: ["confirmPassword"], message: "Passwords do not match" }

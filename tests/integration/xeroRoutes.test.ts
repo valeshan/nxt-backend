@@ -2,6 +2,7 @@ import { describe, it, expect, beforeEach, afterAll } from 'vitest';
 import { buildTestApp, resetDb, teardown } from './testApp';
 import jwt from 'jsonwebtoken';
 import { config } from '../../src/config/env';
+import prisma from '../../src/infrastructure/prismaClient';
 
 describe('Xero Routes Integration', () => {
   let app: any;
@@ -18,6 +19,15 @@ describe('Xero Routes Integration', () => {
 
   describe('POST /xero/connections', () => {
     it('should create a connection successfully', async () => {
+      // Setup: Create Organisation and User first
+      await prisma.organisation.create({
+        data: { id: 'org_123', name: 'Test Org' }
+      });
+      // Create user to satisfy foreign key constraint
+      await prisma.user.create({
+        data: { id: 'user_1', email: 'test@example.com', passwordHash: 'hash', name: 'Test User' }
+      });
+
       const res = await app.inject({
         method: 'POST',
         url: '/xero/connections',
@@ -34,10 +44,8 @@ describe('Xero Routes Integration', () => {
       expect(res.statusCode).toBe(200);
       const body = res.json();
       expect(body.organisationId).toBe('org_123');
-      expect(body.status).toBe('active');
-      // Should not return raw tokens but encrypted ones are in DB. 
-      // The repository create returns the Prisma object which includes them. 
-      // Ideally we mask them in DTO but requirement didn't specify masking for now.
+      // status field removed from schema
+      // expect(body.status).toBe('active');
     });
 
     it('should fail with 400 on invalid body', async () => {
@@ -56,6 +64,20 @@ describe('Xero Routes Integration', () => {
 
   describe('POST /xero/connections/:connectionId/locations', () => {
     it('should link locations to a connection', async () => {
+      // Setup
+      await prisma.organisation.create({
+        data: { id: 'org_123', name: 'Test Org' }
+      });
+      await prisma.user.create({
+        data: { id: 'user_1', email: 'test@example.com', passwordHash: 'hash', name: 'Test User' }
+      });
+      await prisma.location.createMany({
+        data: [
+            { id: 'loc_1', organisationId: 'org_123', name: 'Loc 1' },
+            { id: 'loc_2', organisationId: 'org_123', name: 'Loc 2' }
+        ]
+      });
+
       // First create connection
       const createRes = await app.inject({
         method: 'POST',
@@ -88,6 +110,14 @@ describe('Xero Routes Integration', () => {
     });
 
     it('should return 403 on organisation mismatch', async () => {
+       // Setup
+       await prisma.organisation.create({
+         data: { id: 'org_123', name: 'Test Org' }
+       });
+       await prisma.user.create({
+         data: { id: 'user_1', email: 'test@example.com', passwordHash: 'hash', name: 'Test User' }
+       });
+
        // First create connection for org_123
        const createRes = await app.inject({
         method: 'POST',
@@ -120,6 +150,14 @@ describe('Xero Routes Integration', () => {
 
   describe('GET /xero/connections', () => {
     it('should return connections for organisation', async () => {
+      // Setup
+      await prisma.organisation.create({
+        data: { id: 'org_123', name: 'Test Org' }
+      });
+      await prisma.user.create({
+        data: { id: 'user_1', email: 'test@example.com', passwordHash: 'hash', name: 'Test User' }
+      });
+
       // Create connection
       await app.inject({
         method: 'POST',

@@ -43,6 +43,16 @@ export const onboardingSessionRepository = {
     });
   },
 
+  async completeSession(id: string, email: string): Promise<OnboardingSession> {
+    return prisma.onboardingSession.update({
+      where: { id },
+      data: {
+        completedAt: new Date(),
+        email
+      }
+    });
+  },
+
   async updateEmail(id: string, email: string): Promise<OnboardingSession> {
     return prisma.onboardingSession.update({
       where: { id },

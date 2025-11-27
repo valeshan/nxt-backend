@@ -42,9 +42,9 @@ describe('XeroService', () => {
     // I'll implement `tests/integration/xeroRoutes.test.ts` first and if I have time/need, I'll mock properly.
   });
   
-  it('refreshAccessToken should throw Not Implemented', async () => {
+  it('refreshAccessToken should throw Connection not found', async () => {
      service = new XeroService();
-     await expect(service.refreshAccessToken('any-id')).rejects.toThrow('Not Implemented');
+     await expect(service.refreshAccessToken('any-id')).rejects.toThrow('Connection not found');
   });
 });
 

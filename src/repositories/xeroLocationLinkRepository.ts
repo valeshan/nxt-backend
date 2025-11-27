@@ -7,6 +7,12 @@ export class XeroLocationLinkRepository {
     organisationId: string,
     locationIds: string[]
   ): Promise<XeroLocationLink[]> {
+    // Check input
+    if (!locationIds || !Array.isArray(locationIds)) {
+        console.warn('[XeroLocationLinkRepository] createLinks called with invalid locationIds:', locationIds);
+        return [];
+    }
+
     // Create multiple links. 
     // We use createMany but Prisma createMany does not return the created records in all DBs (Postgres does supports it but Prisma only returns count).
     // The requirement says "Return created connection plus its location links".

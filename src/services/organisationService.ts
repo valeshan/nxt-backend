@@ -20,7 +20,7 @@ export const organisationService = {
    * For signup, use /auth/register-onboard which creates everything atomically in a transaction.
    * This method is kept for backward compatibility with existing tests only.
    */
-  async manualOnboard(venueName: string, onboardingSessionId?: string) {
+  async manualOnboard(venueName: string, onboardingSessionId?: string, userId?: string) {
     // DEPRECATED: This creates orphan records. Use /auth/register-onboard instead.
     // Ensure session exists or create one
     let session;
@@ -48,6 +48,11 @@ export const organisationService = {
       org.id,
       location.id
     );
+
+    // If userId is provided, link them as Owner (supporting authenticated onboarding)
+    if (userId) {
+        await userOrganisationRepository.addUserToOrganisation(userId, org.id, OrganisationRole.owner);
+    }
 
     return {
         onboardingSessionId: session.id,

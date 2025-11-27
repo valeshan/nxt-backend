@@ -24,7 +24,11 @@ describe('Onboarding Flow Integration', () => {
     await prisma.userOrganisation.deleteMany();
     await prisma.userSettings.deleteMany();
     await prisma.user.deleteMany();
+    await prisma.xeroInvoiceLineItem.deleteMany();
+    await prisma.xeroInvoice.deleteMany();
     await prisma.location.deleteMany();
+    await prisma.supplierSourceLink.deleteMany();
+    await prisma.supplier.deleteMany();
     await prisma.organisation.deleteMany();
     await prisma.onboardingSession.deleteMany();
   });
@@ -69,7 +73,8 @@ describe('Onboarding Flow Integration', () => {
           acceptedTerms: true,
           acceptedPrivacy: true,
           onboardingSessionId: sessionId,
-          selectedLocationId: locationId
+          selectedLocationId: locationId,
+          venueName: 'Test Cafe Manual' // Required by Zod schema if not using Xero
         }
       });
 

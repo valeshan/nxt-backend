@@ -6,6 +6,8 @@ import xeroRoutes from './routes/xeroRoutes';
 import authRoutes from './routes/authRoutes';
 import organisationRoutes from './routes/organisationRoutes';
 import locationRoutes from './routes/locationRoutes';
+import supplierRoutes from './routes/supplierRoutes';
+import supplierInsightsRoutes from './routes/supplierInsightsRoutes';
 import { config } from './config/env';
 
 export function buildApp(): FastifyInstance {
@@ -22,7 +24,7 @@ export function buildApp(): FastifyInstance {
     app.register(cors, {
       origin: ['http://localhost:3000'],
       methods: ['GET', 'POST', 'OPTIONS'],
-      allowedHeaders: ['Content-Type', 'Authorization', 'x-user-id', 'x-org-id'],
+      allowedHeaders: ['Content-Type', 'Authorization', 'x-user-id', 'x-org-id', 'x-location-id'],
     });
   } else {
     app.register(cors, {
@@ -39,6 +41,8 @@ export function buildApp(): FastifyInstance {
   app.register(locationRoutes); 
   
   app.register(xeroRoutes, { prefix: '/xero' });
+  app.register(supplierRoutes, { prefix: '/suppliers' });
+  app.register(supplierInsightsRoutes, { prefix: '/supplier-insights' });
 
   // Health Check
   app.get('/health', async () => {

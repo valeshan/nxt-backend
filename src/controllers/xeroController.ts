@@ -27,7 +27,12 @@ export class XeroController {
     reply: FastifyReply
   ) => {
     this.validateOrgAccess(request, request.body.organisationId);
-    const result = await xeroService.createConnection(request.body);
+    // request.user is populated by authFromJwt, userId is mapped from sub
+    const userId = request.user?.userId;
+    const result = await xeroService.createConnection({
+        ...request.body,
+        userId
+    });
     return reply.status(200).send(result);
   }
 
