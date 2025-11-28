@@ -40,7 +40,12 @@ describe('Auth Service', () => {
 
   it('refreshTokens should rotate tokens correctly', async () => {
     const token = 'valid_refresh_token';
-    vi.spyOn(jwtUtils, 'verifyToken').mockReturnValue({ sub: 'u1', type: 'refresh_token_login' });
+    // Update mock to include tokenType: 'login'
+    vi.spyOn(jwtUtils, 'verifyToken').mockReturnValue({ 
+        sub: 'u1', 
+        tokenType: 'login', // Changed from type: 'refresh_token_login'
+        roles: [] 
+    } as any);
     vi.mocked(userRepository.findById).mockResolvedValue({ id: 'u1' } as any);
 
     const result = await authService.refreshTokens(token);
@@ -49,4 +54,3 @@ describe('Auth Service', () => {
     expect(result.refresh_token).toBeDefined();
   });
 });
-

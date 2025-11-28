@@ -21,3 +21,4 @@ export function getCategoryName(accountCode: string | null | undefined): string 
   return categoryMap[accountCode] || 'Uncategorized';
 }
 
+

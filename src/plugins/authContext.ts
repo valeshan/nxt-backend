@@ -15,17 +15,25 @@ const authContextPlugin: FastifyPluginAsync = async (fastify) => {
 
   fastify.addHook('onRequest', async (request: FastifyRequest, reply) => {
     const authHeader = request.headers.authorization;
+    let token: string | undefined;
 
-    if (!authHeader || !authHeader.startsWith('Bearer ')) {
+    // 1. Check Authorization header
+    if (authHeader && authHeader.startsWith('Bearer ')) {
+      token = authHeader.split(' ')[1];
+    } 
+    // 2. Check access_token cookie (if header missing)
+    else if (request.cookies && request.cookies.access_token) {
+      token = request.cookies.access_token;
+    }
+
+    if (!token) {
       return reply.status(401).send({
         error: {
           code: 'UNAUTHENTICATED',
-          message: 'Missing or invalid Authorization header',
+          message: 'Missing or invalid Authorization header/cookie',
         },
       });
     }
-
-    const token = authHeader.split(' ')[1];
 
     try {
       const payload = verifyToken(token);

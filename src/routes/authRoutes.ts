@@ -38,6 +38,8 @@ export default async function authRoutes(fastify: FastifyInstance) {
     protectedApp.register(authContextPlugin);
     const typedApp = protectedApp.withTypeProvider<ZodTypeProvider>();
 
+    typedApp.get('/me', authController.me);
+
     typedApp.post('/select-organisation', {
       schema: {
         body: SelectOrganisationRequest,

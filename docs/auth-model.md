@@ -76,3 +76,4 @@ const { organisationId, locationId } = request.authContext;
 
 Public webhooks (e.g., Xero) are exempt from JWT checks as they use signature verification. These endpoints are explicitly excluded from the `AuthContext` plugin registration.
 
+

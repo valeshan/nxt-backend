@@ -51,3 +51,4 @@ export function computeNameSimilarity(name1: string, name2: string): number {
   return 1 - distance / maxLength;
 }
 
+

@@ -6,7 +6,7 @@ import prisma from '../../src/infrastructure/prismaClient';
 
 describe('Xero Routes Integration', () => {
   let app: any;
-  const token = jwt.sign({ sub: 'user_1', orgId: 'org_123', type: 'access_token_company' }, config.JWT_VERIFY_SECRET, { expiresIn: '1h' });
+  const token = jwt.sign({ sub: 'user_1', orgId: 'org_123', tokenType: 'organisation', roles: [] }, config.JWT_VERIFY_SECRET, { expiresIn: '1h' });
 
   beforeEach(async () => {
     await resetDb();

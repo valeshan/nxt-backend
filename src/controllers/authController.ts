@@ -34,10 +34,19 @@ export const authController = {
     return reply.send(result);
   },
 
+  async me(request: FastifyRequest, reply: FastifyReply) {
+    const userId = request.authContext.userId;
+    console.log(`[AuthController] me called for userId: ${userId}`);
+    const result = await authService.getMe(userId);
+    return reply.send(result);
+  },
+
   async selectOrganisation(request: FastifyRequest<{ Body: z.infer<typeof SelectOrganisationRequest> }>, reply: FastifyReply) {
     const { organisationId } = request.body;
     const userId = request.authContext.userId; 
+    console.log(`[AuthController] selectOrganisation called for user ${userId}, org ${organisationId}`);
     const result = await authService.selectOrganisation(userId, organisationId);
+    console.log(`[AuthController] selectOrganisation result locations: ${result.locations?.length}`);
     return reply.send(result);
   },
 

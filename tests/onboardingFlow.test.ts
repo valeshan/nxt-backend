@@ -28,6 +28,7 @@ describe('Onboarding Flow Integration', () => {
     await prisma.xeroInvoice.deleteMany();
     await prisma.location.deleteMany();
     await prisma.supplierSourceLink.deleteMany();
+    await prisma.product.deleteMany();
     await prisma.supplier.deleteMany();
     await prisma.organisation.deleteMany();
     await prisma.onboardingSession.deleteMany();

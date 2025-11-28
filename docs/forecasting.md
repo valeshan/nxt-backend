@@ -64,3 +64,4 @@ The forecast returns a confidence flag:
 - **Overrides UI**: Need a frontend interface to manage `SupplierConfigOverride` (force recurring/variable).
 - **Scenario Modelling**: Allow users to adjust "what if" scenarios (e.g. "Rent increases by 5%").
 
+

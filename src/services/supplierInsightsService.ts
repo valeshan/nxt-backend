@@ -211,6 +211,36 @@ export const supplierInsightsService = {
     const totalRecentSpend = safeSum(recentSpendAgg);
     const totalSupplierSpendPerMonth = totalRecentSpend / 3;
 
+    // 1.5 Calculate Spend Trend Last 6m vs Prev 6m
+    const last6m = getFullCalendarMonths(6);
+    // Prev 6m: The 6 months prior to last6m
+    // last6m.start is Month-6 (e.g. May 1st). 
+    // We want Month-12 to Month-7.
+    // Start: Month-12 (e.g. Nov 1st prev year). End: Month-7 end (Apr 30th).
+    const prev6mStart = new Date(last6m.start);
+    prev6mStart.setMonth(prev6mStart.getMonth() - 6);
+    
+    const prev6mEnd = new Date(last6m.start);
+    prev6mEnd.setDate(prev6mEnd.getDate() - 1);
+    prev6mEnd.setHours(23, 59, 59, 999);
+
+    const last6mAgg = await prisma.xeroInvoice.aggregate({
+      where: { organisationId, date: { gte: last6m.start, lte: last6m.end }, status: { in: ['AUTHORISED', 'PAID'] } },
+      _sum: { total: true }
+    });
+    const prev6mAgg = await prisma.xeroInvoice.aggregate({
+      where: { organisationId, date: { gte: prev6mStart, lte: prev6mEnd }, status: { in: ['AUTHORISED', 'PAID'] } },
+      _sum: { total: true }
+    });
+
+    const spendLast6m = safeSum(last6mAgg);
+    const spendPrev6m = safeSum(prev6mAgg);
+    
+    let totalSpendTrendLast6mPercent = 0;
+    if (spendPrev6m > 0) {
+        totalSpendTrendLast6mPercent = ((spendLast6m - spendPrev6m) / spendPrev6m) * 100;
+    }
+
     // 2. Total Spend Trend Series (Monthly for last 12 months)
     const series: { monthLabel: string; total: number }[] = [];
     for (let i = 11; i >= 0; i--) {
@@ -383,7 +413,7 @@ export const supplierInsightsService = {
 
     return {
       totalSupplierSpendPerMonth,
-      totalSpendTrendLast6mPercent: 0,
+      totalSpendTrendLast6mPercent,
       totalSpendTrendSeries: series,
       averagePriceMovementLast3mPercent,
       averageMonthlyVariancePercent,

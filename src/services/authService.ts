@@ -40,6 +40,31 @@ export const authService = {
     return userSafe;
   },
 
+  async getMe(userId: string) {
+    const user = await userRepository.findById(userId);
+    if (!user) {
+      console.error(`[AuthService] getMe: User not found for id ${userId}`);
+      throw { statusCode: 404, message: 'User not found' };
+    }
+
+    // Get organisations
+    const memberships = await organisationRepository.listForUser(user.id);
+    console.log(`[AuthService] getMe: User ${user.email} has ${memberships.length} memberships`);
+    
+    const companies = memberships.map(m => ({
+      id: m.organisationId,
+      name: m.organisation.name,
+      role: m.role,
+    }));
+
+    return {
+      user_id: user.id,
+      profile_picture: user.profilePicture,
+      companies,
+      isAuthenticated: true
+    };
+  },
+
   /**
    * Atomic onboarding: Creates User, Organisation, Location, and optionally XeroConnection
    * in a single Prisma transaction to prevent orphan records.

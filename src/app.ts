@@ -1,5 +1,6 @@
 import Fastify, { FastifyInstance } from 'fastify';
 import cors from '@fastify/cors';
+import cookie from '@fastify/cookie';
 import { serializerCompiler, validatorCompiler, ZodTypeProvider } from 'fastify-type-provider-zod';
 import * as Sentry from '@sentry/node';
 import xeroRoutes from './routes/xeroRoutes';
@@ -19,16 +20,24 @@ export function buildApp(): FastifyInstance {
   app.setValidatorCompiler(validatorCompiler);
   app.setSerializerCompiler(serializerCompiler);
 
+  // Register Cookie Plugin
+  app.register(cookie, {
+    secret: config.JWT_VERIFY_SECRET, // Use a secret for signing cookies if needed
+    parseOptions: {}
+  });
+
   // Register CORS
   if (config.NODE_ENV !== 'production') {
     app.register(cors, {
       origin: ['http://localhost:3000'],
       methods: ['GET', 'POST', 'OPTIONS'],
       allowedHeaders: ['Content-Type', 'Authorization', 'x-user-id', 'x-org-id', 'x-location-id'],
+      credentials: true, // Allow cookies
     });
   } else {
     app.register(cors, {
       origin: true, // TODO: Configure for production
+      credentials: true,
     });
   }
 
