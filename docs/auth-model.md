@@ -1,79 +1,45 @@
-# Authentication & Authorisation Model
+# Authentication & Authorization Model
 
-The backend (`nxt-backend`) enforces strict authentication and authorisation using JWTs (JSON Web Tokens) as the single source of truth. Client-supplied headers (`x-org-id`, `x-location-id`, `x-user-id`) are **ignored** for access control decisions.
+## Overview
 
-## Token Types
+The system uses a secure, stateful-frontend / stateless-backend authentication model powered by JWTs and HttpOnly cookies.
 
-The system uses three distinct types of access tokens, differentiated by the `tokenType` claim and the presence of context IDs.
+## Authentication Flow
 
-### 1. Login Token (`tokenType: 'login'`)
-- **Purpose**: Initial authentication. Allows listing organisations and creating new ones.
-- **Claims**:
-  - `sub`: User ID
-  - `tokenType`: `'login'`
-  - `roles`: `[]` (Empty, as roles are org-specific)
-- **Allowed Endpoints**:
-  - `/organisations` (List/Create)
-  - `/auth/select-organisation`
-  - `/auth/select-location`
+1.  **Login**:
+    *   Frontend sends credentials to Next.js Proxy (`/api/auth/login`).
+    *   Proxy forwards to Backend (`/auth/login`).
+    *   Backend validates and returns `access_token` (15m) and `refresh_token` (7d).
+    *   Proxy sets these tokens as **HttpOnly, Secure, SameSite=Lax** cookies.
+    *   Client JS **never** sees the raw tokens.
 
-### 2. Organisation Token (`tokenType: 'organisation'`)
-- **Purpose**: Access organisation-level resources (e.g., Suppliers, Settings).
-- **Claims**:
-  - `sub`: User ID
-  - `orgId`: Organisation ID
-  - `tokenType`: `'organisation'`
-  - `roles`: `['owner', 'member', ...]` (Role within this organisation)
-- **Allowed Endpoints**:
-  - All endpoints requiring organisation context.
-  - `/suppliers` (Read/Write)
-  - `/organisations/:id` details
+2.  **Authenticated Requests**:
+    *   Client makes requests to Next.js Proxy (`/api/be/...`).
+    *   Proxy automatically attaches the cookies to the request forwarded to Backend.
+    *   Backend validates `access_token` via `authContextPlugin`.
 
-### 3. Location Token (`tokenType: 'location'`)
-- **Purpose**: Access location-specific data (e.g., Supplier Insights, Spend Analysis).
-- **Claims**:
-  - `sub`: User ID
-  - `orgId`: Organisation ID
-  - `locId`: Location ID
-  - `tokenType`: `'location'`
-  - `roles`: `['owner', 'member', ...]` (Inherited from Org)
-- **Allowed Endpoints**:
-  - All endpoints requiring location context.
-  - `/supplier-insights/*`
-  - Can also access organisation-level endpoints (inherits access).
+3.  **Silent Refresh**:
+    *   When an API call fails with `401 Unauthorized`:
+    *   Frontend Axios interceptor catches the error.
+    *   It pauses all outgoing requests (Mutex).
+    *   It calls Next.js Proxy (`/api/auth/refresh`).
+    *   Proxy reads `refresh_token` cookie and calls Backend (`/auth/refresh`).
+    *   Backend validates and rotates tokens.
+    *   Proxy updates the HttpOnly cookies with new values (and new Max-Age).
+    *   Frontend retries the original failed request.
 
-## AuthContext
+## Xero Integration
 
-The `AuthContext` plugin runs on all protected routes. It verifies the JWT and attaches a strongly-typed `authContext` object to the request.
+*   **Just-in-Time Refresh**:
+    *   We do **not** rely on background cron jobs to keep Xero tokens alive.
+    *   Before any Xero API call, the backend service calls `XeroService.getValidConnection(id)`.
+    *   This method checks if the stored token is expired or expiring in < 5 minutes.
+    *   If expiring, it synchronously refreshes the token with Xero and updates the DB.
+    *   It returns a valid, decrypted access token for immediate use.
 
-```typescript
-interface AuthContext {
-  userId: string;
-  organisationId?: string | null;
-  locationId?: string | null;
-  tokenType: 'login' | 'organisation' | 'location';
-  roles: string[];
-}
-```
+## Security Measures
 
-**Usage in Controllers:**
-Controllers MUST read context from `request.authContext`.
-
-```typescript
-const { organisationId, locationId } = request.authContext;
-// Use these IDs for DB queries. NEVER use request.headers['x-org-id'].
-```
-
-## Authorization Rules
-
-1.  **Single Source of Truth**: The JWT is the only trusted source for `userId`, `organisationId`, and `locationId`.
-2.  **Strict Header Policy**: Client-supplied headers like `x-org-id` and `x-location-id` are ignored for authorisation. They must not be used for deciding which tenant’s data to query. They may be logged for debugging purposes only.
-3.  **Context Guards**:
-    - **Org-Level Routes**: Must verify `authContext.organisationId` exists and `tokenType` is `'organisation'` or `'location'`. Return `403` otherwise.
-    - **Location-Level Routes**: Must verify `authContext.locationId` exists and `tokenType` is `'location'`. Return `403` otherwise.
-
-## Xero Webhooks Exception
-
-Public webhooks (e.g., Xero) are exempt from JWT checks as they use signature verification. These endpoints are explicitly excluded from the `AuthContext` plugin registration.
-
-
+*   **CORS**: strictly limited to Frontend URL in production.
+*   **Cookies**: HttpOnly to prevent XSS token theft.
+*   **CSRF**: Mitigated by SameSite=Lax (sufficient for this architecture).
+*   **Database**: Connection pooling configured to prevent exhaustion.

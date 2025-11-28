@@ -9,6 +9,7 @@ const envSchema = z.object({
   XERO_CLIENT_ID: z.string().optional(),
   XERO_CLIENT_SECRET: z.string().optional(),
   XERO_REDIRECT_URI: z.string().optional(),
+  FRONTEND_URL: z.string().url().optional().default('https://app.thenxt.ai'),
 });
 
 const parsed = envSchema.safeParse(process.env);

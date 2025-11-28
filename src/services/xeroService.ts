@@ -8,6 +8,7 @@ import { locationRepository } from '../repositories/locationRepository';
 import { XeroClient } from 'xero-node';
 import { config } from '../config/env';
 import prisma from '../infrastructure/prismaClient';
+import { XeroConnectionDto } from '../dtos/xeroDtos';
 
 const connectionRepo = new XeroConnectionRepository();
 const linkRepo = new XeroLocationLinkRepository();
@@ -62,11 +63,69 @@ export class XeroService {
        throw new Error('Connection lost after update');
     }
     // Type assertion as findById includes locationLinks
-    return updatedConnection as XeroConnection & { locationLinks: XeroLocationLink[] };
+    // Using any to bypass the strict XeroConnectionWithLocations type for this method temporarily, or update return type
+    return updatedConnection as any;
   }
 
-  async listConnectionsForOrganisation(organisationId: string): Promise<XeroConnection[]> {
-    return connectionRepo.findByOrganisation(organisationId);
+  async listConnectionsForOrganisation(organisationId: string): Promise<XeroConnectionDto[]> {
+    const connections = await connectionRepo.findByOrganisation(organisationId);
+    
+    return connections.map(conn => ({
+      id: conn.id,
+      tenantName: conn.tenantName,
+      expiresAt: conn.expiresAt ? conn.expiresAt.toISOString() : null,
+      linkedLocations: conn.locationLinks
+        .filter(link => link.location != null)
+        .map(link => ({
+          id: link.location.id,
+          name: link.location.name
+        }))
+    }));
+  }
+
+  /**
+   * Retrieve a XeroConnection with a valid access token.
+   * Automatically refreshes the token if it is expired or about to expire (within 5 minutes).
+   * Returns the connection with DECRYPTED tokens ready for use.
+   */
+  async getValidConnection(connectionId: string): Promise<XeroConnection> {
+    const connection = await connectionRepo.findById(connectionId);
+    if (!connection) {
+      throw new Error('Connection not found');
+    }
+
+    // Check if token is expired or expiring soon (buffer 5 minutes)
+    const now = new Date();
+    const expiresAt = new Date(connection.expiresAt);
+    const bufferMs = 5 * 60 * 1000; // 5 minutes
+
+    if (now.getTime() + bufferMs >= expiresAt.getTime()) {
+      console.log(`[XeroService] Token for connection ${connectionId} is expired or expiring soon. Refreshing...`);
+      try {
+        await this.refreshAccessToken(connectionId);
+      } catch (error) {
+        console.error(`[XeroService] Failed to refresh token for connection ${connectionId}`, error);
+        throw error; // Propagate error so caller knows connection is invalid
+      }
+      
+      // Re-fetch the updated connection
+      const updatedConnection = await connectionRepo.findById(connectionId);
+      if (!updatedConnection) {
+         throw new Error('Connection lost after refresh');
+      }
+      
+      // Decrypt tokens for usage
+      updatedConnection.accessToken = decryptToken(updatedConnection.accessToken);
+      updatedConnection.refreshToken = decryptToken(updatedConnection.refreshToken);
+      
+      return updatedConnection;
+    }
+
+    // Decrypt tokens for usage
+    connection.accessToken = decryptToken(connection.accessToken);
+    connection.refreshToken = decryptToken(connection.refreshToken);
+
+    return connection;
   }
 
   async refreshAccessToken(connectionId: string): Promise<void> {

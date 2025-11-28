@@ -36,7 +36,7 @@ export function buildApp(): FastifyInstance {
     });
   } else {
     app.register(cors, {
-      origin: true, // TODO: Configure for production
+      origin: config.FRONTEND_URL ? [config.FRONTEND_URL] : false,
       credentials: true,
     });
   }

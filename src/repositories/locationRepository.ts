@@ -14,6 +14,14 @@ export const locationRepository = {
 
   async findById(id: string): Promise<Location | null> {
     return prisma.location.findUnique({ where: { id } });
-  }
+  },
+
+  async update(id: string, data: Prisma.LocationUpdateInput): Promise<Location> {
+    return prisma.location.update({ where: { id }, data });
+  },
+
+  async delete(id: string): Promise<void> {
+    await prisma.location.delete({ where: { id } });
+  },
 };
 

@@ -1,5 +1,6 @@
 import { locationRepository } from '../repositories/locationRepository';
 import { userOrganisationRepository } from '../repositories/userOrganisationRepository';
+import prisma from '../infrastructure/prismaClient';
 
 export const locationService = {
   async createLocation(userId: string, organisationId: string, name: string) {
@@ -9,10 +10,43 @@ export const locationService = {
       throw { statusCode: 403, message: 'Insufficient permissions' };
     }
 
-    return locationRepository.createLocation({
+    const location = await locationRepository.createLocation({
       name,
       organisation: { connect: { id: organisationId } }
     });
+
+    // New locations start with no integrations
+    return {
+      ...location,
+      integrations: [] as Array<{ type: string; name: string; status: string }>,
+    };
+  },
+
+  async getLocationIntegrations(locationIds: string[]) {
+    if (!locationIds.length) return {};
+
+    const xeroLinks = await prisma.xeroLocationLink.findMany({
+      where: { locationId: { in: locationIds } },
+      select: { locationId: true }
+    });
+
+    const map: Record<string, Array<{ type: string; name: string; status: string }>> = {};
+
+    // Initialize empty arrays
+    locationIds.forEach(id => { map[id] = []; });
+
+    // Populate Xero links
+    xeroLinks.forEach(link => {
+      if (map[link.locationId]) {
+        map[link.locationId].push({
+          type: 'xero',
+          name: 'Xero',
+          status: 'connected'
+        });
+      }
+    });
+
+    return map;
   },
 
   async listForOrganisation(userId: string, organisationId: string) {
@@ -22,7 +56,47 @@ export const locationService = {
       throw { statusCode: 403, message: 'Not a member' };
     }
 
-    return locationRepository.listForOrganisation(organisationId);
+    const locations = await locationRepository.listForOrganisation(organisationId);
+    const locationIds = locations.map(l => l.id);
+    const integrationsMap = await this.getLocationIntegrations(locationIds);
+
+    return locations.map(loc => ({
+      ...loc,
+      integrations: integrationsMap[loc.id] || []
+    }));
+  },
+
+  async updateLocation(userId: string, locationId: string, name: string) {
+    const location = await locationRepository.findById(locationId);
+    if (!location) throw { statusCode: 404, message: 'Location not found' };
+
+    // Verify permissions for the organisation this location belongs to
+    const membership = await userOrganisationRepository.findMembership(userId, location.organisationId);
+    if (!membership || (membership.role !== 'owner' && membership.role !== 'admin')) {
+      throw { statusCode: 403, message: 'Insufficient permissions' };
+    }
+
+    return locationRepository.update(locationId, { name });
+  },
+
+  async deleteLocation(params: { userId: string; organisationId: string; locationId: string }) {
+    const { userId, organisationId, locationId } = params;
+
+    const location = await locationRepository.findById(locationId);
+    if (!location) {
+      throw { statusCode: 404, message: 'Location not found' };
+    }
+
+    if (location.organisationId !== organisationId) {
+      throw { statusCode: 403, message: 'Forbidden' };
+    }
+
+    const membership = await userOrganisationRepository.findMembership(userId, organisationId);
+    if (!membership) {
+      throw { statusCode: 403, message: 'Not a member' };
+    }
+
+    await locationRepository.delete(locationId);
   }
 };
 

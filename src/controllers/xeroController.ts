@@ -67,8 +67,15 @@ export class XeroController {
     request: FastifyRequest<{ Querystring: ListConnectionsQuery }>,
     reply: FastifyReply
   ) => {
-    this.validateOrgAccess(request, request.query.organisationId);
-    const result = await xeroService.listConnectionsForOrganisation(request.query.organisationId);
+    // organisationId is no longer in query, get from auth context
+    const { organisationId } = request.authContext;
+    
+    if (!organisationId) {
+        return reply.status(403).send({ error: { code: 'FORBIDDEN', message: 'Organisation context required' } });
+    }
+
+    // No need to validate against query param anymore
+    const result = await xeroService.listConnectionsForOrganisation(organisationId);
     return reply.status(200).send(result);
   }
 

@@ -14,7 +14,7 @@ export const linkLocationsRequestSchema = z.object({
 });
 
 export const listConnectionsQuerySchema = z.object({
-  organisationId: z.string().min(1),
+  // organisationId: z.string().min(1), // Removed - derived from auth token
 });
 
 export const xeroAuthoriseCallbackRequestSchema = z.object({
@@ -27,3 +27,10 @@ export type CreateConnectionRequest = z.infer<typeof createConnectionRequestSche
 export type LinkLocationsRequest = z.infer<typeof linkLocationsRequestSchema>;
 export type ListConnectionsQuery = z.infer<typeof listConnectionsQuerySchema>;
 export type XeroAuthoriseCallbackRequest = z.infer<typeof xeroAuthoriseCallbackRequestSchema>;
+
+export type XeroConnectionDto = {
+  id: string;
+  tenantName: string;
+  linkedLocations: { id: string; name: string }[];
+  expiresAt: string | null; // ISO string or null
+};

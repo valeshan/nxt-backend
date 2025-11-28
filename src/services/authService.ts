@@ -12,6 +12,7 @@ import { z } from 'zod';
 import { XeroService } from './xeroService';
 import { XeroSyncService } from './xeroSyncService';
 import prisma from '../infrastructure/prismaClient';
+import { locationService } from './locationService';
 
 type RegisterOnboardInput = z.infer<typeof RegisterOnboardRequestSchema>;
 
@@ -325,7 +326,7 @@ export const authService = {
       throw { statusCode: 403, message: 'Not a member of this organisation' };
     }
 
-    const locations = await locationRepository.listForOrganisation(organisationId);
+    const locations = await locationService.listForOrganisation(userId, organisationId);
     
     const roles = [membership.role];
     const accessToken = signAccessToken({ sub: userId, orgId: organisationId, tokenType: 'organisation', roles });
