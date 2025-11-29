@@ -5,7 +5,7 @@ import { organisationRepository } from '../repositories/organisationRepository';
 import { locationRepository } from '../repositories/locationRepository';
 import { onboardingSessionRepository } from '../repositories/onboardingSessionRepository';
 import { hashPassword, verifyPassword } from '../utils/password';
-import { signAccessToken, signRefreshToken, verifyToken, AuthTokenType } from '../utils/jwt';
+import { signAccessToken, signRefreshToken, verifyToken, AuthTokenType, ACCESS_TOKEN_TTL_SECONDS } from '../utils/jwt';
 import { Prisma, OrganisationRole } from '@prisma/client';
 import { RegisterOnboardRequestSchema } from '../dtos/authDtos';
 import { z } from 'zod';
@@ -41,7 +41,7 @@ export const authService = {
     return userSafe;
   },
 
-  async getMe(userId: string) {
+  async getMe(userId: string, context?: { organisationId?: string | null; locationId?: string | null; tokenType?: AuthTokenType }) {
     const user = await userRepository.findById(userId);
     if (!user) {
       console.error(`[AuthService] getMe: User not found for id ${userId}`);
@@ -62,7 +62,12 @@ export const authService = {
       user_id: user.id,
       profile_picture: user.profilePicture,
       companies,
-      isAuthenticated: true
+      isAuthenticated: true,
+      // Reflect current auth context so BE2 frontend can hydrate from backend,
+      // without relying on legacy localStorage state.
+      currentOrganisationId: context?.organisationId ?? null,
+      currentLocationId: context?.locationId ?? null,
+      tokenType: context?.tokenType ?? 'login',
     };
   },
 
@@ -277,7 +282,7 @@ export const authService = {
       access_token: result.accessToken,
       refresh_token: result.refreshToken,
       type: 'bearer',
-      expires_in: 900, // 15m
+      expires_in: ACCESS_TOKEN_TTL_SECONDS, // 15m
     };
   },
 
@@ -316,7 +321,7 @@ export const authService = {
       access_token: accessToken,
       refresh_token: refreshToken,
       type: 'bearer',
-      expires_in: 900, // 15m
+      expires_in: ACCESS_TOKEN_TTL_SECONDS, // 15m
     };
   },
 
@@ -338,7 +343,7 @@ export const authService = {
       refresh_token: refreshToken,
       locations,
       type: 'bearer',
-      expires_in: 900,
+      expires_in: ACCESS_TOKEN_TTL_SECONDS,
     };
   },
 
@@ -377,7 +382,7 @@ export const authService = {
       refresh_token: refreshToken,
       user_settings: settings,
       type: 'bearer',
-      expires_in: 900,
+      expires_in: ACCESS_TOKEN_TTL_SECONDS,
     };
   },
 
@@ -447,7 +452,7 @@ export const authService = {
       access_token: newAccessToken,
       refresh_token: newRefreshToken,
       type: 'bearer',
-      expires_in: 900,
+      expires_in: ACCESS_TOKEN_TTL_SECONDS,
     };
   }
 };

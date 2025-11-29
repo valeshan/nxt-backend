@@ -38,6 +38,7 @@ export const forecastService = {
     const xeroInvoices = await prisma.xeroInvoice.findMany({
       where: {
         organisationId,
+        ...(locationId ? { locationId } : {}),
         status: { in: ['AUTHORISED', 'PAID'] },
         date: { gte: startDate }
       },

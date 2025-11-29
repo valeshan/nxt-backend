@@ -23,10 +23,21 @@ export const xeroAuthoriseCallbackRequestSchema = z.object({
   scope: z.string().optional(),
 });
 
+export const startConnectRequestSchema = z.object({
+  locationIds: z.array(z.string().min(1)).min(1),
+});
+
+export const completeConnectRequestSchema = z.object({
+  code: z.string().min(1),
+  state: z.string().min(1),
+});
+
 export type CreateConnectionRequest = z.infer<typeof createConnectionRequestSchema>;
 export type LinkLocationsRequest = z.infer<typeof linkLocationsRequestSchema>;
 export type ListConnectionsQuery = z.infer<typeof listConnectionsQuerySchema>;
 export type XeroAuthoriseCallbackRequest = z.infer<typeof xeroAuthoriseCallbackRequestSchema>;
+export type StartConnectRequest = z.infer<typeof startConnectRequestSchema>;
+export type CompleteConnectRequest = z.infer<typeof completeConnectRequestSchema>;
 
 export type XeroConnectionDto = {
   id: string;

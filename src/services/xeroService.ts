@@ -529,4 +529,155 @@ export class XeroService {
     // This method is reserved for future re-link flows.
     throw new Error('processCallback should not be used for signup. Use /auth/register-onboard with xeroCode and xeroState instead.');
   }
+
+  async startConnect(params: {
+    userId: string;
+    organisationId: string;
+    locationIds: string[];
+  }): Promise<{ redirectUrl: string }> {
+    const session = await prisma.xeroAuthSession.create({
+      data: {
+        userId: params.userId,
+        organisationId: params.organisationId,
+        locationIds: params.locationIds,
+        expiresAt: new Date(Date.now() + 15 * 60 * 1000),
+      },
+    });
+
+    const clientId = config.XERO_CLIENT_ID || process.env.XERO_CLIENT_ID;
+    const appUrl = process.env.APP_URL || config.FRONTEND_URL;
+    const redirectUri = `${appUrl}/xero/callback`;
+    const scopes = 'offline_access accounting.settings.read accounting.transactions.read';
+    const state = session.id;
+
+    const url = `https://login.xero.com/identity/connect/authorize?response_type=code&client_id=${clientId}&redirect_uri=${encodeURIComponent(redirectUri)}&scope=${encodeURIComponent(scopes)}&state=${state}`;
+
+    return { redirectUrl: url };
+  }
+
+  async completeConnect(params: {
+    code: string;
+    state: string;
+    organisationId: string;
+    userId: string;
+  }): Promise<{ success: true; tenantName: string; linkedLocations: any[] }> {
+    const session = await prisma.xeroAuthSession.findUnique({
+      where: { id: params.state },
+    });
+
+    if (!session) throw new Error('Invalid session');
+    if (session.expiresAt < new Date()) {
+        await prisma.xeroAuthSession.delete({ where: { id: session.id } }).catch(() => {});
+        throw new Error('Session expired');
+    }
+    if (session.organisationId !== params.organisationId) throw new Error('Organisation mismatch');
+
+    try {
+      const clientId = config.XERO_CLIENT_ID || process.env.XERO_CLIENT_ID;
+      const clientSecret = config.XERO_CLIENT_SECRET || process.env.XERO_CLIENT_SECRET;
+      const appUrl = process.env.APP_URL || config.FRONTEND_URL;
+      const redirectUri = `${appUrl}/xero/callback`;
+
+      const xero = new XeroClient({
+        clientId,
+        clientSecret,
+        redirectUris: [redirectUri],
+        scopes: 'offline_access accounting.settings.read accounting.transactions.read'.split(' '),
+        state: params.state,
+      });
+
+      const tokenSet = await xero.apiCallback(`${redirectUri}?code=${params.code}&state=${params.state}`);
+      
+      if (!tokenSet || !tokenSet.access_token || !tokenSet.refresh_token) {
+           throw new Error('Failed to receive tokens');
+      }
+
+      await xero.updateTenants();
+      const tenants = xero.tenants;
+      if (!tenants || tenants.length === 0) throw new Error('No tenants found');
+      const tenant = tenants[0];
+
+      const accessTokenEncrypted = encryptToken(tokenSet.access_token);
+      const refreshTokenEncrypted = encryptToken(tokenSet.refresh_token);
+      const expiresAtValue = tokenSet.expires_at || (tokenSet as any).expiresAt;
+      const expiresAt = expiresAtValue 
+        ? new Date(typeof expiresAtValue === 'number' ? expiresAtValue * 1000 : expiresAtValue)
+        : new Date(Date.now() + 30 * 60 * 1000);
+
+      // Upsert XeroConnection
+      const existingConnection = await prisma.xeroConnection.findFirst({
+          where: {
+              organisationId: params.organisationId,
+              xeroTenantId: tenant.tenantId,
+          }
+      });
+
+      let connection;
+      if (existingConnection) {
+          connection = await prisma.xeroConnection.update({
+              where: { id: existingConnection.id },
+              data: {
+                  tenantName: tenant.tenantName || 'Xero Organisation',
+                  accessToken: accessTokenEncrypted,
+                  refreshToken: refreshTokenEncrypted,
+                  expiresAt: expiresAt,
+                  xeroCode: params.code,
+                  xeroState: params.state,
+              }
+          });
+      } else {
+          connection = await prisma.xeroConnection.create({
+              data: {
+                  organisationId: params.organisationId,
+                  userId: params.userId,
+                  xeroTenantId: tenant.tenantId,
+                  tenantName: tenant.tenantName || 'Xero Organisation',
+                  accessToken: accessTokenEncrypted,
+                  refreshToken: refreshTokenEncrypted,
+                  expiresAt: expiresAt,
+                  xeroCode: params.code,
+                  xeroState: params.state,
+              }
+          });
+      }
+
+      // Upsert XeroLocationLinks
+      const linkedLocations = [];
+      for (const locationId of session.locationIds) {
+           const existingLink = await prisma.xeroLocationLink.findFirst({
+               where: {
+                   xeroConnectionId: connection.id,
+                   locationId: locationId,
+               }
+           });
+           
+           if (!existingLink) {
+               const link = await prisma.xeroLocationLink.create({
+                   data: {
+                       xeroConnectionId: connection.id,
+                       organisationId: params.organisationId,
+                       locationId: locationId,
+                   },
+                   include: { location: true }
+               });
+               linkedLocations.push(link);
+           } else {
+               // Fetch existing link with location included for consistency
+               const link = await prisma.xeroLocationLink.findUnique({
+                   where: { id: existingLink.id },
+                   include: { location: true }
+               });
+               linkedLocations.push(link);
+           }
+      }
+
+      return { success: true, tenantName: tenant.tenantName || '', linkedLocations };
+
+    } catch (error) {
+        console.error(error);
+        throw error;
+    } finally {
+      await prisma.xeroAuthSession.delete({ where: { id: session.id } }).catch(() => {});
+    }
+  }
 }

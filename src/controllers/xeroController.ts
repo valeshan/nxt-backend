@@ -1,8 +1,11 @@
 import { FastifyRequest, FastifyReply } from 'fastify';
 import { XeroService } from '../services/xeroService';
-import { CreateConnectionRequest, LinkLocationsRequest, ListConnectionsQuery, XeroAuthoriseCallbackRequest } from '../dtos/xeroDtos';
+import { CreateConnectionRequest, LinkLocationsRequest, ListConnectionsQuery, XeroAuthoriseCallbackRequest, StartConnectRequest, CompleteConnectRequest } from '../dtos/xeroDtos';
+
+import { XeroSyncService } from '../services/xeroSyncService';
 
 const xeroService = new XeroService();
+const xeroSyncService = new XeroSyncService();
 
 export class XeroController {
   private validateOrgAccess(request: FastifyRequest, targetOrgId: string) {
@@ -121,5 +124,57 @@ export class XeroController {
         },
       });
     }
+  }
+
+  startConnectHandler = async (
+    request: FastifyRequest<{ Body: StartConnectRequest }>,
+    reply: FastifyReply
+  ) => {
+    const { organisationId, userId } = request.authContext;
+    if (!organisationId) {
+        return reply.status(403).send({ error: { code: 'FORBIDDEN', message: 'Organisation context required' } });
+    }
+    
+    const result = await xeroService.startConnect({
+        userId,
+        organisationId,
+        locationIds: request.body.locationIds
+    });
+    
+    return reply.status(200).send(result);
+  }
+
+  completeConnectHandler = async (
+    request: FastifyRequest<{ Body: CompleteConnectRequest }>,
+    reply: FastifyReply
+  ) => {
+     const { organisationId, userId } = request.authContext;
+     if (!organisationId) {
+         return reply.status(403).send({ error: { code: 'FORBIDDEN', message: 'Organisation context required' } });
+     }
+
+     const result = await xeroService.completeConnect({
+         code: request.body.code,
+         state: request.body.state,
+         organisationId,
+         userId
+     });
+     
+     // Trigger async backfill sync for the connection
+     // We don't await this to keep the UI response fast
+     // result.connectionId would be needed here? completeConnect returns linkedLocations but not explicit connectionId?
+     // Let's check xeroService.completeConnect return type. 
+     // It returns { success: true; tenantName: string; linkedLocations: any[] }.
+     // linkedLocations are XeroLocationLink objects, which contain xeroConnectionId.
+     
+     if (result.linkedLocations && result.linkedLocations.length > 0) {
+         const connectionId = result.linkedLocations[0].xeroConnectionId;
+         console.log(`[XeroController] Triggering initial backfill sync for org ${organisationId} connection ${connectionId}`);
+         xeroSyncService.syncInvoices(organisationId, connectionId)
+            .then(() => console.log(`[XeroController] Initial sync completed for org ${organisationId}`))
+            .catch(err => console.error(`[XeroController] Initial sync failed for org ${organisationId}`, err));
+     }
+
+     return reply.status(200).send(result);
   }
 }

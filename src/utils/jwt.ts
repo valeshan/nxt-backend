@@ -14,11 +14,17 @@ export interface TokenPayload {
   exp?: number;
 }
 
-export function signAccessToken(payload: Omit<TokenPayload, 'iat' | 'exp'>, expiresIn: string | number = '15m'): string {
+// Access Token: 15 minutes - Authorization & frequent rotation
+export const ACCESS_TOKEN_TTL_SECONDS = 900;
+
+// Refresh Token: 30 days - Maximum session inactivity window
+export const REFRESH_TOKEN_TTL_SECONDS = 60 * 60 * 24 * 30;
+
+export function signAccessToken(payload: Omit<TokenPayload, 'iat' | 'exp'>, expiresIn: string | number = ACCESS_TOKEN_TTL_SECONDS): string {
   return jwt.sign(payload, config.JWT_VERIFY_SECRET, { expiresIn });
 }
 
-export function signRefreshToken(payload: Omit<TokenPayload, 'iat' | 'exp'>, expiresIn: string | number = '7d'): string {
+export function signRefreshToken(payload: Omit<TokenPayload, 'iat' | 'exp'>, expiresIn: string | number = REFRESH_TOKEN_TTL_SECONDS): string {
   return jwt.sign(payload, config.JWT_VERIFY_SECRET, { expiresIn });
 }
 

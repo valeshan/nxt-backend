@@ -3,12 +3,13 @@ import z from 'zod';
 const envSchema = z.object({
   DATABASE_URL: z.string().min(1),
   JWT_VERIFY_SECRET: z.string().min(1),
-  TOKEN_ENCRYPTION_KEY: z.string().min(32), // Enforce some length for security
+  TOKEN_ENCRYPTION_KEY: z.string().min(32),
   PORT: z.coerce.number().default(4001),
   NODE_ENV: z.enum(['development', 'production', 'test']).default('development'),
   XERO_CLIENT_ID: z.string().optional(),
   XERO_CLIENT_SECRET: z.string().optional(),
   XERO_REDIRECT_URI: z.string().optional(),
+  APP_URL: z.string().url().optional(), // Add this line
   FRONTEND_URL: z.string().url().optional().default('https://app.thenxt.ai'),
 });
 

@@ -7,7 +7,7 @@ export class SupplierController {
   
   // Helper for org access validation
   private validateOrgAccess(request: FastifyRequest, targetOrgId?: string) {
-    const { organisationId, tokenType } = request.authContext;
+    const { organisationId, tokenType, locationId } = request.authContext;
     
     // Require org context
     if (!organisationId) {
@@ -23,20 +23,33 @@ export class SupplierController {
     if (targetOrgId && targetOrgId !== organisationId) {
        throw { statusCode: 403, message: 'Forbidden' };
     }
-    return organisationId;
+    return { organisationId, locationId };
   }
 
   listSuppliers = async (request: FastifyRequest, reply: FastifyReply) => {
-    const orgId = this.validateOrgAccess(request);
+    const { organisationId: orgId, locationId } = this.validateOrgAccess(request);
     const { page = 1, limit = 50, search } = request.query as any;
     const skip = (page - 1) * limit;
+    
+    // Note: Suppliers themselves are Organisation-scoped.
+    // However, their invoices and activity can be Location-scoped.
+    // If we want to list only suppliers active in a location, we'd need to join invoices.
+    // For now, we list all suppliers for the Org but filter metrics by location if present.
 
     const where: Prisma.SupplierWhereInput = {
       organisationId: orgId,
       status: { not: 'ARCHIVED' },
       ...(search ? { name: { contains: search, mode: 'insensitive' } } : {}),
+      ...(locationId ? {
+        invoices: {
+          some: {
+            locationId: locationId
+          }
+        }
+      } : {})
     };
-
+    
+    // ... existing fetching logic
     const [suppliers, total] = await Promise.all([
       prisma.supplier.findMany({
         where,
@@ -49,37 +62,47 @@ export class SupplierController {
       }),
       prisma.supplier.count({ where }),
     ]);
+    
+    // ...
+    
+    // Metrics Where Clause Base
+    const metricsWhereBase = {
+        // supplierId: { in: supplierIds }, -> Added inside groupBys
+        date: {}, // -> Added inside groupBys
+        status: { in: ['AUTHORISED', 'PAID'] },
+        organisationId: orgId,
+        ...(locationId ? { locationId } : {})
+    };
 
-    // Calculate metrics for the fetched suppliers
+    // ... Update queries to use metricsWhereBase
+    
     const supplierIds = suppliers.map(s => s.id);
     
     // Date Logic for Spend Trend
     const now = new Date();
     const startOfCurrentMonth = new Date(now.getFullYear(), now.getMonth(), 1);
     
-    // Current Period: Last 6 full months (Months -1 to -6)
     const endOfCurrentPeriod = new Date(startOfCurrentMonth);
-    endOfCurrentPeriod.setDate(0); // End of Month -1
+    endOfCurrentPeriod.setDate(0);
     endOfCurrentPeriod.setHours(23, 59, 59, 999);
 
     const startOfCurrentPeriod = new Date(startOfCurrentMonth);
-    startOfCurrentPeriod.setMonth(startOfCurrentPeriod.getMonth() - 6); // Start of Month -6
+    startOfCurrentPeriod.setMonth(startOfCurrentPeriod.getMonth() - 6); 
 
-    // Prior Period: Previous 6 full months (Months -7 to -12)
     const endOfPriorPeriod = new Date(startOfCurrentPeriod);
-    endOfPriorPeriod.setDate(0); // End of Month -7
+    endOfPriorPeriod.setDate(0);
     endOfPriorPeriod.setHours(23, 59, 59, 999);
 
     const startOfPriorPeriod = new Date(startOfCurrentPeriod);
-    startOfPriorPeriod.setMonth(startOfPriorPeriod.getMonth() - 6); // Start of Month -12
+    startOfPriorPeriod.setMonth(startOfPriorPeriod.getMonth() - 6); 
 
     // Metrics for Current Period (Spend)
     const currentPeriodMetrics = await prisma.xeroInvoice.groupBy({
       by: ['supplierId'],
       where: {
+        ...metricsWhereBase,
         supplierId: { in: supplierIds },
         date: { gte: startOfCurrentPeriod, lte: endOfCurrentPeriod },
-        status: { in: ['AUTHORISED', 'PAID'] }
       },
       _sum: { total: true },
     });
@@ -88,35 +111,35 @@ export class SupplierController {
     const priorPeriodMetrics = await prisma.xeroInvoice.groupBy({
       by: ['supplierId'],
       where: {
+        ...metricsWhereBase,
         supplierId: { in: supplierIds },
         date: { gte: startOfPriorPeriod, lte: endOfPriorPeriod },
-        status: { in: ['AUTHORISED', 'PAID'] }
       },
       _sum: { total: true },
     });
 
-    // Standard 12m Metrics (Rolling, for Total Spend)
+    // Standard 12m Metrics
     const twelveMonthsAgo = new Date(now.getFullYear() - 1, now.getMonth(), now.getDate());
     const sixMonthsAgo = new Date(now.getFullYear(), now.getMonth() - 6, now.getDate());
 
     const metrics12m = await prisma.xeroInvoice.groupBy({
       by: ['supplierId'],
       where: {
+        ...metricsWhereBase,
         supplierId: { in: supplierIds },
         date: { gte: twelveMonthsAgo },
-        status: { in: ['AUTHORISED', 'PAID'] }
       },
       _sum: { total: true },
       _count: { id: true }
     });
 
-    // Metrics for Recurring Logic (Rolling 6m count)
+    // Metrics for Recurring Logic
     const metrics6m = await prisma.xeroInvoice.groupBy({
       by: ['supplierId'],
       where: {
+        ...metricsWhereBase,
         supplierId: { in: supplierIds },
         date: { gte: sixMonthsAgo },
-        status: { in: ['AUTHORISED', 'PAID'] }
       },
       _count: { id: true }
     });
@@ -125,12 +148,19 @@ export class SupplierController {
     let itemCountsMap = new Map<string, number>();
     
     if (supplierIds.length > 0) {
+      // Raw query needs explicit location filter if present
+      const locationFilter = locationId 
+        ? Prisma.sql`AND i."locationId" = ${locationId}` 
+        : Prisma.empty;
+
       const itemCounts: any[] = await prisma.$queryRaw`
         SELECT i."supplierId", COUNT(DISTINCT COALESCE("itemCode", LOWER(TRIM("description"))))::int as "count"
         FROM "XeroInvoiceLineItem" li
         JOIN "XeroInvoice" i ON li."invoiceId" = i.id
         WHERE i."supplierId" IN (${Prisma.join(supplierIds)})
         AND i."status" IN ('AUTHORISED', 'PAID')
+        AND i."organisationId" = ${orgId}
+        ${locationFilter}
         GROUP BY i."supplierId"
       `;
       itemCountsMap = new Map(itemCounts.map((c: any) => [c.supplierId, c.count]));
@@ -141,18 +171,16 @@ export class SupplierController {
     const priorPeriodMap = new Map(priorPeriodMetrics.map(m => [m.supplierId, Number(m._sum.total || 0)]));
     const metrics12mMap = new Map(metrics12m.map(m => [m.supplierId, { total: Number(m._sum.total || 0), count: m._count.id }]));
     const metrics6mMap = new Map(metrics6m.map(m => [m.supplierId, m._count.id]));
-
+    
     const MIN_BASELINE = 200;
 
     const data = suppliers.map(s => {
       const m12 = metrics12mMap.get(s.id) || { total: 0, count: 0 };
       const count6m = metrics6mMap.get(s.id) || 0;
       
-      // Recurring logic
       const isRecurring = count6m >= 3;
       const purchaseFrequency = isRecurring ? m12.count : 0;
 
-      // Spend Trend Logic
       const currentPeriodSpend = currentPeriodMap.get(s.id) || 0;
       const priorPeriodSpend = priorPeriodMap.get(s.id) || 0;
 
@@ -173,9 +201,9 @@ export class SupplierController {
         ...s,
         totalSpend: m12.total,
         purchaseFrequency,
-        totalOrders: s._count.invoices,
-        avgInvoiceSize: m12.count > 0 ? m12.total / m12.count : 0, // Use 12m count for avg invoice size if recurring logic not used for this
-        yoySpendChange: 0, // Replaced by spendTrendPercent in UI but kept for type compatibility if needed
+        totalOrders: m12.count, // Use filtered count
+        avgInvoiceSize: m12.count > 0 ? m12.total / m12.count : 0,
+        yoySpendChange: 0,
         spendTrendPercent,
         isNewSupplier,
         isEmergingSupplier,
@@ -191,7 +219,7 @@ export class SupplierController {
   }
 
   getSupplier = async (request: FastifyRequest, reply: FastifyReply) => {
-    const orgId = this.validateOrgAccess(request);
+    const { organisationId: orgId } = this.validateOrgAccess(request);
     const { id } = request.params as any;
 
     const supplier = await prisma.supplier.findUnique({
@@ -207,7 +235,7 @@ export class SupplierController {
   }
 
   getSupplierMetrics = async (request: FastifyRequest, reply: FastifyReply) => {
-    const orgId = this.validateOrgAccess(request);
+    const { organisationId: orgId, locationId } = this.validateOrgAccess(request);
     const { id } = request.params as any;
 
     // Verify existence
@@ -224,7 +252,9 @@ export class SupplierController {
         where: {
             supplierId: id,
             date: { gte: twelveMonthsAgo },
-            status: { in: ['AUTHORISED', 'PAID'] } // Exclude VOIDED
+            status: { in: ['AUTHORISED', 'PAID'] },
+            organisationId: orgId,
+            ...(locationId ? { locationId } : {})
         },
         select: {
             total: true,
@@ -233,9 +263,8 @@ export class SupplierController {
     });
 
     const totalSpend12m = invoices.reduce((sum, inv) => sum + (Number(inv.total) || 0), 0);
-    const avgMonthlySpend = totalSpend12m / 12; // Simple avg
+    const avgMonthlySpend = totalSpend12m / 12;
 
-    // Group by month for sparkline
     const spendTrend = Array(12).fill(0);
     invoices.forEach(inv => {
         if (inv.date) {
@@ -254,7 +283,7 @@ export class SupplierController {
   }
 
   getSupplierProducts = async (request: FastifyRequest, reply: FastifyReply) => {
-    const orgId = this.validateOrgAccess(request);
+    const { organisationId: orgId, locationId } = this.validateOrgAccess(request);
     const { id } = request.params as any;
 
     // Verify existence
@@ -264,8 +293,10 @@ export class SupplierController {
     }
 
     // Raw query to aggregate products
-    // We prioritise using the real Product UUID (XeroInvoiceLineItem.productId) if available.
-    // Note: Postgres specific SQL
+    const locationFilter = locationId 
+        ? Prisma.sql`AND "XeroInvoice"."locationId" = ${locationId}` 
+        : Prisma.empty;
+
     const products = await prisma.$queryRaw`
         SELECT 
             MAX("XeroInvoiceLineItem"."productId") as "productId",
@@ -277,49 +308,36 @@ export class SupplierController {
         JOIN "XeroInvoice" ON "XeroInvoiceLineItem"."invoiceId" = "XeroInvoice"."id"
         WHERE "XeroInvoice"."supplierId" = ${id}
         AND "XeroInvoice"."status" IN ('AUTHORISED', 'PAID')
+        AND "XeroInvoice"."organisationId" = ${orgId}
+        ${locationFilter}
         GROUP BY COALESCE("itemCode", LOWER(TRIM("description")))
         ORDER BY "totalSpend" DESC
         LIMIT 100
     `;
 
-    // Map BigInts to Numbers if needed (Prisma returns BigInt for some aggregations?)
-    // Decimal is usually string or specialized object. Raw query returns whatever driver gives.
-    // We might need to sanitize "products" result serialization.
-
     return reply.send(products);
   }
 
   getProductDetails = async (request: FastifyRequest, reply: FastifyReply) => {
-    const orgId = this.validateOrgAccess(request);
+    const { organisationId: orgId, locationId } = this.validateOrgAccess(request);
     const { id, productId } = request.params as any;
 
-    // We need to reconstruct the grouping logic to fetch details
-    // productId is either itemCode OR normalized description
-    
-    // Fetch line items matching this "product"
-    // Complex AND condition: (itemCode = productId) OR (itemCode IS NULL AND normalized(desc) = productId)
-    
-    // Actually, passing normalized string as ID is tricky in URL. 
-    // The client should encode it.
-    // Ideally, we hash it, but prompt says "either itemCode or a hash".
-    // Let's assume for now productId IS the raw string (itemCode or normalized desc).
-    
     const decodedProductId = decodeURIComponent(productId);
 
     const lineItems = await prisma.xeroInvoiceLineItem.findMany({
         where: {
             invoice: {
                 supplierId: id,
-                status: { in: ['AUTHORISED', 'PAID'] }
+                status: { in: ['AUTHORISED', 'PAID'] },
+                organisationId: orgId,
+                ...(locationId ? { locationId } : {})
             },
             OR: [
                 { itemCode: decodedProductId },
                 { 
                   AND: [
                     { itemCode: null },
-                    { description: { contains: decodedProductId, mode: 'insensitive' } } // Fuzzy match or strict?
-                    // Strictly we used normalized description. Prisma doesn't support function on column in where easily.
-                    // We'll fetch raw matching logic.
+                    { description: { contains: decodedProductId, mode: 'insensitive' } } 
                   ]
                 }
             ]
@@ -330,7 +348,7 @@ export class SupplierController {
         orderBy: { invoice: { date: 'asc' } }
     });
     
-    // Filter strictly in JS if needed for the normalized description case
+    // Filter strictly in JS
     const filteredItems = lineItems.filter(item => {
         if (item.itemCode === decodedProductId) return true;
         if (!item.itemCode && item.description) {
@@ -343,11 +361,9 @@ export class SupplierController {
         return reply.status(404).send({ error: 'Product not found' });
     }
 
-    // Compute metrics
     const totalSpend = filteredItems.reduce((sum, item) => sum + (Number(item.lineAmount) || 0), 0);
     const totalQuantity = filteredItems.reduce((sum, item) => sum + (Number(item.quantity) || 0), 0);
     
-    // Price history (unitAmount over time)
     const priceHistory = filteredItems.map(item => ({
         date: item.invoice.date,
         price: Number(item.unitAmount)
@@ -355,7 +371,7 @@ export class SupplierController {
 
     return reply.send({
         productId: decodedProductId,
-        name: filteredItems[filteredItems.length - 1].description, // Use latest description
+        name: filteredItems[filteredItems.length - 1].description, 
         totalSpend,
         totalQuantity,
         priceHistory

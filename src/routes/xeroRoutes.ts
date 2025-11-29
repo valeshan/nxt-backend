@@ -1,6 +1,6 @@
 import { FastifyInstance } from 'fastify';
 import { ZodTypeProvider } from 'fastify-type-provider-zod';
-import { createConnectionRequestSchema, linkLocationsRequestSchema, listConnectionsQuerySchema, xeroAuthoriseCallbackRequestSchema } from '../dtos/xeroDtos';
+import { createConnectionRequestSchema, linkLocationsRequestSchema, listConnectionsQuerySchema, xeroAuthoriseCallbackRequestSchema, startConnectRequestSchema, completeConnectRequestSchema } from '../dtos/xeroDtos';
 import { XeroController } from '../controllers/xeroController';
 import z from 'zod';
 import authContextPlugin from '../plugins/authContext';
@@ -61,6 +61,26 @@ export default async function xeroRoutes(fastify: FastifyInstance) {
         },
       },
       xeroController.listConnectionsHandler
+    );
+
+    typedApp.post(
+      '/start-connect',
+      {
+        schema: {
+          body: startConnectRequestSchema,
+        },
+      },
+      xeroController.startConnectHandler
+    );
+
+    typedApp.post(
+      '/complete-connect',
+      {
+        schema: {
+          body: completeConnectRequestSchema,
+        },
+      },
+      xeroController.completeConnectHandler
     );
   });
 }

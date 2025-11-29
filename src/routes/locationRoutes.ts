@@ -30,6 +30,25 @@ export default async function locationRoutes(fastify: FastifyInstance) {
     },
   }, locationController.create);
 
+  app.get('/locations', {
+    schema: {
+      response: {
+        200: z.array(z.object({
+          id: z.string(),
+          name: z.string(),
+          organisationId: z.string(),
+          createdAt: z.date(),
+          updatedAt: z.date(),
+          integrations: z.array(z.object({
+            type: z.string(),
+            name: z.string(),
+            status: z.string()
+          }))
+        }))
+      }
+    },
+  }, locationController.listMine);
+
   app.get('/organisations/:organisationId/locations', {
     schema: {
       params: z.object({ organisationId: z.string() }),

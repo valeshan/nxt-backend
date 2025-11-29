@@ -45,6 +45,7 @@ model Location {
   updatedAt      DateTime      @updatedAt
 
   xeroLocationLinks XeroLocationLink[]
+  xeroInvoices      XeroInvoice[]
 }
 
 model UserOrganisation {
@@ -222,7 +223,10 @@ model XeroInvoice {
   supplierId      String?
   supplier        Supplier?             @relation(fields: [supplierId], references: [id])
   organisation    Organisation          @relation(fields: [organisationId], references: [id])
-  
+  locationId      String?
+  location        Location?             @relation(fields: [locationId], references: [id])
+  xeroTenantId    String?
+
   lineItems       XeroInvoiceLineItem[]
   
   createdAt       DateTime              @default(now())
@@ -230,6 +234,7 @@ model XeroInvoice {
 
   @@index([organisationId])
   @@index([supplierId])
+  @@index([organisationId, locationId, date])
 }
 
 model XeroInvoiceLineItem {
@@ -282,4 +287,13 @@ model XeroSyncLog {
   
   @@index([organisationId])
   @@index([xeroConnectionId])
+}
+
+model XeroAuthSession {
+  id             String   @id @default(uuid()) // Acts as OAuth state
+  userId         String
+  organisationId String
+  locationIds    String[]
+  createdAt      DateTime @default(now())
+  expiresAt      DateTime
 }

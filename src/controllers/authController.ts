@@ -35,9 +35,17 @@ export const authController = {
   },
 
   async me(request: FastifyRequest, reply: FastifyReply) {
-    const userId = request.authContext.userId;
-    console.log(`[AuthController] me called for userId: ${userId}`);
-    const result = await authService.getMe(userId);
+    const { userId, organisationId, locationId, tokenType } = request.authContext;
+    console.log(`[AuthController] me called for userId: ${userId}`, {
+      organisationId,
+      locationId,
+      tokenType,
+    });
+    const result = await authService.getMe(userId, {
+      organisationId,
+      locationId,
+      tokenType,
+    });
     return reply.send(result);
   },
 

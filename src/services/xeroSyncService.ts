@@ -127,7 +127,7 @@ export class XeroSyncService {
 
         for (const invoice of invoices) {
             try {
-                await this.processInvoice(organisationId, invoice);
+                await this.processInvoice(organisationId, connectionId, invoice);
             } catch (err) {
                 console.error(`[XeroSync] Failed to process invoice ${invoice.invoiceID}:`, err);
                 // Continue with next invoice
@@ -168,7 +168,7 @@ export class XeroSyncService {
     }
   }
 
-  private async processInvoice(organisationId: string, invoice: Invoice) {
+  private async processInvoice(organisationId: string, connectionId: string, invoice: Invoice) {
     if (!invoice.invoiceID || !invoice.contact) {
         console.warn(`[XeroSync] Skipping invalid invoice: ID=${invoice.invoiceID}, Contact=${!!invoice.contact}`);
         return;
@@ -186,27 +186,33 @@ export class XeroSyncService {
 
     // Transactional Upsert
     await prisma.$transaction(async (tx) => {
-        // 0. Resolve Location ID for Product Linking
-        let locationId: string | undefined;
-        
-        // Try to find ANY location for this org (simplest fallback)
-        // In a real scenario, we should link invoice to specific location if possible.
-        // Here we fallback to the first location found for the org or linked connection.
-        const connection = await tx.xeroConnection.findFirst({
-             where: { organisationId },
-             include: { locationLinks: true }
+        // 0. Resolve Location ID for Product Linking and Invoice
+        let locationId: string | null = null;
+        let xeroTenantId: string | null = null;
+
+        // Resolve active connection to get tenantId and locationLinks
+        const connection = await tx.xeroConnection.findUnique({
+            where: { id: connectionId },
+            include: { locationLinks: true }
         });
-        
-        if (connection?.locationLinks?.[0]?.locationId) {
-            locationId = connection.locationLinks[0].locationId;
-        } else {
-             // Fallback
-             const loc = await tx.location.findFirst({ where: { organisationId } });
-             locationId = loc?.id;
+
+        if (connection) {
+            xeroTenantId = connection.xeroTenantId;
+            const links = connection.locationLinks;
+            
+            if (links.length === 1) {
+                locationId = links[0].locationId;
+            } else if (links.length > 1) {
+                console.warn(`[XeroSync] Ambiguous location mapping for connection ${connectionId}. Links found: ${links.length}. Skipping location assignment.`);
+                locationId = null;
+            } else {
+                // 0 links
+                locationId = null;
+            }
         }
 
         if (!locationId) {
-             console.warn(`[XeroSync] No location found for org ${organisationId}. Product linking skipped.`);
+             console.warn(`[XeroSync] No unique location found for connection ${connectionId}. Product linking skipped. Invoice will be org-wide only.`);
         }
 
         // 1. Upsert Invoice Header
@@ -228,6 +234,8 @@ export class XeroSyncService {
                 updatedDateUTC: invoice.updatedDateUTC ? new Date(invoice.updatedDateUTC) : null,
                 supplierId: supplier.id,
                 organisationId,
+                locationId,
+                xeroTenantId,
             },
             create: {
                 organisationId,
@@ -247,6 +255,8 @@ export class XeroSyncService {
                 updatedDateUTC: invoice.updatedDateUTC ? new Date(invoice.updatedDateUTC) : null,
                 supplierId: supplier.id,
                 organisationId,
+                locationId,
+                xeroTenantId,
             },
         });
 

@@ -27,6 +27,20 @@ export const locationController = {
     return reply.send(result);
   },
 
+  async listMine(request: FastifyRequest, reply: FastifyReply) {
+    const userId = request.authContext.userId;
+    const organisationId = request.authContext.organisationId;
+    
+    if (!organisationId) {
+      return reply.status(403).send({
+        error: { code: 'FORBIDDEN', message: 'Organisation context required' },
+      } as any);
+    }
+
+    const result = await locationService.listForOrganisation(userId, organisationId);
+    return reply.send(result);
+  },
+
   async update(request: FastifyRequest<{ Params: { id: string }, Body: { name: string } }>, reply: FastifyReply) {
     const { id } = request.params;
     const { name } = request.body;
