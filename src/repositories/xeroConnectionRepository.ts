@@ -11,7 +11,7 @@ export type XeroConnectionWithLocationsAndSyncRuns = Prisma.XeroConnectionGetPay
 
 export class XeroConnectionRepository {
   async createConnection(
-    data: Prisma.XeroConnectionUncheckedCreateInput
+    data: Omit<Prisma.XeroConnectionUncheckedCreateInput, 'tenantName'> & { tenantName?: string }
   ): Promise<XeroConnection> {
     // Ensure tenantName is present
     if (!data.tenantName) {

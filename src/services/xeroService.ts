@@ -16,7 +16,7 @@ const linkRepo = new XeroLocationLinkRepository();
 export class XeroService {
   async createConnection(params: {
     organisationId: string;
-    userId?: string;
+    userId: string;
     xeroTenantId: string;
     accessToken: string;
     refreshToken: string;
@@ -28,7 +28,7 @@ export class XeroService {
 
     return connectionRepo.createConnection({
       organisationId: params.organisationId,
-      userId: params.userId || undefined, // Pass userId if available
+      userId: params.userId, // Pass userId
       xeroTenantId: params.xeroTenantId,
       accessToken: accessTokenEncrypted, // Field name is accessToken, value is encrypted
       refreshToken: refreshTokenEncrypted, // Field name is refreshToken, value is encrypted
@@ -277,7 +277,7 @@ export class XeroService {
       
       // Call apiCallback with the full callback URL
       // The SDK will extract code and state from the URL and validate the state matches config.state
-      const tokenSet = await xero.apiCallback(callbackUrl);
+      let tokenSet = await xero.apiCallback(callbackUrl);
       console.log('[XeroService] apiCallback succeeded', { 
         hasResult: !!tokenSet,
         resultType: typeof tokenSet,

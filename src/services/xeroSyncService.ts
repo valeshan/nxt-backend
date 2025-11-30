@@ -153,7 +153,7 @@ export class XeroSyncService {
                         page, // Page
                         true, // IncludeArchived
                         false, // CreatedByMyApp
-                        true // UnitDP (4dp)
+                        4 // UnitDP (4dp)
                     );
                     break; // Success
                 } catch (error: any) {
