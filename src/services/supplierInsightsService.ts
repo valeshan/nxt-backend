@@ -964,6 +964,31 @@ export const supplierInsightsService = {
          }
     }
 
+    // Resolve Supplier Name if missing
+    let supplierName = product.supplier?.name;
+    if (!supplierName) {
+        const latestLine = await prisma.xeroInvoiceLineItem.findFirst({
+            where: {
+                productId: product.id,
+                invoice: whereInvoiceBase
+            },
+            include: {
+                invoice: {
+                    select: {
+                        supplier: { select: { name: true } }
+                    }
+                }
+            },
+            orderBy: { invoice: { date: 'desc' } }
+        });
+        
+        if (latestLine?.invoice?.supplier?.name) {
+            supplierName = latestLine.invoice.supplier.name;
+        } else {
+            supplierName = 'Unknown';
+        }
+    }
+
     // Resolve Category Name (from most frequent account code)
     let categoryName = 'Uncategorized';
     const topCategory = await prisma.xeroInvoiceLineItem.groupBy({
@@ -980,7 +1005,7 @@ export const supplierInsightsService = {
     return {
         productId: product.id,
         productName: product.name,
-        supplierName: product.supplier?.name || 'Unknown',
+        supplierName: supplierName,
         categoryName,
         stats12m: {
             totalSpend12m,
