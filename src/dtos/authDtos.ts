@@ -64,3 +64,17 @@ export const CreateOrganisationRequest = z.object({
 export const CreateLocationRequest = z.object({
   name: z.string().min(1),
 });
+
+export const UpdateProfileRequest = z.object({
+  firstName: z.string().min(1, "First name is required"),
+  lastName: z.string().min(1, "Last name is required"),
+});
+
+export const ChangePasswordRequest = z.object({
+  oldPassword: z.string().min(1, "Old password is required"),
+  newPassword: z.string().min(8, "New password must be at least 8 characters"),
+  confirmPassword: z.string().min(1, "Confirm password is required"),
+}).refine((data) => data.newPassword === data.confirmPassword, {
+  path: ["confirmPassword"],
+  message: "Passwords do not match",
+});

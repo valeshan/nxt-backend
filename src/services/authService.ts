@@ -20,7 +20,7 @@ const xeroService = new XeroService();
 const xeroSyncService = new XeroSyncService();
 
 export const authService = {
-  async registerUser(email: string, password: string, name?: string) {
+  async registerUser(email: string, password: string, firstName: string, lastName: string) {
     const existing = await userRepository.findByEmail(email);
     if (existing) {
       throw { statusCode: 409, message: 'User already exists' };
@@ -30,7 +30,9 @@ export const authService = {
     const user = await userRepository.createUser({
       email,
       passwordHash,
-      name,
+      firstName,
+      lastName,
+      name: `${firstName} ${lastName}`.trim(),
     });
 
     // Use upsert to avoid race conditions if multiple requests try to create settings
@@ -60,6 +62,9 @@ export const authService = {
 
     return {
       user_id: user.id,
+      name: user.name,
+      firstName: user.firstName,
+      lastName: user.lastName,
       profile_picture: user.profilePicture,
       companies,
       isAuthenticated: true,
@@ -69,6 +74,39 @@ export const authService = {
       currentLocationId: context?.locationId ?? null,
       tokenType: context?.tokenType ?? 'login',
     };
+  },
+
+  async updateProfile(userId: string, data: { firstName: string; lastName: string }) {
+    const user = await userRepository.findById(userId);
+    if (!user) {
+      throw { statusCode: 404, message: 'User not found' };
+    }
+
+    const updatedUser = await userRepository.updateUser(userId, {
+      firstName: data.firstName,
+      lastName: data.lastName,
+      name: `${data.firstName} ${data.lastName}`.trim(),
+    });
+
+    const { passwordHash: _, ...userSafe } = updatedUser;
+    return userSafe;
+  },
+
+  async changePassword(userId: string, oldPassword: string, newPassword: string) {
+    const user = await userRepository.findById(userId);
+    if (!user) {
+      throw { statusCode: 404, message: 'User not found' };
+    }
+
+    const valid = await verifyPassword(oldPassword, user.passwordHash);
+    if (!valid) {
+      throw { statusCode: 401, message: 'Invalid old password' };
+    }
+
+    const passwordHash = await hashPassword(newPassword);
+    await userRepository.updateUser(userId, { passwordHash });
+
+    return { message: 'Password updated successfully' };
   },
 
   /**
@@ -163,6 +201,8 @@ export const authService = {
         data: {
           email: input.email,
           passwordHash,
+          firstName: input.firstName,
+          lastName: input.lastName,
           name,
         },
       });
@@ -321,6 +361,9 @@ export const authService = {
 
     return {
       user_id: user.id,
+      name: user.name,
+      firstName: user.firstName,
+      lastName: user.lastName,
       profile_picture: user.profilePicture,
       companies,
       access_token: accessToken,

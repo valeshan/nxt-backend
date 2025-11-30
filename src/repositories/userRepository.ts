@@ -12,6 +12,9 @@ export const userRepository = {
 
   async findById(id: string): Promise<User | null> {
     return prisma.user.findUnique({ where: { id } });
+  },
+
+  async updateUser(id: string, data: Prisma.UserUpdateInput): Promise<User> {
+    return prisma.user.update({ where: { id }, data });
   }
 };
-

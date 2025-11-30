@@ -1,6 +1,6 @@
 import { FastifyInstance } from 'fastify';
 import { authController } from '../controllers/authController';
-import { LoginRequest, RegisterRequest, SelectOrganisationRequest, SelectLocationRequest, RefreshTokenRequest, RegisterOnboardRequestSchema } from '../dtos/authDtos';
+import { LoginRequest, RegisterRequest, SelectOrganisationRequest, SelectLocationRequest, RefreshTokenRequest, RegisterOnboardRequestSchema, UpdateProfileRequest, ChangePasswordRequest } from '../dtos/authDtos';
 import { ZodTypeProvider } from 'fastify-type-provider-zod';
 import authContextPlugin from '../plugins/authContext';
 
@@ -39,6 +39,18 @@ export default async function authRoutes(fastify: FastifyInstance) {
     const typedApp = protectedApp.withTypeProvider<ZodTypeProvider>();
 
     typedApp.get('/me', authController.me);
+
+    typedApp.put('/me', {
+      schema: {
+        body: UpdateProfileRequest,
+      },
+    }, authController.updateProfile);
+
+    typedApp.post('/change-password', {
+      schema: {
+        body: ChangePasswordRequest,
+      },
+    }, authController.changePassword);
 
     typedApp.post('/select-organisation', {
       schema: {

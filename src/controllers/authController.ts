@@ -1,6 +1,6 @@
 import { FastifyRequest, FastifyReply } from 'fastify';
 import { authService } from '../services/authService';
-import { LoginRequest, RegisterRequest, SelectOrganisationRequest, SelectLocationRequest, RefreshTokenRequest, RegisterOnboardRequestSchema } from '../dtos/authDtos';
+import { LoginRequest, RegisterRequest, SelectOrganisationRequest, SelectLocationRequest, RefreshTokenRequest, RegisterOnboardRequestSchema, UpdateProfileRequest, ChangePasswordRequest } from '../dtos/authDtos';
 import { z } from 'zod';
 
 export const authController = {
@@ -11,8 +11,7 @@ export const authController = {
         return reply.code(400).send({ message: 'Passwords do not match' });
     }
 
-    const name = `${firstName} ${lastName}`;
-    const user = await authService.registerUser(email, password, name);
+    const user = await authService.registerUser(email, password, firstName, lastName);
     return reply.code(201).send(user);
   },
 
@@ -46,6 +45,20 @@ export const authController = {
       locationId,
       tokenType,
     });
+    return reply.send(result);
+  },
+
+  async updateProfile(request: FastifyRequest<{ Body: z.infer<typeof UpdateProfileRequest> }>, reply: FastifyReply) {
+    const { firstName, lastName } = request.body;
+    const userId = request.authContext.userId;
+    const result = await authService.updateProfile(userId, { firstName, lastName });
+    return reply.send(result);
+  },
+
+  async changePassword(request: FastifyRequest<{ Body: z.infer<typeof ChangePasswordRequest> }>, reply: FastifyReply) {
+    const { oldPassword, newPassword } = request.body;
+    const userId = request.authContext.userId;
+    const result = await authService.changePassword(userId, oldPassword, newPassword);
     return reply.send(result);
   },
 
