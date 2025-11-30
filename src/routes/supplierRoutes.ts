@@ -21,6 +21,7 @@ export default async function supplierRoutes(fastify: FastifyInstance) {
               page: z.coerce.number().optional().default(1),
               limit: z.coerce.number().optional().default(50),
               search: z.string().optional(),
+              activityStatus: z.enum(['current', 'all']).optional(),
             }),
           },
         },
