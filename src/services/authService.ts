@@ -5,8 +5,8 @@ import { organisationRepository } from '../repositories/organisationRepository';
 import { locationRepository } from '../repositories/locationRepository';
 import { onboardingSessionRepository } from '../repositories/onboardingSessionRepository';
 import { hashPassword, verifyPassword } from '../utils/password';
-import { signAccessToken, signRefreshToken, verifyToken, AuthTokenType, ACCESS_TOKEN_TTL_SECONDS } from '../utils/jwt';
-import { Prisma, OrganisationRole } from '@prisma/client';
+import { signAccessToken, signRefreshToken, verifyToken, AuthTokenType, ACCESS_TOKEN_TTL_SECONDS, TokenPayload } from '../utils/jwt';
+import { Prisma, OrganisationRole, XeroSyncScope } from '@prisma/client';
 import { RegisterOnboardRequestSchema } from '../dtos/authDtos';
 import { z } from 'zod';
 import { XeroService } from './xeroService';
@@ -262,9 +262,14 @@ export const authService = {
 
       // Trigger Async Backfill
       console.log('[AuthService] Triggering initial backfill sync');
-      xeroSyncService.syncInvoices(result.organisation.id, connectionId)
+      // Updated to new syncConnection method
+      xeroSyncService.syncConnection({
+          connectionId,
+          organisationId: result.organisation.id,
+          scope: XeroSyncScope.FULL // Initial sync should be full
+      })
         .then(() => console.log(`[AuthService] Initial sync completed for org ${result.organisation.id}`))
-        .catch(err => console.error(`[AuthService] Initial sync failed for org ${result.organisation.id}`, err));
+        .catch((err: unknown) => console.error(`[AuthService] Initial sync failed for org ${result.organisation.id}`, err));
     }
 
     // Return response in BE2 format
@@ -387,22 +392,42 @@ export const authService = {
   },
 
   async refreshTokens(token: string) {
-    let decoded;
+    // Sanitize token for logs (last 6 chars)
+    const tokenSuffix = token.slice(-6);
+    const isProd = process.env.NODE_ENV === 'production';
+
+    console.log(`[AuthService.refreshTokens] Start. Token suffix: ...${tokenSuffix}`);
+
+    let decoded: TokenPayload;
     try {
       decoded = verifyToken(token);
-    } catch (err) {
-      throw { statusCode: 401, message: 'Invalid refresh token' };
+    } catch (err: any) {
+      const reason = err.name === 'TokenExpiredError' ? 'expired' : 
+                     err.name === 'JsonWebTokenError' ? 'signature_invalid' : 'unknown';
+      
+      console.warn('[AuthService.refreshTokens] verify failed', {
+        reason,
+        errorName: err.name,
+        errorMessage: err.message,
+        tokenSuffix
+      });
+
+      throw { statusCode: 401, message: 'Invalid refresh token', code: isProd ? 'REFRESH_FAILED' : reason.toUpperCase() };
     }
+
+    console.log(`[AuthService.refreshTokens] Verified. User: ${decoded.sub}, Type: ${decoded.tokenType}, Org: ${decoded.orgId || 'N/A'}`);
 
     // Check types
     const validTypes: AuthTokenType[] = ['login', 'organisation', 'location'];
     if (!validTypes.includes(decoded.tokenType)) {
+      console.warn(`[AuthService.refreshTokens] Invalid token type: ${decoded.tokenType}`);
       throw { statusCode: 401, message: 'Invalid token type for refresh' };
     }
 
     const userId = decoded.sub;
     const user = await userRepository.findById(userId);
     if (!user) {
+      console.warn(`[AuthService.refreshTokens] User not found: ${userId}`);
       throw { statusCode: 401, message: 'User not found' };
     }
 
@@ -419,7 +444,10 @@ export const authService = {
 
       // Verify org existence and membership
       const membership = await userOrganisationRepository.findMembership(userId, orgId);
-      if (!membership) throw { statusCode: 403, message: 'Membership invalid' };
+      if (!membership) {
+        console.warn(`[AuthService.refreshTokens] Membership invalid for org: ${orgId}`);
+        throw { statusCode: 403, message: 'Membership invalid' };
+      }
 
       newTokenTokenType = 'organisation';
       extraPayload = { orgId };
@@ -433,12 +461,16 @@ export const authService = {
       // Verify location exists and belongs to org
       const location = await locationRepository.findById(locId);
       if (!location || location.organisationId !== orgId) {
+        console.warn(`[AuthService.refreshTokens] Invalid location context: ${locId} for org ${orgId}`);
         throw { statusCode: 400, message: 'Invalid location context' };
       }
 
       // Verify membership
       const membership = await userOrganisationRepository.findMembership(userId, orgId);
-      if (!membership) throw { statusCode: 403, message: 'Membership invalid' };
+      if (!membership) {
+        console.warn(`[AuthService.refreshTokens] Membership invalid for org: ${orgId}`);
+        throw { statusCode: 403, message: 'Membership invalid' };
+      }
 
       newTokenTokenType = 'location';
       extraPayload = { orgId, locId };
@@ -447,6 +479,8 @@ export const authService = {
 
     const newAccessToken = signAccessToken({ sub: userId, tokenType: newTokenTokenType, roles, ...extraPayload });
     const newRefreshToken = signRefreshToken({ sub: userId, tokenType: newTokenTokenType, roles, ...extraPayload });
+
+    console.log(`[AuthService.refreshTokens] Success. Issued new tokens for user ${userId}, expires_in=${ACCESS_TOKEN_TTL_SECONDS}`);
 
     return {
       access_token: newAccessToken,

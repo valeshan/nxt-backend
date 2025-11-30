@@ -3,6 +3,8 @@ import { XeroService } from '../services/xeroService';
 import { CreateConnectionRequest, LinkLocationsRequest, ListConnectionsQuery, XeroAuthoriseCallbackRequest, StartConnectRequest, CompleteConnectRequest } from '../dtos/xeroDtos';
 
 import { XeroSyncService } from '../services/xeroSyncService';
+import prisma from '../infrastructure/prismaClient';
+import { XeroSyncScope, XeroSyncStatus, XeroSyncTriggerType } from '@prisma/client';
 
 const xeroService = new XeroService();
 const xeroSyncService = new XeroSyncService();
@@ -162,19 +164,103 @@ export class XeroController {
      
      // Trigger async backfill sync for the connection
      // We don't await this to keep the UI response fast
-     // result.connectionId would be needed here? completeConnect returns linkedLocations but not explicit connectionId?
-     // Let's check xeroService.completeConnect return type. 
-     // It returns { success: true; tenantName: string; linkedLocations: any[] }.
-     // linkedLocations are XeroLocationLink objects, which contain xeroConnectionId.
-     
      if (result.linkedLocations && result.linkedLocations.length > 0) {
          const connectionId = result.linkedLocations[0].xeroConnectionId;
          console.log(`[XeroController] Triggering initial backfill sync for org ${organisationId} connection ${connectionId}`);
-         xeroSyncService.syncInvoices(organisationId, connectionId)
-            .then(() => console.log(`[XeroController] Initial sync completed for org ${organisationId}`))
-            .catch(err => console.error(`[XeroController] Initial sync failed for org ${organisationId}`, err));
+         // Using syncConnection instead of deprecated syncInvoices
+         // Defaulting to INCREMENTAL which upgrades to FULL if needed
+         xeroSyncService.syncConnection({
+             connectionId, 
+             organisationId, 
+             scope: XeroSyncScope.INCREMENTAL // Will upgrade to FULL if never synced
+         }).catch(err => console.error(`[XeroController] Initial sync failed for org ${organisationId}`, err));
      }
 
      return reply.status(200).send(result);
+  }
+
+  syncConnectionHandler = async (
+    request: FastifyRequest<{ Params: { connectionId: string }; Body: { scope?: string } }>,
+    reply: FastifyReply
+  ) => {
+    const { organisationId, userId } = request.authContext;
+    if (!organisationId) {
+        return reply.status(403).send({ error: { code: 'FORBIDDEN', message: 'Organisation context required' } });
+    }
+
+    const { connectionId } = request.params;
+
+    // 1. Validate Connection ownership
+    const connection = await prisma.xeroConnection.findUnique({
+        where: { id: connectionId }
+    });
+
+    if (!connection || connection.organisationId !== organisationId) {
+        return reply.status(404).send({ error: { code: 'NOT_FOUND', message: 'Connection not found' } });
+    }
+
+    // 2. Concurrency Check
+    const activeRun = await prisma.xeroSyncRun.findFirst({
+        where: {
+            xeroConnectionId: connectionId,
+            status: { in: [XeroSyncStatus.PENDING, XeroSyncStatus.IN_PROGRESS] }
+        }
+    });
+
+    if (activeRun) {
+        return reply.status(409).send({ 
+            error: { 
+                code: 'SYNC_IN_PROGRESS', 
+                message: 'Sync already in progress for this connection' 
+            } 
+        });
+    }
+
+    // 3. Map Scope
+    let scope: XeroSyncScope = XeroSyncScope.INCREMENTAL;
+    if (request.body.scope === 'FULL') {
+        scope = XeroSyncScope.FULL;
+    }
+
+    // 4. Create PENDING Run
+    const newRun = await prisma.xeroSyncRun.create({
+        data: {
+            organisationId: connection.organisationId,
+            xeroConnectionId: connection.id,
+            tenantId: connection.xeroTenantId,
+            triggerType: XeroSyncTriggerType.MANUAL,
+            scope: scope,
+            status: XeroSyncStatus.PENDING
+        }
+    });
+
+    // 5. Fire-and-Forget Call
+    void xeroSyncService.syncConnection({
+        connectionId,
+        organisationId,
+        scope,
+        runId: newRun.id
+    }).catch(async (err) => {
+        console.error(`[XeroController] Manual sync failed for run ${newRun.id}`, err);
+        const message = err instanceof Error ? err.message : typeof err === 'string' ? err : 'Unknown error';
+        
+        await prisma.xeroSyncRun.update({
+            where: { id: newRun.id },
+            data: { 
+                status: XeroSyncStatus.FAILED, 
+                finishedAt: new Date(), 
+                errorMessage: message 
+            }
+        });
+    });
+
+    // 6. Return 202 Accepted
+    return reply.status(202).send({
+        id: newRun.id,
+        status: newRun.status,
+        triggerType: newRun.triggerType,
+        scope: newRun.scope,
+        startedAt: newRun.startedAt
+    });
   }
 }

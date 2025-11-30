@@ -24,6 +24,7 @@
     "date-fns": "^4.1.0",
     "fastify": "^4.26.2",
     "fastify-plugin": "^4.5.1",
+    "fastify-raw-body": "^4.3.0",
     "fastify-type-provider-zod": "^1.1.9",
     "jsonwebtoken": "^9.0.2",
     "xero-node": "^13.3.0",

@@ -5,165 +5,253 @@ import { XeroConnectionRepository } from '../repositories/xeroConnectionReposito
 import { SupplierService } from './supplierService';
 import { XeroService } from './xeroService';
 import { decryptToken } from '../utils/crypto';
-import { Prisma } from '@prisma/client';
+import { Prisma, XeroSyncScope, XeroSyncStatus, XeroSyncTriggerType } from '@prisma/client';
 import { getProductKeyFromLineItem } from './helpers/productKey';
 
 const connectionRepo = new XeroConnectionRepository();
 const supplierService = new SupplierService();
 const xeroService = new XeroService();
 
+interface SyncConnectionParams {
+  connectionId: string;
+  organisationId: string;
+  scope: XeroSyncScope;
+  runId?: string;
+}
+
 export class XeroSyncService {
   private readonly MAX_RETRIES = 3;
 
-  async syncInvoices(organisationId: string, connectionId: string): Promise<void> {
-    console.log(`[XeroSync] Starting sync for org ${organisationId}`);
+  async syncConnection(params: SyncConnectionParams): Promise<void> {
+    const { connectionId, organisationId, scope, runId } = params;
+    console.log(`[XeroSync] Starting sync for org ${organisationId}, connection ${connectionId}, scope ${scope}, runId ${runId}`);
     
-    // 1. Get Connection
+    // 1. Validation: Get Connection
     let connection = await connectionRepo.findById(connectionId);
-    if (!connection || connection.organisationId !== organisationId) {
-      console.error(`[XeroSync] Connection not found or mismatch for org ${organisationId} and connection ${connectionId}`);
-      throw new Error('Connection not found or mismatch');
+    if (!connection) {
+      console.error(`[XeroSync] Connection not found for connection ${connectionId}`);
+      throw new Error('Connection not found');
+    }
+    if (connection.organisationId !== organisationId) {
+      console.error(`[XeroSync] Mismatch: Connection org ${connection.organisationId} !== params org ${organisationId}`);
+      throw new Error('Connection organisation mismatch');
     }
 
-    // 2. Check Token Expiry and Refresh if needed
-    if (connection.expiresAt.getTime() - Date.now() < 5 * 60 * 1000) {
-      console.log('[XeroSync] Token expiring soon, refreshing...');
-      try {
-          await xeroService.refreshAccessToken(connectionId);
-          connection = await connectionRepo.findById(connectionId);
-          if (!connection) throw new Error('Connection lost after refresh');
-      } catch (err) {
-          console.error('[XeroSync] Token refresh failed', err);
-          throw err;
-      }
-    }
+    // 2. Run Management
+    let currentRunId = runId;
+    let effectiveScope = scope;
 
-    // 3. Get Sync State for Incremental Sync
-    const syncLog = await prisma.xeroSyncLog.findFirst({
-      where: { organisationId, xeroConnectionId: connectionId },
-      orderBy: { lastRunAt: 'desc' },
-    });
-
-    const lastModified = syncLog?.lastModifiedDateProcessed || undefined;
-    console.log(`[XeroSync] Last modified date processed: ${lastModified}`);
-
-    // 4. Initialize Xero Client
-    const xero = new XeroClient({
-      clientId: config.XERO_CLIENT_ID,
-      clientSecret: config.XERO_CLIENT_SECRET,
-    });
-
-    const decryptedToken = decryptToken(connection.accessToken);
-    await xero.setTokenSet({ access_token: decryptedToken });
-
-    let page = 1;
-    let hasMore = true;
-    let maxModifiedDate = lastModified;
-
-    console.log(`[XeroSync] Starting sync loop. Page: ${page}, LastModified: ${lastModified}`);
-
-    // Create new sync log entry
-    const currentSyncLog = await prisma.xeroSyncLog.create({
-        data: {
-            organisationId,
-            xeroConnectionId: connectionId,
-            status: 'IN_PROGRESS',
-            lastRunAt: new Date(),
+    if (runId) {
+        // Case A: runId provided (Controller created it)
+        // Load existing run and transition to IN_PROGRESS
+        const existingRun = await prisma.xeroSyncRun.findUnique({ where: { id: runId } });
+        if (!existingRun) {
+            throw new Error(`Sync run ${runId} not found`);
         }
-    });
+        await prisma.xeroSyncRun.update({
+            where: { id: runId },
+            data: {
+                status: XeroSyncStatus.IN_PROGRESS,
+                startedAt: new Date()
+            }
+        });
+    } else {
+        // Case B: runId NOT provided (Internal call)
+        // Concurrency Check
+        const activeRun = await prisma.xeroSyncRun.findFirst({
+            where: {
+                xeroConnectionId: connectionId,
+                status: { in: [XeroSyncStatus.PENDING, XeroSyncStatus.IN_PROGRESS] }
+            }
+        });
 
+        if (activeRun) {
+            console.warn(`[XeroSync] Sync already in progress for connection ${connectionId} (Run ${activeRun.id})`);
+            throw new Error('Sync already in progress');
+        }
+
+        // Create new run
+        const newRun = await prisma.xeroSyncRun.create({
+            data: {
+                organisationId,
+                xeroConnectionId: connectionId,
+                triggerType: XeroSyncTriggerType.MANUAL, // Default for internal calls
+                scope: scope,
+                status: XeroSyncStatus.IN_PROGRESS,
+                tenantId: connection.xeroTenantId
+            }
+        });
+        currentRunId = newRun.id;
+    }
+
+    // 3. Upgrade Logic & Token Refresh
     try {
-      while (hasMore) {
-        // Rate Limit Handling Loop
-        let invoicesResponse: any;
-        let attempts = 0;
-        
-        while (attempts < this.MAX_RETRIES) {
-            try {
-                console.log(`[XeroSync] Fetching invoices. Page: ${page}, Attempt: ${attempts + 1}`);
-                invoicesResponse = await xero.accountingApi.getInvoices(
-                    connection.xeroTenantId,
-                    lastModified, // IfModifiedSince
-                    'Type=="ACCPAY"', // Where clause (only bills)
-                    'Date', // Order by
-                    undefined, // Ids
-                    undefined, // InvoiceNumbers
-                    undefined, // ContactIDs
-                    ['AUTHORISED', 'PAID', 'VOIDED'], // Statuses
-                    page, // Page
-                    true, // IncludeArchived
-                    false, // CreatedByMyApp
-                    true // UnitDP (4dp)
-                );
-                break; // Success
-            } catch (error: any) {
-                console.error(`[XeroSync] API Error on page ${page}`, error.response ? error.response.statusCode : error.message);
-                if (error.response && error.response.statusCode === 429) {
-                    const retryAfter = parseInt(error.response.headers['retry-after'] || '60', 10);
-                    console.log(`[XeroSync] Rate limited. Sleeping for ${retryAfter}s`);
-                    await new Promise(resolve => setTimeout(resolve, (retryAfter + 2) * 1000));
-                    attempts++;
-                } else {
-                    throw error;
-                }
-            }
+        // Check Token Expiry and Refresh if needed
+        if (connection.expiresAt.getTime() - Date.now() < 5 * 60 * 1000) {
+            console.log('[XeroSync] Token expiring soon, refreshing...');
+            await xeroService.refreshAccessToken(connectionId);
+            // Re-fetch connection to get new tokens
+            const refreshed = await connectionRepo.findById(connectionId);
+            if (!refreshed) throw new Error('Connection lost after refresh');
+            connection = refreshed;
         }
 
-        if (!invoicesResponse || !invoicesResponse.body || !invoicesResponse.body.invoices) {
-            console.log(`[XeroSync] No invoices returned in response body for page ${page}. Stopping.`);
-            hasMore = false;
-            break;
-        }
-
-        const invoices: Invoice[] = invoicesResponse.body.invoices;
-        console.log(`[XeroSync] Page ${page} returned ${invoices.length} invoices.`);
-        
-        if (invoices.length === 0) {
-            hasMore = false;
-            break;
-        }
-
-        console.log(`[XeroSync] Processing page ${page} with ${invoices.length} invoices`);
-
-        for (const invoice of invoices) {
-            try {
-                await this.processInvoice(organisationId, connectionId, invoice);
-            } catch (err) {
-                console.error(`[XeroSync] Failed to process invoice ${invoice.invoiceID}:`, err);
-                // Continue with next invoice
-            }
+        // Upgrade Scope if never successfully synced
+        if (effectiveScope === XeroSyncScope.INCREMENTAL && !connection.lastSuccessfulSyncAt) {
+            console.log('[XeroSync] First successful sync missing. Upgrading scope to FULL.');
+            effectiveScope = XeroSyncScope.FULL;
             
-            // Track max updated date
-            if (invoice.updatedDateUTC) {
-                const invoiceDate = new Date(invoice.updatedDateUTC);
-                if (!maxModifiedDate || invoiceDate > maxModifiedDate) {
-                    maxModifiedDate = invoiceDate;
-                }
+            // Update run record to reflect actual scope
+            if (currentRunId) {
+                await prisma.xeroSyncRun.update({
+                    where: { id: currentRunId },
+                    data: { scope: XeroSyncScope.FULL }
+                });
             }
         }
 
-        page++;
-      }
+        // 4. Determine Sync Window
+        let lastModified: Date | undefined = undefined;
+        if (effectiveScope === XeroSyncScope.INCREMENTAL && connection.lastSuccessfulSyncAt) {
+            lastModified = connection.lastSuccessfulSyncAt;
+        }
+        // If FULL, lastModified stays undefined (syncs everything available or default window)
 
-      // Update Sync Log Success
-      await prisma.xeroSyncLog.update({
-          where: { id: currentSyncLog.id },
-          data: {
-              status: 'SUCCESS',
-              lastModifiedDateProcessed: maxModifiedDate,
-          }
-      });
-      console.log('[XeroSync] Sync completed successfully. Max Modified Date:', maxModifiedDate);
+        console.log(`[XeroSync] Syncing with LastModified: ${lastModified}`);
+
+        // 5. Initialize Xero Client
+        const xero = new XeroClient({
+            clientId: config.XERO_CLIENT_ID || '',
+            clientSecret: config.XERO_CLIENT_SECRET || '',
+        });
+
+        const decryptedToken = decryptToken(connection.accessToken);
+        await xero.setTokenSet({ access_token: decryptedToken });
+
+        let page = 1;
+        let hasMore = true;
+        let maxModifiedDate = lastModified;
+        let totalRowsProcessed = 0;
+
+        // 6. Sync Loop
+        while (hasMore) {
+            let invoicesResponse: any;
+            let attempts = 0;
+            
+            while (attempts < this.MAX_RETRIES) {
+                try {
+                    console.log(`[XeroSync] Fetching invoices. Page: ${page}, Attempt: ${attempts + 1}`);
+                    invoicesResponse = await xero.accountingApi.getInvoices(
+                        connection.xeroTenantId,
+                        lastModified, // IfModifiedSince
+                        'Type=="ACCPAY"', // Where clause (only bills)
+                        'Date', // Order by
+                        undefined, // Ids
+                        undefined, // InvoiceNumbers
+                        undefined, // ContactIDs
+                        ['AUTHORISED', 'PAID', 'VOIDED'], // Statuses
+                        page, // Page
+                        true, // IncludeArchived
+                        false, // CreatedByMyApp
+                        true // UnitDP (4dp)
+                    );
+                    break; // Success
+                } catch (error: any) {
+                    console.error(`[XeroSync] API Error on page ${page}`, error.response ? error.response.statusCode : error.message);
+                    if (error.response && error.response.statusCode === 429) {
+                        const retryAfter = parseInt(error.response.headers['retry-after'] || '60', 10);
+                        console.log(`[XeroSync] Rate limited. Sleeping for ${retryAfter}s`);
+                        await new Promise(resolve => setTimeout(resolve, (retryAfter + 2) * 1000));
+                        attempts++;
+                    } else {
+                        throw error;
+                    }
+                }
+            }
+
+            if (!invoicesResponse || !invoicesResponse.body || !invoicesResponse.body.invoices) {
+                console.log(`[XeroSync] No invoices returned in response body for page ${page}. Stopping.`);
+                hasMore = false;
+                break;
+            }
+
+            const invoices: Invoice[] = invoicesResponse.body.invoices;
+            console.log(`[XeroSync] Page ${page} returned ${invoices.length} invoices.`);
+            
+            if (invoices.length === 0) {
+                hasMore = false;
+                break;
+            }
+
+            console.log(`[XeroSync] Processing page ${page} with ${invoices.length} invoices`);
+
+            for (const invoice of invoices) {
+                try {
+                    await this.processInvoice(organisationId, connectionId, invoice);
+                    totalRowsProcessed++;
+                } catch (err) {
+                    console.error(`[XeroSync] Failed to process invoice ${invoice.invoiceID}:`, err);
+                    // Continue with next invoice
+                }
+                
+                // Track max updated date
+                if (invoice.updatedDateUTC) {
+                    const invoiceDate = new Date(invoice.updatedDateUTC);
+                    if (!maxModifiedDate || invoiceDate > maxModifiedDate) {
+                        maxModifiedDate = invoiceDate;
+                    }
+                }
+            }
+
+            page++;
+        }
+
+        // 7. Completion - Success
+        console.log('[XeroSync] Sync completed successfully. Max Modified Date:', maxModifiedDate);
+        
+        const finishedAt = new Date();
+        
+        // Update Run
+        if (currentRunId) {
+            await prisma.xeroSyncRun.update({
+                where: { id: currentRunId },
+                data: {
+                    status: XeroSyncStatus.SUCCESS,
+                    finishedAt,
+                    rowsProcessed: totalRowsProcessed
+                }
+            });
+        }
+
+        // Update Connection Last Sync
+        // Use maxModifiedDate if available, otherwise use sync end time as fallback (though maxModified is safer for incremental)
+        // If we did a FULL sync and got no data, we can still mark 'now' as sync point?
+        // Actually, if maxModifiedDate is null (no invoices found), we should probably set 'now' so next incremental works?
+        // Or keep previous? If we found nothing, nothing changed.
+        // Let's update to 'now' if full sync succeeded, or maxModifiedDate if incremental found stuff.
+        const newSyncTimestamp = maxModifiedDate || finishedAt;
+        
+        await prisma.xeroConnection.update({
+            where: { id: connectionId },
+            data: { lastSuccessfulSyncAt: newSyncTimestamp }
+        });
 
     } catch (error: any) {
         console.error('[XeroSync] Sync failed', error);
-        await prisma.xeroSyncLog.update({
-            where: { id: currentSyncLog.id },
-            data: {
-                status: 'FAILED',
-                message: error.message,
-            }
-        });
+        
+        // 7. Completion - Failure
+        if (currentRunId) {
+            await prisma.xeroSyncRun.update({
+                where: { id: currentRunId },
+                data: {
+                    status: XeroSyncStatus.FAILED,
+                    finishedAt: new Date(),
+                    errorMessage: error instanceof Error ? error.message : String(error)
+                }
+            });
+        }
+        
+        // Re-throw to ensure caller knows it failed (if awaited)
         throw error;
     }
   }
@@ -216,13 +304,18 @@ export class XeroSyncService {
         }
 
         // 1. Upsert Invoice Header
+        // Fix for type mismatch: explicitly cast or handle enums properly if needed. 
+        // The errors indicate that the Xero types (TypeEnum, StatusEnum, etc.) might not exactly match strings in Prisma update.
+        // Prisma schema uses Strings for these fields currently. 
+        // We should ensure we are passing strings.
+        
         const xeroInvoice = await tx.xeroInvoice.upsert({
             where: { xeroInvoiceId: invoice.invoiceID },
             update: {
                 invoiceNumber: invoice.invoiceNumber,
                 reference: invoice.reference,
-                type: invoice.type,
-                status: invoice.status,
+                type: invoice.type ? String(invoice.type) : null,
+                status: invoice.status ? String(invoice.status) : null,
                 date: invoice.date ? new Date(invoice.date) : null,
                 dueDate: invoice.dueDate ? new Date(invoice.dueDate) : null,
                 total: invoice.total,
@@ -230,7 +323,7 @@ export class XeroSyncService {
                 taxAmount: invoice.totalTax,
                 amountDue: invoice.amountDue,
                 amountPaid: invoice.amountPaid,
-                currencyCode: invoice.currencyCode,
+                currencyCode: invoice.currencyCode ? String(invoice.currencyCode) : null,
                 updatedDateUTC: invoice.updatedDateUTC ? new Date(invoice.updatedDateUTC) : null,
                 supplierId: supplier.id,
                 organisationId,
@@ -242,8 +335,8 @@ export class XeroSyncService {
                 xeroInvoiceId: invoice.invoiceID!,
                 invoiceNumber: invoice.invoiceNumber,
                 reference: invoice.reference,
-                type: invoice.type,
-                status: invoice.status,
+                type: invoice.type ? String(invoice.type) : null,
+                status: invoice.status ? String(invoice.status) : null,
                 date: invoice.date ? new Date(invoice.date) : null,
                 dueDate: invoice.dueDate ? new Date(invoice.dueDate) : null,
                 total: invoice.total,
@@ -251,10 +344,9 @@ export class XeroSyncService {
                 taxAmount: invoice.totalTax,
                 amountDue: invoice.amountDue,
                 amountPaid: invoice.amountPaid,
-                currencyCode: invoice.currencyCode,
+                currencyCode: invoice.currencyCode ? String(invoice.currencyCode) : null,
                 updatedDateUTC: invoice.updatedDateUTC ? new Date(invoice.updatedDateUTC) : null,
                 supplierId: supplier.id,
-                organisationId,
                 locationId,
                 xeroTenantId,
             },

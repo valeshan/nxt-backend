@@ -2,8 +2,11 @@ import prisma from '../infrastructure/prismaClient';
 import { Prisma, XeroConnection } from '@prisma/client';
 
 // Define the return type with included relations using Prisma's generated types
-export type XeroConnectionWithLocations = Prisma.XeroConnectionGetPayload<{
-  include: { locationLinks: { include: { location: true } } }
+export type XeroConnectionWithLocationsAndSyncRuns = Prisma.XeroConnectionGetPayload<{
+  include: { 
+    locationLinks: { include: { location: true } },
+    syncRuns: true 
+  }
 }>;
 
 export class XeroConnectionRepository {
@@ -54,17 +57,29 @@ export class XeroConnectionRepository {
     });
   }
 
-  async findById(id: string): Promise<XeroConnectionWithLocations | null> {
+  async findById(id: string): Promise<XeroConnectionWithLocationsAndSyncRuns | null> {
     return prisma.xeroConnection.findUnique({
       where: { id },
-      include: { locationLinks: { include: { location: true } } },
+      include: { 
+        locationLinks: { include: { location: true } },
+        syncRuns: {
+            orderBy: { startedAt: 'desc' },
+            take: 1
+        }
+      },
     });
   }
 
-  async findByOrganisation(organisationId: string): Promise<XeroConnectionWithLocations[]> {
+  async findByOrganisation(organisationId: string): Promise<XeroConnectionWithLocationsAndSyncRuns[]> {
     return prisma.xeroConnection.findMany({
       where: { organisationId },
-      include: { locationLinks: { include: { location: true } } },
+      include: { 
+        locationLinks: { include: { location: true } },
+        syncRuns: {
+            orderBy: { startedAt: 'desc' },
+            take: 1
+        }
+      },
     });
   }
 }

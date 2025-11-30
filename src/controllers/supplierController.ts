@@ -28,7 +28,7 @@ export class SupplierController {
 
   listSuppliers = async (request: FastifyRequest, reply: FastifyReply) => {
     const { organisationId: orgId, locationId } = this.validateOrgAccess(request);
-    const { page = 1, limit = 50, search } = request.query as any;
+    const { page = 1, limit = 50, search, activityStatus } = request.query as any;
     const skip = (page - 1) * limit;
     
     // Note: Suppliers themselves are Organisation-scoped.
@@ -36,17 +36,36 @@ export class SupplierController {
     // If we want to list only suppliers active in a location, we'd need to join invoices.
     // For now, we list all suppliers for the Org but filter metrics by location if present.
 
+    // Activity Status Filter Logic
+    const now = new Date();
+    const twelveMonthsAgo = new Date(now.getFullYear() - 1, now.getMonth(), now.getDate());
+
+    let activityFilter = {};
+    if (activityStatus === 'current') {
+        activityFilter = {
+            invoices: {
+                some: {
+                    organisationId: orgId,
+                    ...(locationId ? { locationId } : {}),
+                    date: { gte: twelveMonthsAgo },
+                    status: { in: ['AUTHORISED', 'PAID'] }
+                }
+            }
+        };
+    }
+
     const where: Prisma.SupplierWhereInput = {
       organisationId: orgId,
       status: { not: 'ARCHIVED' },
       ...(search ? { name: { contains: search, mode: 'insensitive' } } : {}),
-      ...(locationId ? {
+      ...(locationId && activityStatus !== 'current' ? {
         invoices: {
           some: {
             locationId: locationId
           }
         }
-      } : {})
+      } : {}),
+      ...activityFilter
     };
     
     // ... existing fetching logic
@@ -79,8 +98,8 @@ export class SupplierController {
     const supplierIds = suppliers.map(s => s.id);
     
     // Date Logic for Spend Trend
-    const now = new Date();
-    const startOfCurrentMonth = new Date(now.getFullYear(), now.getMonth(), 1);
+    const now2 = new Date();
+    const startOfCurrentMonth = new Date(now2.getFullYear(), now2.getMonth(), 1);
     
     const endOfCurrentPeriod = new Date(startOfCurrentMonth);
     endOfCurrentPeriod.setDate(0);
@@ -119,15 +138,15 @@ export class SupplierController {
     });
 
     // Standard 12m Metrics
-    const twelveMonthsAgo = new Date(now.getFullYear() - 1, now.getMonth(), now.getDate());
-    const sixMonthsAgo = new Date(now.getFullYear(), now.getMonth() - 6, now.getDate());
+    const twelveMonthsAgoMetric = new Date(now2.getFullYear() - 1, now2.getMonth(), now2.getDate());
+    const sixMonthsAgo = new Date(now2.getFullYear(), now2.getMonth() - 6, now2.getDate());
 
     const metrics12m = await prisma.xeroInvoice.groupBy({
       by: ['supplierId'],
       where: {
         ...metricsWhereBase,
         supplierId: { in: supplierIds },
-        date: { gte: twelveMonthsAgo },
+        date: { gte: twelveMonthsAgoMetric },
       },
       _sum: { total: true },
       _count: { id: true }

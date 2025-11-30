@@ -2,6 +2,7 @@ import { FastifyInstance } from 'fastify';
 import { ZodTypeProvider } from 'fastify-type-provider-zod';
 import { createConnectionRequestSchema, linkLocationsRequestSchema, listConnectionsQuerySchema, xeroAuthoriseCallbackRequestSchema, startConnectRequestSchema, completeConnectRequestSchema } from '../dtos/xeroDtos';
 import { XeroController } from '../controllers/xeroController';
+import xeroWebhookController from '../controllers/xeroWebhookController';
 import z from 'zod';
 import authContextPlugin from '../plugins/authContext';
 
@@ -26,6 +27,9 @@ export default async function xeroRoutes(fastify: FastifyInstance) {
     },
     xeroController.authoriseCallbackHandler
   );
+
+  // Register Webhook Controller (Public, validates signature)
+  app.register(xeroWebhookController);
 
   // Protected Routes
   app.register(async (protectedApp) => {
@@ -81,6 +85,18 @@ export default async function xeroRoutes(fastify: FastifyInstance) {
         },
       },
       xeroController.completeConnectHandler
+    );
+
+    // Manual Sync Endpoint
+    typedApp.post(
+      '/connections/:connectionId/sync',
+      {
+        schema: {
+          params: z.object({ connectionId: z.string() }),
+          body: z.object({ scope: z.enum(['INCREMENTAL', 'FULL']).optional() })
+        }
+      },
+      xeroController.syncConnectionHandler
     );
   });
 }

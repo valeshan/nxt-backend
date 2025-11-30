@@ -120,7 +120,8 @@ async function computeWeightedAveragePrices(
     organisationId: string, 
     productIds: string[], 
     startDate: Date, 
-    endDate: Date
+    endDate: Date,
+    locationId?: string
 ) {
     // Fetch all line items for these products in the window
     const lineItems = await prisma.xeroInvoiceLineItem.findMany({
@@ -129,6 +130,7 @@ async function computeWeightedAveragePrices(
             quantity: { gt: 0 }, // Rule 1 & 4: Ignore zero/negative quantity
             invoice: {
                 organisationId,
+                ...(locationId ? { locationId } : {}),
                 status: { in: ['AUTHORISED', 'PAID'] },
                 date: { gte: startDate, lte: endDate }
             }
@@ -801,13 +803,7 @@ export const supplierInsightsService = {
     const pageProductIds = paginatedItems.map(p => p.productId);
     const priceLookbackDate = subMonths(new Date(), 6); // Look back 6 months to find at least 2 data points
     
-    // Note: computeWeightedAveragePrices helper needs to accept locationId? 
-    // For now, let's modify computeWeightedAveragePrices to handle filtering implicitly via injected filter?
-    // Or safer: We should update computeWeightedAveragePrices to take locationId too.
-    // But computeWeightedAveragePrices is local. Let's update it below to accept filter.
-    // Actually, let's just inline the filter inside computeWeightedAveragePrices or pass it.
-    // Wait, computeWeightedAveragePrices is defined above. We need to update it first.
-    // Let's assume we update it.
+    // Pass locationId to helper
     const priceMap = await computeWeightedAveragePrices(organisationId, pageProductIds, priceLookbackDate, new Date(), locationId);
 
     const hydratedItems = paginatedItems.map(item => {
@@ -842,7 +838,7 @@ export const supplierInsightsService = {
     };
   },
 
-  async getProductDetail(organisationId: string, productId: string): Promise<ProductDetail | null> {
+  async getProductDetail(organisationId: string, productId: string, locationId?: string): Promise<ProductDetail | null> {
     const product = await prisma.product.findUnique({
         where: { id: productId },
         include: { supplier: true }
@@ -850,32 +846,152 @@ export const supplierInsightsService = {
     
     if (!product || product.organisationId !== organisationId) return null;
     
-    // Implicitly filtering by product's location if strict? 
-    // Or just allow viewing product detail regardless?
-    // If the user is restricted to a location, we should probably check product.locationId too?
-    // But for now we follow the strict filter on invoices.
-    
     // Date ranges
     const now = new Date();
     const startOfCurrentMonth = startOfMonth(now); 
     const windowStart = startOfMonth(subMonths(startOfCurrentMonth, 12)); // Last 12 full months
     
-    const whereInvoiceBase = { // We need to derive location from somewhere if passed?
-        // The method signature needs to accept locationId to filter spend.
-        // But the interface in the file doesn't have it yet?
-        // We need to update the interface? No, we are updating the implementation.
-        // Wait, getProductDetail signature in the file doesn't have locationId.
-        // We should add it to be consistent with others.
+    const whereInvoiceBase = {
         organisationId,
-    }; 
-    // Let's add locationId to args.
-    
+        ...(locationId ? { locationId } : {}),
+    };
+
     // 1. Calculate Stats (Spend, Qty) using raw aggregation
-    // We can reuse the raw line items for everything
-    // Note: We need locationId here! The original code didn't have it in args.
-    // We will assume we can add it.
+    const statsAgg = await prisma.xeroInvoiceLineItem.aggregate({
+        where: {
+            productId: productId,
+            invoice: {
+                ...whereInvoiceBase,
+                date: { gte: windowStart, lte: now },
+                status: { in: ['AUTHORISED', 'PAID'] }
+            }
+        },
+        _sum: { lineAmount: true, quantity: true }
+    });
+
+    const totalSpend12m = statsAgg._sum.lineAmount?.toNumber() || 0;
+    const quantityPurchased12m = statsAgg._sum.quantity?.toNumber() || 0;
+    const averageMonthlySpend = totalSpend12m / 12;
+
+    // 1.5 Trend
+    // Compare last 6m vs prev 6m
+    const last6m = getFullCalendarMonths(6);
+    const prev6mStart = new Date(last6m.start);
+    prev6mStart.setMonth(prev6mStart.getMonth() - 6);
+    const prev6mEnd = new Date(last6m.start);
+    prev6mEnd.setDate(prev6mEnd.getDate() - 1);
+
+    const last6mSpend = await prisma.xeroInvoiceLineItem.aggregate({
+        where: {
+            productId: productId,
+            invoice: {
+                ...whereInvoiceBase,
+                date: { gte: last6m.start, lte: last6m.end },
+                status: { in: ['AUTHORISED', 'PAID'] }
+            }
+        },
+        _sum: { lineAmount: true }
+    });
+    const prev6mSpend = await prisma.xeroInvoiceLineItem.aggregate({
+        where: {
+            productId: productId,
+            invoice: {
+                ...whereInvoiceBase,
+                date: { gte: prev6mStart, lte: prev6mEnd },
+                status: { in: ['AUTHORISED', 'PAID'] }
+            }
+        },
+        _sum: { lineAmount: true }
+    });
+
+    const sLast = last6mSpend._sum.lineAmount?.toNumber() || 0;
+    const sPrev = prev6mSpend._sum.lineAmount?.toNumber() || 0;
+    let spendTrend12mPercent = 0;
+    if (sPrev > 0) {
+        spendTrend12mPercent = ((sLast - sPrev) / sPrev) * 100;
+    }
+
+    // 2. Price History (Last 12 months)
+    // Pass locationId to helper
+    const priceMap = await computeWeightedAveragePrices(organisationId, [productId], windowStart, now, locationId);
+    const productPrices = priceMap.get(productId);
+
+    const priceHistory: { monthLabel: string; averageUnitPrice: number | null }[] = [];
+    const unitPriceHistory: { monthLabel: string; averageUnitPrice: number | null }[] = [];
     
-    // ... Wait, I need to fix the function signature below.
-    return null as any; // Placeholder, will fix in full replacement
+    // Iterate last 12 months
+    for (let i = 11; i >= 0; i--) {
+        const d = new Date();
+        d.setMonth(d.getMonth() - i);
+        const monthKey = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
+        const label = getMonthLabel(d);
+        
+        const price = productPrices?.get(monthKey) || null;
+        
+        priceHistory.push({ monthLabel: label, averageUnitPrice: price });
+        unitPriceHistory.push({ monthLabel: label, averageUnitPrice: price });
+    }
+
+    // 3. Calculate Product Price Trend (Last 3m vs Prev 3m)
+    // OR just purely based on available points in history?
+    // Let's do Last Price vs Avg of prev 3 months?
+    // Or strict Last 6 months trend line?
+    // Let's match the "Last Price Change" logic:
+    // Find latest price, compare to price 3-6 months ago.
+    
+    let productPriceTrendPercent = 0;
+    let canCalculateProductPriceTrend = false;
+
+    if (productPrices && productPrices.size >= 2) {
+         const sortedMonths = Array.from(productPrices.keys()).sort();
+         const latestMonth = sortedMonths[sortedMonths.length - 1];
+         const latestPrice = productPrices.get(latestMonth)!;
+         
+         // Find a comparison point approx 3-6 months back
+         let comparisonPrice = 0;
+         // Try 3 months back index
+         const lookbackIndex = sortedMonths.length - 4; 
+         if (lookbackIndex >= 0) {
+             comparisonPrice = productPrices.get(sortedMonths[lookbackIndex])!;
+         } else {
+             // Fallback to oldest available
+             comparisonPrice = productPrices.get(sortedMonths[0])!;
+         }
+         
+         if (comparisonPrice > 0) {
+             productPriceTrendPercent = ((latestPrice - comparisonPrice) / comparisonPrice) * 100;
+             canCalculateProductPriceTrend = true;
+         }
+    }
+
+    // Resolve Category Name (from most frequent account code)
+    let categoryName = 'Uncategorized';
+    const topCategory = await prisma.xeroInvoiceLineItem.groupBy({
+        by: ['accountCode'],
+        where: { productId: productId },
+        _count: { accountCode: true },
+        orderBy: { _count: { accountCode: 'desc' } },
+        take: 1
+    });
+    if (topCategory.length > 0 && topCategory[0].accountCode) {
+        categoryName = getCategoryName(topCategory[0].accountCode);
+    }
+
+    return {
+        productId: product.id,
+        productName: product.name,
+        supplierName: product.supplier?.name || 'Unknown',
+        categoryName,
+        stats12m: {
+            totalSpend12m,
+            averageMonthlySpend,
+            quantityPurchased12m,
+            spendTrend12mPercent
+        },
+        priceHistory,
+        unitPriceHistory,
+        productPriceTrendPercent,
+        canCalculateProductPriceTrend
+    };
   }
 };

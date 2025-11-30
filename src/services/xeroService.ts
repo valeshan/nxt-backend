@@ -79,7 +79,16 @@ export class XeroService {
         .map(link => ({
           id: link.location.id,
           name: link.location.name
-        }))
+        })),
+      // Map new fields for UI status display
+      lastSuccessfulSyncAt: conn.lastSuccessfulSyncAt ? conn.lastSuccessfulSyncAt.toISOString() : null,
+      syncRuns: conn.syncRuns.map(run => ({
+          id: run.id,
+          status: run.status,
+          startedAt: run.startedAt.toISOString(),
+          finishedAt: run.finishedAt ? run.finishedAt.toISOString() : null,
+          errorMessage: run.errorMessage
+      }))
     }));
   }
 
@@ -151,7 +160,7 @@ export class XeroService {
     });
 
     // Xero Node SDK refreshWithRefreshToken
-    const tokenSet = await xero.refreshWithRefreshToken(clientId, clientSecret, refreshToken);
+    let tokenSet = await xero.refreshWithRefreshToken(clientId, clientSecret, refreshToken);
     
     // Handle token set response structure variations
     const newAccessToken = tokenSet.access_token || tokenSet.accessToken || (tokenSet as any)?.body?.access_token;
@@ -257,7 +266,7 @@ export class XeroService {
       // 1. The callback URL with code and state as query params
       // 2. The state must be set in the XeroClient config (which we do above)
       // The SDK will validate that the state in the URL matches this.config.state
-      const callbackUrl = `${redirectUri}?code=${encodeURIComponent(params.xeroCode)}&state=${encodeURIComponent(params.xeroState)}`;
+      const callbackUrl = `${redirectUri || ''}?code=${encodeURIComponent(params.xeroCode)}&state=${encodeURIComponent(params.xeroState)}`;
       console.log('[XeroService] Callback URL', { 
         callbackUrl: callbackUrl.substring(0, 200),
         codeLength: params.xeroCode.length,
@@ -445,8 +454,8 @@ export class XeroService {
 
       // Create XeroClient and set token
       const xero = new XeroClient({
-        clientId,
-        clientSecret,
+        clientId: clientId || '',
+        clientSecret: clientSecret || '',
         redirectUris: [redirectUri],
         scopes: 'offline_access accounting.settings.read accounting.transactions.read'.split(' '),
       });
@@ -579,14 +588,14 @@ export class XeroService {
       const redirectUri = `${appUrl}/xero/callback`;
 
       const xero = new XeroClient({
-        clientId,
-        clientSecret,
+        clientId: clientId || '',
+        clientSecret: clientSecret || '',
         redirectUris: [redirectUri],
         scopes: 'offline_access accounting.settings.read accounting.transactions.read'.split(' '),
         state: params.state,
       });
 
-      const tokenSet = await xero.apiCallback(`${redirectUri}?code=${params.code}&state=${params.state}`);
+      const tokenSet = await xero.apiCallback(`${(redirectUri || '')}?code=${params.code}&state=${params.state}`);
       
       if (!tokenSet || !tokenSet.access_token || !tokenSet.refresh_token) {
            throw new Error('Failed to receive tokens');

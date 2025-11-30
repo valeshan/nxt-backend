@@ -1,6 +1,7 @@
 import Fastify, { FastifyInstance } from 'fastify';
 import cors from '@fastify/cors';
 import cookie from '@fastify/cookie';
+import fastifyRawBody from 'fastify-raw-body';
 import { serializerCompiler, validatorCompiler, ZodTypeProvider } from 'fastify-type-provider-zod';
 import * as Sentry from '@sentry/node';
 import xeroRoutes from './routes/xeroRoutes';
@@ -9,11 +10,18 @@ import organisationRoutes from './routes/organisationRoutes';
 import locationRoutes from './routes/locationRoutes';
 import supplierRoutes from './routes/supplierRoutes';
 import supplierInsightsRoutes from './routes/supplierInsightsRoutes';
+import xeroWebhookRoutes from './controllers/xeroWebhookController'; // Assuming we'll create this
 import { config } from './config/env';
 
 export function buildApp(): FastifyInstance {
   const app = Fastify({
     logger: true,
+  });
+
+  // Register raw body support (global: false so it only applies where requested)
+  app.register(fastifyRawBody, {
+    global: false,
+    runFirst: true,
   });
 
   // Setup Zod validation
@@ -31,7 +39,7 @@ export function buildApp(): FastifyInstance {
     app.register(cors, {
       origin: ['http://localhost:3000'],
       methods: ['GET', 'POST', 'OPTIONS'],
-      allowedHeaders: ['Content-Type', 'Authorization', 'x-user-id', 'x-org-id', 'x-location-id'],
+      allowedHeaders: ['Content-Type', 'Authorization', 'x-user-id', 'x-org-id', 'x-location-id', 'x-xero-signature'],
       credentials: true, // Allow cookies
     });
   } else {
@@ -43,9 +51,6 @@ export function buildApp(): FastifyInstance {
 
   // Register Routes
   // Ensure Auth Plugin is registered within routes (as per current pattern)
-  // or register it globally here if we want to enforce it for everything.
-  // We stuck to per-route registration as per plan instruction "Registration Order: Ensure this plugin is registered before tenant-aware routes".
-  // In our case, we did it inside the route files.
   
   app.register(authRoutes, { prefix: '/auth' });
   app.register(organisationRoutes, { prefix: '/organisations' });

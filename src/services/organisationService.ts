@@ -38,7 +38,7 @@ export const organisationService = {
     
     // Create Location - ORPHAN RECORD
     const location = await locationRepository.createLocation({
-        organisationId: org.id,
+        organisation: { connect: { id: org.id } },
         name: venueName
     });
 

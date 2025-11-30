@@ -15,9 +15,5 @@ export function initSentry() {
     debug: config.NODE_ENV === "development",
 
     environment: config.NODE_ENV,
-
-    // Capture unhandled promise rejections
-    captureUnhandledRejections: true,
   });
 }
-

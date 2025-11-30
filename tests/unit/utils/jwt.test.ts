@@ -5,19 +5,19 @@ import jwt from 'jsonwebtoken';
 
 describe('JWT Utils', () => {
   it('should sign and verify access token', () => {
-    const payload = { sub: 'user1', type: 'access_token_login' as const };
+    const payload = { sub: 'user1', tokenType: 'login' as const, roles: [] };
     const token = signAccessToken(payload);
     const decoded = verifyToken(token);
     expect(decoded.sub).toBe('user1');
-    expect(decoded.type).toBe('access_token_login');
+    expect(decoded.tokenType).toBe('login');
   });
 
   it('should sign and verify refresh token', () => {
-    const payload = { sub: 'user1', type: 'refresh_token_login' as const };
+    const payload = { sub: 'user1', tokenType: 'login' as const, roles: [] };
     const token = signRefreshToken(payload);
     const decoded = verifyToken(token);
     expect(decoded.sub).toBe('user1');
-    expect(decoded.type).toBe('refresh_token_login');
+    expect(decoded.tokenType).toBe('login');
   });
 
   it('should fail for invalid signature', () => {
@@ -25,4 +25,3 @@ describe('JWT Utils', () => {
     expect(() => verifyToken(token)).toThrow();
   });
 });
-

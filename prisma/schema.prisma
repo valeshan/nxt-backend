@@ -8,41 +8,42 @@ datasource db {
 }
 
 model User {
-  id             String             @id @default(uuid())
-  email          String             @unique
+  id             String   @id @default(uuid())
+  email          String   @unique
   passwordHash   String
   name           String?
   profilePicture String?
-  createdAt      DateTime           @default(now())
-  updatedAt      DateTime           @updatedAt
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
 
-  memberships    UserOrganisation[]
-  settings       UserSettings?
+  memberships     UserOrganisation[]
+  settings        UserSettings?
   xeroConnections XeroConnection[]
 }
 
 model Organisation {
-  id        String             @id @default(uuid())
+  id        String   @id @default(uuid())
   name      String
-  createdAt DateTime           @default(now())
-  updatedAt DateTime           @updatedAt
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
 
-  locations Location[]
-  members   UserOrganisation[]
-  xeroConnections XeroConnection[]
+  locations         Location[]
+  members           UserOrganisation[]
+  xeroConnections   XeroConnection[]
   xeroLocationLinks XeroLocationLink[]
-  suppliers Supplier[]
-  xeroInvoices XeroInvoice[]
-  products  Product[]
+  suppliers         Supplier[]
+  xeroInvoices      XeroInvoice[]
+  products          Product[]
+  xeroSyncRuns      XeroSyncRun[]
 }
 
 model Location {
-  id             String        @id @default(uuid())
+  id             String       @id @default(uuid())
   name           String
   organisationId String
-  organisation   Organisation  @relation(fields: [organisationId], references: [id])
-  createdAt      DateTime      @default(now())
-  updatedAt      DateTime      @updatedAt
+  organisation   Organisation @relation(fields: [organisationId], references: [id])
+  createdAt      DateTime     @default(now())
+  updatedAt      DateTime     @updatedAt
 
   xeroLocationLinks XeroLocationLink[]
   xeroInvoices      XeroInvoice[]
@@ -63,22 +64,22 @@ model UserOrganisation {
 }
 
 model UserSettings {
-  id        String   @id @default(uuid())
-  userId    String   @unique
+  id     String @id @default(uuid())
+  userId String @unique
 
-  execDashboard        Boolean @default(false)
-  juniorDashboard      Boolean @default(false)
-  chat                 Boolean @default(false)
-  subscriptionPlan     Boolean @default(false)
-  contextAi            Boolean @default(false)
-  liveFeed             Boolean @default(true)
-  playbooks            Boolean @default(false)
-  dashboard            Boolean @default(true)
-  settings             Boolean @default(true)
-  notifications        Boolean @default(false)
-  forecast             Boolean @default(false)
-  productPerformance   Boolean @default(false)
-  jacobDashboard       Boolean @default(false)
+  execDashboard      Boolean @default(false)
+  juniorDashboard    Boolean @default(false)
+  chat               Boolean @default(false)
+  subscriptionPlan   Boolean @default(false)
+  contextAi          Boolean @default(false)
+  liveFeed           Boolean @default(true)
+  playbooks          Boolean @default(false)
+  dashboard          Boolean @default(true)
+  settings           Boolean @default(true)
+  notifications      Boolean @default(false)
+  forecast           Boolean @default(false)
+  productPerformance Boolean @default(false)
+  jacobDashboard     Boolean @default(false)
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -93,31 +94,33 @@ enum OrganisationRole {
 }
 
 model XeroConnection {
-  id             String   @id @default(uuid())
-  userId         String
-  organisationId String
-  xeroTenantId   String
-  tenantName     String
-  accessToken    String
-  refreshToken   String
-  expiresAt      DateTime
-  xeroCode       String?  // OAuth authorization code used (for audit/debugging)
-  xeroState      String?  // OAuth state parameter used (for audit/debugging)
-  createdAt      DateTime @default(now())
-  updatedAt      DateTime @updatedAt
+  id                   String    @id @default(uuid())
+  userId               String
+  organisationId       String
+  xeroTenantId         String
+  tenantName           String
+  accessToken          String
+  refreshToken         String
+  expiresAt            DateTime
+  xeroCode             String? // OAuth authorization code used (for audit/debugging)
+  xeroState            String? // OAuth state parameter used (for audit/debugging)
+  lastSuccessfulSyncAt DateTime?
+  createdAt            DateTime  @default(now())
+  updatedAt            DateTime  @updatedAt
 
-  organisation  Organisation @relation(fields: [organisationId], references: [id])
-  user          User         @relation(fields: [userId], references: [id])
+  organisation  Organisation       @relation(fields: [organisationId], references: [id])
+  user          User               @relation(fields: [userId], references: [id])
   locationLinks XeroLocationLink[]
+  syncRuns      XeroSyncRun[]
 }
 
 model XeroLocationLink {
-  id               String         @id @default(uuid())
+  id               String   @id @default(uuid())
   xeroConnectionId String
   organisationId   String
   locationId       String
-  createdAt        DateTime       @default(now())
-  updatedAt        DateTime       @updatedAt
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
 
   xeroConnection XeroConnection @relation(fields: [xeroConnectionId], references: [id])
   organisation   Organisation   @relation(fields: [organisationId], references: [id])
@@ -169,14 +172,14 @@ model Supplier {
 }
 
 model SupplierSourceLink {
-  id             String             @id @default(uuid())
+  id             String               @id @default(uuid())
   supplierId     String
   organisationId String
   sourceSystem   SupplierSourceSystem
-  externalId     String?            // e.g. Xero ContactID
-  rawName        String?            // e.g. OCR extracted supplier name
-  confidence     Float?             // 0-1
-  createdAt      DateTime           @default(now())
+  externalId     String? // e.g. Xero ContactID
+  rawName        String? // e.g. OCR extracted supplier name
+  confidence     Float? // 0-1
+  createdAt      DateTime             @default(now())
 
   supplier Supplier @relation(fields: [supplierId], references: [id])
 
@@ -188,49 +191,49 @@ model Product {
   organisationId String
   locationId     String
   supplierId     String?
-  productKey     String   // normalized stable key (lowercase description/itemCode)
-  name           String   // human-friendly label
+  productKey     String // normalized stable key (lowercase description/itemCode)
+  name           String // human-friendly label
   createdAt      DateTime @default(now())
   updatedAt      DateTime @updatedAt
 
   organisation Organisation @relation(fields: [organisationId], references: [id])
   supplier     Supplier?    @relation(fields: [supplierId], references: [id])
-  
-  lineItems    XeroInvoiceLineItem[]
+
+  lineItems XeroInvoiceLineItem[]
 
   @@unique([organisationId, locationId, productKey])
   @@index([organisationId, locationId])
 }
 
 model XeroInvoice {
-  id              String                @id @default(uuid())
-  organisationId  String
-  xeroInvoiceId   String                @unique // Xero InvoiceID
-  invoiceNumber   String?
-  reference       String?
-  type            String?               // ACCPAY, etc.
-  status          String?               // AUTHORISED, PAID, VOIDED
-  date            DateTime?
-  dueDate         DateTime?
-  total           Decimal?              @db.Decimal(19, 4)
-  subTotal        Decimal?              @db.Decimal(19, 4)
-  taxAmount       Decimal?              @db.Decimal(19, 4)
-  amountDue       Decimal?              @db.Decimal(19, 4)
-  amountPaid      Decimal?              @db.Decimal(19, 4)
-  currencyCode    String?
-  updatedDateUTC  DateTime?
-  
-  supplierId      String?
-  supplier        Supplier?             @relation(fields: [supplierId], references: [id])
-  organisation    Organisation          @relation(fields: [organisationId], references: [id])
-  locationId      String?
-  location        Location?             @relation(fields: [locationId], references: [id])
-  xeroTenantId    String?
+  id             String    @id @default(uuid())
+  organisationId String
+  xeroInvoiceId  String    @unique // Xero InvoiceID
+  invoiceNumber  String?
+  reference      String?
+  type           String? // ACCPAY, etc.
+  status         String? // AUTHORISED, PAID, VOIDED
+  date           DateTime?
+  dueDate        DateTime?
+  total          Decimal?  @db.Decimal(19, 4)
+  subTotal       Decimal?  @db.Decimal(19, 4)
+  taxAmount      Decimal?  @db.Decimal(19, 4)
+  amountDue      Decimal?  @db.Decimal(19, 4)
+  amountPaid     Decimal?  @db.Decimal(19, 4)
+  currencyCode   String?
+  updatedDateUTC DateTime?
 
-  lineItems       XeroInvoiceLineItem[]
-  
-  createdAt       DateTime              @default(now())
-  updatedAt       DateTime              @updatedAt
+  supplierId   String?
+  supplier     Supplier?    @relation(fields: [supplierId], references: [id])
+  organisation Organisation @relation(fields: [organisationId], references: [id])
+  locationId   String?
+  location     Location?    @relation(fields: [locationId], references: [id])
+  xeroTenantId String?
+
+  lineItems XeroInvoiceLineItem[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
 
   @@index([organisationId])
   @@index([supplierId])
@@ -238,20 +241,20 @@ model XeroInvoice {
 }
 
 model XeroInvoiceLineItem {
-  id           String      @id @default(uuid())
-  invoiceId    String
-  description  String?
-  quantity     Decimal?    @db.Decimal(19, 4)
-  unitAmount   Decimal?    @db.Decimal(19, 4)
-  lineAmount   Decimal?    @db.Decimal(19, 4)
-  taxAmount    Decimal?    @db.Decimal(19, 4)
-  itemCode     String?
-  accountCode  String?
-  
-  productId    String?
-  product      Product?    @relation(fields: [productId], references: [id])
-  
-  invoice      XeroInvoice @relation(fields: [invoiceId], references: [id], onDelete: Cascade)
+  id          String   @id @default(uuid())
+  invoiceId   String
+  description String?
+  quantity    Decimal? @db.Decimal(19, 4)
+  unitAmount  Decimal? @db.Decimal(19, 4)
+  lineAmount  Decimal? @db.Decimal(19, 4)
+  taxAmount   Decimal? @db.Decimal(19, 4)
+  itemCode    String?
+  accountCode String?
+
+  productId String?
+  product   Product? @relation(fields: [productId], references: [id])
+
+  invoice XeroInvoice @relation(fields: [invoiceId], references: [id], onDelete: Cascade)
 
   @@index([invoiceId])
   @@index([productId])
@@ -276,17 +279,40 @@ enum SupplierSourceSystem {
   MANUAL
 }
 
-model XeroSyncLog {
-  id             String   @id @default(uuid())
-  organisationId String
+enum XeroSyncTriggerType {
+  MANUAL
+  WEBHOOK
+}
+
+enum XeroSyncScope {
+  INCREMENTAL
+  FULL
+}
+
+enum XeroSyncStatus {
+  PENDING
+  IN_PROGRESS
+  SUCCESS
+  FAILED
+}
+
+model XeroSyncRun {
+  id               String              @id @default(uuid())
   xeroConnectionId String
-  lastModifiedDateProcessed DateTime?
-  lastRunAt      DateTime @default(now())
-  status         String   // SUCCESS, FAILED, IN_PROGRESS
-  message        String?
-  
-  @@index([organisationId])
-  @@index([xeroConnectionId])
+  organisationId   String
+  tenantId         String?
+  triggerType      XeroSyncTriggerType
+  scope            XeroSyncScope
+  status           XeroSyncStatus
+  startedAt        DateTime            @default(now())
+  finishedAt       DateTime?
+  errorMessage     String?
+  rowsProcessed    Int?
+
+  xeroConnection XeroConnection @relation(fields: [xeroConnectionId], references: [id])
+  organisation   Organisation   @relation(fields: [organisationId], references: [id])
+
+  @@index([xeroConnectionId, status, startedAt])
 }
 
 model XeroAuthSession {

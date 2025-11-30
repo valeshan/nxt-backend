@@ -9,7 +9,8 @@ const envSchema = z.object({
   XERO_CLIENT_ID: z.string().optional(),
   XERO_CLIENT_SECRET: z.string().optional(),
   XERO_REDIRECT_URI: z.string().optional(),
-  APP_URL: z.string().url().optional(), // Add this line
+  XERO_WEBHOOK_SECRET: z.string().optional(), // Added XERO_WEBHOOK_SECRET
+  APP_URL: z.string().url().optional(),
   FRONTEND_URL: z.string().url().optional().default('https://app.thenxt.ai'),
 });
 
@@ -21,4 +22,3 @@ if (!parsed.success) {
 }
 
 export const config = parsed.data;
-
