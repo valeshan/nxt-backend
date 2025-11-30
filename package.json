@@ -2,11 +2,11 @@
   "name": "xero-integration-service",
   "version": "1.0.0",
   "description": "Backend service for Xero integration metadata",
-  "main": "dist/server.js",
+  "main": "dist/src/server.js",
   "scripts": {
     "dev": "tsx watch src/server.ts",
     "build": "tsc -p tsconfig.build.json",
-    "start": "node dist/server.js",
+    "start": "node dist/src/server.js",
     "test": "vitest run",
     "prisma:migrate": "prisma migrate dev",
     "lint": "eslint . --ext .ts",
