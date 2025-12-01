@@ -22,10 +22,26 @@ export default async function supplierRoutes(fastify: FastifyInstance) {
               limit: z.coerce.number().optional().default(50),
               search: z.string().optional(),
               activityStatus: z.enum(['current', 'all']).optional(),
+              accountCodes: z.union([z.string(), z.array(z.string())]).optional(),
             }),
           },
         },
         supplierController.listSuppliers
+      );
+
+      typedApp.get(
+        '/accounts',
+        {
+            schema: {
+                response: {
+                    200: z.array(z.object({
+                        code: z.string(),
+                        name: z.string().nullable()
+                    }))
+                }
+            }
+        },
+        supplierController.listAccounts
       );
 
       typedApp.get(

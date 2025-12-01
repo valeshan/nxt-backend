@@ -2,6 +2,7 @@ import { FastifyRequest, FastifyReply } from 'fastify';
 import prisma from '../infrastructure/prismaClient';
 import { normalizeSupplierName } from '../utils/normalizeSupplierName';
 import { Prisma } from '@prisma/client';
+import { supplierInsightsService } from '../services/supplierInsightsService';
 
 export class SupplierController {
   
@@ -26,10 +27,27 @@ export class SupplierController {
     return { organisationId, locationId };
   }
 
+  listAccounts = async (request: FastifyRequest, reply: FastifyReply) => {
+      const { organisationId: orgId, locationId } = this.validateOrgAccess(request);
+      const accounts = await supplierInsightsService.getAccounts(orgId, locationId);
+      return reply.send(accounts);
+  }
+
   listSuppliers = async (request: FastifyRequest, reply: FastifyReply) => {
     const { organisationId: orgId, locationId } = this.validateOrgAccess(request);
-    const { page = 1, limit = 50, search, activityStatus } = request.query as any;
+    const { page = 1, limit = 50, search, activityStatus, accountCodes } = request.query as any;
     const skip = (page - 1) * limit;
+    
+    // Normalize accountCodes to string[]
+    let normalizedAccountCodes: string[] | undefined = undefined;
+    if (accountCodes) {
+        if (Array.isArray(accountCodes)) {
+            normalizedAccountCodes = accountCodes;
+        } else if (typeof accountCodes === 'string') {
+            // Support comma separated string if needed, or just single value
+            normalizedAccountCodes = accountCodes.split(',').map(s => s.trim()).filter(s => s.length > 0);
+        }
+    }
     
     // Note: Suppliers themselves are Organisation-scoped.
     // However, their invoices and activity can be Location-scoped.
@@ -54,6 +72,9 @@ export class SupplierController {
         };
     }
 
+    // Account Filter Logic (from service)
+    const accountFilter = supplierInsightsService.getSupplierFilterWhereClause(orgId, locationId, normalizedAccountCodes);
+
     const where: Prisma.SupplierWhereInput = {
       organisationId: orgId,
       status: { not: 'ARCHIVED' },
@@ -65,7 +86,8 @@ export class SupplierController {
           }
         }
       } : {}),
-      ...activityFilter
+      ...activityFilter,
+      ...accountFilter // Merge account filter logic
     };
     
     // ... existing fetching logic
@@ -90,7 +112,14 @@ export class SupplierController {
         date: {}, // -> Added inside groupBys
         status: { in: ['AUTHORISED', 'PAID'] },
         organisationId: orgId,
-        ...(locationId ? { locationId } : {})
+        ...(locationId ? { locationId } : {}),
+        ...(normalizedAccountCodes && normalizedAccountCodes.length > 0 ? {
+            lineItems: {
+                some: {
+                    accountCode: { in: normalizedAccountCodes }
+                }
+            }
+        } : {})
     };
 
     // ... Update queries to use metricsWhereBase
@@ -171,6 +200,11 @@ export class SupplierController {
       const locationFilter = locationId 
         ? Prisma.sql`AND i."locationId" = ${locationId}` 
         : Prisma.empty;
+      
+      // Account filter for raw query
+      const accountFilterRaw = (normalizedAccountCodes && normalizedAccountCodes.length > 0)
+        ? Prisma.sql`AND li."accountCode" IN (${Prisma.join(normalizedAccountCodes)})`
+        : Prisma.empty;
 
       const itemCounts: any[] = await prisma.$queryRaw`
         SELECT i."supplierId", COUNT(DISTINCT COALESCE("itemCode", LOWER(TRIM("description"))))::int as "count"
@@ -180,6 +214,7 @@ export class SupplierController {
         AND i."status" IN ('AUTHORISED', 'PAID')
         AND i."organisationId" = ${orgId}
         ${locationFilter}
+        ${accountFilterRaw}
         GROUP BY i."supplierId"
       `;
       itemCountsMap = new Map(itemCounts.map((c: any) => [c.supplierId, c.count]));

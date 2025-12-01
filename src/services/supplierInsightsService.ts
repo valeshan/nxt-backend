@@ -86,6 +86,11 @@ export interface PaginatedResult<T> {
   };
 }
 
+export interface AccountDto {
+    code: string;
+    name: string | null;
+}
+
 // --- Date Helper ---
 
 function getFullCalendarMonths(monthsBack: number) {
@@ -1017,6 +1022,75 @@ export const supplierInsightsService = {
         unitPriceHistory,
         productPriceTrendPercent,
         canCalculateProductPriceTrend
+    };
+  },
+
+  async getAccounts(organisationId: string, locationId?: string): Promise<AccountDto[]> {
+      const whereInvoice = {
+          organisationId,
+          ...(locationId ? { locationId } : {}),
+      };
+
+      // Group by accountCode and accountName to get distinct pairs
+      const accounts = await prisma.xeroInvoiceLineItem.groupBy({
+          by: ['accountCode', 'accountName'],
+          where: {
+              invoice: whereInvoice,
+              accountCode: { not: null }
+          },
+      });
+
+      // Map to DTO, handling potential multiple names for same code by picking one (e.g. last seen or just first)
+      // Since groupBy returns unique combinations, we might get:
+      // Code: 400, Name: COGS
+      // Code: 400, Name: Cost of Goods
+      // We want to return distinct codes with a preferred name.
+      
+      const accountMap = new Map<string, string | null>();
+      
+      for (const acc of accounts) {
+          if (!acc.accountCode) continue;
+          // If we already have this code, we can prefer a name that is present (not null) or longer?
+          // For simplicity, overwrite if current name is present, or keep first one found.
+          // Let's prefer the one with a name over null.
+          if (!accountMap.has(acc.accountCode)) {
+              accountMap.set(acc.accountCode, acc.accountName);
+          } else {
+              const existingName = accountMap.get(acc.accountCode);
+              if (!existingName && acc.accountName) {
+                   accountMap.set(acc.accountCode, acc.accountName);
+              }
+          }
+      }
+
+      const result: AccountDto[] = [];
+      for (const [code, name] of accountMap.entries()) {
+          result.push({ code, name });
+      }
+      
+      // Sort by code for nicer display
+      result.sort((a, b) => a.code.localeCompare(b.code));
+      
+      return result;
+  },
+
+  getSupplierFilterWhereClause(organisationId: string, locationId?: string, accountCodes?: string[]) {
+    if (!accountCodes || accountCodes.length === 0) {
+        return {};
+    }
+
+    return {
+        invoices: {
+            some: {
+                organisationId,
+                ...(locationId ? { locationId } : {}),
+                lineItems: {
+                    some: {
+                        accountCode: { in: accountCodes }
+                    }
+                }
+            }
+        }
     };
   }
 };
