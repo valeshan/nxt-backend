@@ -33,6 +33,18 @@ export class SupplierController {
       return reply.send(accounts);
   }
 
+  saveAccountConfig = async (request: FastifyRequest, reply: FastifyReply) => {
+      const { organisationId, locationId } = this.validateOrgAccess(request);
+      const { accountCodes } = request.body as { accountCodes: string[] };
+      
+      if (!locationId) {
+          return reply.status(400).send({ error: 'Location context required to save configuration' });
+      }
+
+      const result = await supplierInsightsService.saveLocationAccountConfig(organisationId, locationId, accountCodes);
+      return reply.send(result);
+  }
+
   listSuppliers = async (request: FastifyRequest, reply: FastifyReply) => {
     const { organisationId: orgId, locationId } = this.validateOrgAccess(request);
     const { page = 1, limit = 50, search, activityStatus, accountCodes } = request.query as any;

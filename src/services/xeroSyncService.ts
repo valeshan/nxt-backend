@@ -5,7 +5,7 @@ import { XeroConnectionRepository } from '../repositories/xeroConnectionReposito
 import { SupplierService } from './supplierService';
 import { XeroService } from './xeroService';
 import { decryptToken } from '../utils/crypto';
-import { Prisma, XeroSyncScope, XeroSyncStatus, XeroSyncTriggerType } from '@prisma/client';
+import { Prisma, XeroSyncScope, XeroSyncStatus, XeroSyncTriggerType, XeroConnection } from '@prisma/client';
 import { getProductKeyFromLineItem } from './helpers/productKey';
 
 const connectionRepo = new XeroConnectionRepository();
@@ -17,14 +17,15 @@ interface SyncConnectionParams {
   organisationId: string;
   scope: XeroSyncScope;
   runId?: string;
+  triggerType?: XeroSyncTriggerType;
 }
 
 export class XeroSyncService {
   private readonly MAX_RETRIES = 3;
 
-  async syncConnection(params: SyncConnectionParams): Promise<void> {
-    const { connectionId, organisationId, scope, runId } = params;
-    console.log(`[XeroSync] Starting sync for org ${organisationId}, connection ${connectionId}, scope ${scope}, runId ${runId}`);
+  async syncConnection(params: SyncConnectionParams): Promise<XeroConnection> {
+    const { connectionId, organisationId, scope, runId, triggerType } = params;
+    console.log(`[XeroSync] Starting sync for org ${organisationId}, connection ${connectionId}, scope ${scope}, runId ${runId}, trigger ${triggerType}`);
     
     // 1. Validation: Get Connection
     let connection = await connectionRepo.findById(connectionId);
@@ -48,15 +49,16 @@ export class XeroSyncService {
         if (!existingRun) {
             throw new Error(`Sync run ${runId} not found`);
         }
+        // Double check if it's already done/failed? Assuming controller handles state transitions correctly.
         await prisma.xeroSyncRun.update({
             where: { id: runId },
             data: {
                 status: XeroSyncStatus.IN_PROGRESS,
-                startedAt: new Date()
+                startedAt: new Date() // Reset start time? Or keep original creation? Let's update to show actual work start.
             }
         });
     } else {
-        // Case B: runId NOT provided (Internal call)
+        // Case B: runId NOT provided (Internal/System call)
         // Concurrency Check
         const activeRun = await prisma.xeroSyncRun.findFirst({
             where: {
@@ -67,7 +69,10 @@ export class XeroSyncService {
 
         if (activeRun) {
             console.warn(`[XeroSync] Sync already in progress for connection ${connectionId} (Run ${activeRun.id})`);
-            throw new Error('Sync already in progress');
+            // Throw a specific error object or string that controller can identify
+            const error: any = new Error('Sync already in progress');
+            error.code = 'SYNC_IN_PROGRESS'; // Custom code for detection
+            throw error;
         }
 
         // Create new run
@@ -75,7 +80,7 @@ export class XeroSyncService {
             data: {
                 organisationId,
                 xeroConnectionId: connectionId,
-                triggerType: XeroSyncTriggerType.MANUAL, // Default for internal calls
+                triggerType: triggerType || XeroSyncTriggerType.MANUAL, 
                 scope: scope,
                 status: XeroSyncStatus.IN_PROGRESS,
                 tenantId: connection.xeroTenantId
@@ -253,10 +258,12 @@ export class XeroSyncService {
         // Let's update to 'now' if full sync succeeded, or maxModifiedDate if incremental found stuff.
         const newSyncTimestamp = maxModifiedDate || finishedAt;
         
-        await prisma.xeroConnection.update({
+        const updatedConnection = await prisma.xeroConnection.update({
             where: { id: connectionId },
             data: { lastSuccessfulSyncAt: newSyncTimestamp }
         });
+
+        return updatedConnection;
 
     } catch (error: any) {
         console.error('[XeroSync] Sync failed', error);

@@ -90,6 +90,7 @@ export interface PaginatedResult<T> {
 export interface AccountDto {
     code: string;
     name: string | null;
+    isCogs: boolean;
 }
 
 // --- Date Helper ---
@@ -1058,7 +1059,7 @@ export const supplierInsightsService = {
           ...(locationId ? { locationId } : {}),
       };
 
-      // Group by accountCode and accountName to get distinct pairs
+      // 1. Group by accountCode and accountName to get distinct pairs
       const accounts = await prisma.xeroInvoiceLineItem.groupBy({
           by: ['accountCode', 'accountName'],
           where: {
@@ -1067,19 +1068,21 @@ export const supplierInsightsService = {
           },
       });
 
-      // Map to DTO, handling potential multiple names for same code by picking one (e.g. last seen or just first)
-      // Since groupBy returns unique combinations, we might get:
-      // Code: 400, Name: COGS
-      // Code: 400, Name: Cost of Goods
-      // We want to return distinct codes with a preferred name.
-      
+      // 2. Fetch Location Config
+      const cogsSet = new Set<string>();
+      if (locationId) {
+          const config = await prisma.locationAccountConfig.findMany({
+              where: { organisationId, locationId },
+              select: { accountCode: true }
+          });
+          config.forEach(c => cogsSet.add(c.accountCode));
+      }
+
+      // 3. Map to DTO
       const accountMap = new Map<string, string | null>();
       
       for (const acc of accounts) {
           if (!acc.accountCode) continue;
-          // If we already have this code, we can prefer a name that is present (not null) or longer?
-          // For simplicity, overwrite if current name is present, or keep first one found.
-          // Let's prefer the one with a name over null.
           if (!accountMap.has(acc.accountCode)) {
               accountMap.set(acc.accountCode, acc.accountName);
           } else {
@@ -1092,13 +1095,46 @@ export const supplierInsightsService = {
 
       const result: AccountDto[] = [];
       for (const [code, name] of accountMap.entries()) {
-          result.push({ code, name });
+          result.push({ 
+            code, 
+            name,
+            isCogs: cogsSet.has(code) 
+          });
       }
       
       // Sort by code for nicer display
       result.sort((a, b) => a.code.localeCompare(b.code));
       
       return result;
+  },
+
+  async saveLocationAccountConfig(organisationId: string, locationId: string, accountCodes: string[]) {
+    // Use transaction to replace all configs for this location
+    return prisma.$transaction(async (tx) => {
+        // 1. Delete existing
+        await tx.locationAccountConfig.deleteMany({
+            where: {
+                organisationId,
+                locationId
+            }
+        });
+
+        // 2. Insert new
+        if (accountCodes.length > 0) {
+             // Deduplicate input
+             const uniqueCodes = Array.from(new Set(accountCodes));
+             await tx.locationAccountConfig.createMany({
+                 data: uniqueCodes.map(code => ({
+                     organisationId,
+                     locationId,
+                     accountCode: code,
+                     category: 'COGS'
+                 }))
+             });
+        }
+        
+        return { success: true, count: accountCodes.length };
+    });
   },
 
   getSupplierFilterWhereClause(organisationId: string, locationId?: string, accountCodes?: string[]) {

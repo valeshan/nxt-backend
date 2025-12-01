@@ -36,12 +36,31 @@ export default async function supplierRoutes(fastify: FastifyInstance) {
                 response: {
                     200: z.array(z.object({
                         code: z.string(),
-                        name: z.string().nullable()
+                        name: z.string().nullable(),
+                        isCogs: z.boolean()
                     }))
                 }
             }
         },
         supplierController.listAccounts
+      );
+
+      typedApp.post(
+        '/accounts',
+        {
+            schema: {
+                body: z.object({
+                    accountCodes: z.array(z.string())
+                }),
+                response: {
+                    200: z.object({
+                        success: z.boolean(),
+                        count: z.number()
+                    })
+                }
+            }
+        },
+        supplierController.saveAccountConfig
       );
 
       typedApp.get(

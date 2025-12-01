@@ -1,6 +1,8 @@
 import { buildApp } from './app';
 import { config } from './config/env';
 import { initSentry } from './config/sentry';
+import { cleanupStuckSyncs } from './utils/cleanup';
+import { initCronJobs } from './jobs/cron';
 
 // Initialize Sentry before anything else
 initSentry();
@@ -9,6 +11,12 @@ const start = async () => {
   const app = buildApp();
 
   try {
+    // Run startup cleanup
+    await cleanupStuckSyncs();
+    
+    // Initialize Cron Jobs
+    initCronJobs();
+
     await app.listen({ port: config.PORT, host: '0.0.0.0' });
     console.log(`Server listening on port ${config.PORT}`);
   } catch (err) {
@@ -18,4 +26,3 @@ const start = async () => {
 };
 
 start();
-

@@ -29,14 +29,15 @@ model Organisation {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  locations         Location[]
-  members           UserOrganisation[]
-  xeroConnections   XeroConnection[]
-  xeroLocationLinks XeroLocationLink[]
-  suppliers         Supplier[]
-  xeroInvoices      XeroInvoice[]
-  products          Product[]
-  xeroSyncRuns      XeroSyncRun[]
+  locations              Location[]
+  members                UserOrganisation[]
+  xeroConnections        XeroConnection[]
+  xeroLocationLinks      XeroLocationLink[]
+  suppliers              Supplier[]
+  xeroInvoices           XeroInvoice[]
+  products               Product[]
+  xeroSyncRuns           XeroSyncRun[]
+  locationAccountConfigs LocationAccountConfig[]
 }
 
 model Location {
@@ -49,6 +50,23 @@ model Location {
 
   xeroLocationLinks XeroLocationLink[]
   xeroInvoices      XeroInvoice[]
+  accountConfigs    LocationAccountConfig[]
+}
+
+model LocationAccountConfig {
+  id             String   @id @default(uuid())
+  organisationId String
+  locationId     String
+  accountCode    String
+  category       String   @default("COGS") // COGS, etc.
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  organisation Organisation @relation(fields: [organisationId], references: [id])
+  location     Location     @relation(fields: [locationId], references: [id])
+
+  @@unique([locationId, accountCode])
+  @@index([organisationId, locationId])
 }
 
 model UserOrganisation {
@@ -285,6 +303,7 @@ enum SupplierSourceSystem {
 enum XeroSyncTriggerType {
   MANUAL
   WEBHOOK
+  SYSTEM
 }
 
 enum XeroSyncScope {
@@ -308,6 +327,7 @@ model XeroSyncRun {
   scope            XeroSyncScope
   status           XeroSyncStatus
   startedAt        DateTime            @default(now())
+  updatedAt        DateTime            @default(now()) @updatedAt
   finishedAt       DateTime?
   errorMessage     String?
   rowsProcessed    Int?

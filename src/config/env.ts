@@ -12,6 +12,7 @@ const envSchema = z.object({
   XERO_WEBHOOK_SECRET: z.string().optional(), // Added XERO_WEBHOOK_SECRET
   APP_URL: z.string().url().optional(),
   FRONTEND_URL: z.string().url().optional().default('https://app.thenxt.ai'),
+  XERO_SYNC_TIMEOUT_MINUTES: z.coerce.number().default(60),
 });
 
 const parsed = envSchema.safeParse(process.env);

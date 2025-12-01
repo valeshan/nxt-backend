@@ -180,7 +180,7 @@ export class XeroController {
   }
 
   syncConnectionHandler = async (
-    request: FastifyRequest<{ Params: { connectionId: string }; Body: { scope?: string } }>,
+    request: FastifyRequest<{ Params: { connectionId: string }; Body: { scope?: string; triggerSource?: string } }>,
     reply: FastifyReply
   ) => {
     const { organisationId, userId } = request.authContext;
@@ -216,10 +216,15 @@ export class XeroController {
         });
     }
 
-    // 3. Map Scope
+    // 3. Map Scope & Trigger
     let scope: XeroSyncScope = XeroSyncScope.INCREMENTAL;
     if (request.body.scope === 'FULL') {
         scope = XeroSyncScope.FULL;
+    }
+
+    let triggerType: XeroSyncTriggerType = XeroSyncTriggerType.MANUAL;
+    if (request.body.triggerSource === 'SYSTEM') {
+        triggerType = XeroSyncTriggerType.SYSTEM;
     }
 
     // 4. Create PENDING Run
@@ -228,7 +233,7 @@ export class XeroController {
             organisationId: connection.organisationId,
             xeroConnectionId: connection.id,
             tenantId: connection.xeroTenantId,
-            triggerType: XeroSyncTriggerType.MANUAL,
+            triggerType: triggerType,
             scope: scope,
             status: XeroSyncStatus.PENDING
         }
@@ -239,7 +244,8 @@ export class XeroController {
         connectionId,
         organisationId,
         scope,
-        runId: newRun.id
+        runId: newRun.id,
+        triggerType
     }).catch(async (err) => {
         console.error(`[XeroController] Manual sync failed for run ${newRun.id}`, err);
         const message = err instanceof Error ? err.message : typeof err === 'string' ? err : 'Unknown error';
