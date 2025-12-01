@@ -252,6 +252,7 @@ model XeroInvoiceLineItem {
   taxAmount   Decimal? @db.Decimal(19, 4)
   itemCode    String?
   accountCode String?
+  accountName String?
 
   productId String?
   product   Product? @relation(fields: [productId], references: [id])

@@ -128,6 +128,28 @@ export class XeroSyncService {
         const decryptedToken = decryptToken(connection.accessToken);
         await xero.setTokenSet({ access_token: decryptedToken });
 
+        // 5b. Fetch Accounts to map codes to names
+        console.log('[XeroSync] Fetching Chart of Accounts for mapping...');
+        const accountMap = new Map<string, string>();
+        try {
+            // Filter for ACTIVE accounts only, though Xero invoices might reference archived ones.
+            // The prompt suggested filtering to ACTIVE. However, if an invoice uses an archived account, we might want the name still.
+            // But let's stick to the plan: "Filter to Status == 'ACTIVE'"
+            const accountsResponse = await xero.accountingApi.getAccounts(connection.xeroTenantId, undefined, 'Status=="ACTIVE"');
+            
+            if (accountsResponse.body && accountsResponse.body.accounts) {
+                accountsResponse.body.accounts.forEach((acc) => {
+                    if (acc.code && acc.name) {
+                        accountMap.set(acc.code, acc.name);
+                    }
+                });
+            }
+            console.log(`[XeroSync] Cached ${accountMap.size} accounts.`);
+        } catch (error) {
+            console.warn('[XeroSync] Failed to fetch accounts. Account names will be missing.', error);
+            // Don't fail the whole sync for this
+        }
+
         let page = 1;
         let hasMore = true;
         let maxModifiedDate = lastModified;
@@ -187,7 +209,7 @@ export class XeroSyncService {
 
             for (const invoice of invoices) {
                 try {
-                    await this.processInvoice(organisationId, connectionId, invoice);
+                    await this.processInvoice(organisationId, connectionId, invoice, accountMap);
                     totalRowsProcessed++;
                 } catch (err) {
                     console.error(`[XeroSync] Failed to process invoice ${invoice.invoiceID}:`, err);
@@ -256,7 +278,12 @@ export class XeroSyncService {
     }
   }
 
-  private async processInvoice(organisationId: string, connectionId: string, invoice: Invoice) {
+  private async processInvoice(
+    organisationId: string, 
+    connectionId: string, 
+    invoice: Invoice, 
+    accountMap: Map<string, string>
+  ) {
     if (!invoice.invoiceID || !invoice.contact) {
         console.warn(`[XeroSync] Skipping invalid invoice: ID=${invoice.invoiceID}, Contact=${!!invoice.contact}`);
         return;
@@ -399,6 +426,7 @@ export class XeroSyncService {
                     taxAmount: li.taxAmount,
                     itemCode: li.itemCode,
                     accountCode: li.accountCode,
+                    accountName: li.accountCode ? (accountMap.get(li.accountCode) || null) : null,
                     productId: productId
                 });
             }
