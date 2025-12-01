@@ -24,7 +24,7 @@ export class SupplierController {
     if (targetOrgId && targetOrgId !== organisationId) {
        throw { statusCode: 403, message: 'Forbidden' };
     }
-    return { organisationId, locationId };
+    return { organisationId, locationId: locationId || undefined };
   }
 
   listAccounts = async (request: FastifyRequest, reply: FastifyReply) => {

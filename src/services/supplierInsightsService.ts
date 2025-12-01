@@ -74,6 +74,7 @@ export interface GetProductsParams {
   sortBy?: 'productName' | 'supplierName' | 'unitCost' | 'lastPriceChangePercent' | 'spend12m';
   sortDirection?: 'asc' | 'desc';
   search?: string;
+  accountCodes?: string[];
 }
 
 export interface PaginatedResult<T> {
@@ -126,7 +127,8 @@ async function computeWeightedAveragePrices(
     productIds: string[], 
     startDate: Date, 
     endDate: Date,
-    locationId?: string
+    locationId?: string,
+    accountCodes?: string[]
 ) {
     // Fetch all line items for these products in the window
     const lineItems = await prisma.xeroInvoiceLineItem.findMany({
@@ -138,7 +140,8 @@ async function computeWeightedAveragePrices(
                 ...(locationId ? { locationId } : {}),
                 status: { in: ['AUTHORISED', 'PAID'] },
                 date: { gte: startDate, lte: endDate }
-            }
+            },
+            ...(accountCodes && accountCodes.length > 0 ? { accountCode: { in: accountCodes } } : {})
         },
         select: {
             productId: true,
@@ -199,26 +202,29 @@ async function computeWeightedAveragePrices(
 // --- Service Functions ---
 
 export const supplierInsightsService = {
-  async getSupplierSpendSummary(organisationId: string, locationId?: string): Promise<SpendSummary> {
+  async getSupplierSpendSummary(organisationId: string, locationId?: string, accountCodes?: string[]): Promise<SpendSummary> {
+    // Helper for line item filtering
+    const getLineItemWhere = (startDate: Date, endDate?: Date) => ({
+        invoice: {
+            organisationId,
+            ...(locationId ? { locationId } : {}),
+            date: { gte: startDate, ...(endDate ? { lte: endDate } : {}) },
+            status: { in: ['AUTHORISED', 'PAID'] }
+        },
+        ...(accountCodes && accountCodes.length > 0 ? { accountCode: { in: accountCodes } } : {})
+    });
+
     // 1. Total Supplier Spend Per Month (Last 90 days / 3)
     const ninetyDaysAgo = new Date();
     ninetyDaysAgo.setDate(ninetyDaysAgo.getDate() - 90);
     
-    const whereBase = {
-        organisationId,
-        ...(locationId ? { locationId } : {}),
-    };
-
-    const recentSpendAgg = await prisma.xeroInvoice.aggregate({
-      where: {
-        ...whereBase,
-        date: { gte: ninetyDaysAgo },
-        status: { in: ['AUTHORISED', 'PAID'] }
-      },
-      _sum: { total: true }
+    // Switch to Line Item Aggregation
+    const recentSpendAgg = await prisma.xeroInvoiceLineItem.aggregate({
+      where: getLineItemWhere(ninetyDaysAgo),
+      _sum: { lineAmount: true }
     });
     
-    const safeSum = (agg: any) => agg?._sum?.total?.toNumber() || 0;
+    const safeSum = (agg: any) => agg?._sum?.lineAmount?.toNumber() || 0;
 
     const totalRecentSpend = safeSum(recentSpendAgg);
     const totalSupplierSpendPerMonth = totalRecentSpend / 3;
@@ -236,13 +242,13 @@ export const supplierInsightsService = {
     prev6mEnd.setDate(prev6mEnd.getDate() - 1);
     prev6mEnd.setHours(23, 59, 59, 999);
 
-    const last6mAgg = await prisma.xeroInvoice.aggregate({
-      where: { ...whereBase, date: { gte: last6m.start, lte: last6m.end }, status: { in: ['AUTHORISED', 'PAID'] } },
-      _sum: { total: true }
+    const last6mAgg = await prisma.xeroInvoiceLineItem.aggregate({
+      where: getLineItemWhere(last6m.start, last6m.end),
+      _sum: { lineAmount: true }
     });
-    const prev6mAgg = await prisma.xeroInvoice.aggregate({
-      where: { ...whereBase, date: { gte: prev6mStart, lte: prev6mEnd }, status: { in: ['AUTHORISED', 'PAID'] } },
-      _sum: { total: true }
+    const prev6mAgg = await prisma.xeroInvoiceLineItem.aggregate({
+      where: getLineItemWhere(prev6mStart, prev6mEnd),
+      _sum: { lineAmount: true }
     });
 
     const spendLast6m = safeSum(last6mAgg);
@@ -262,14 +268,14 @@ export const supplierInsightsService = {
       const end = new Date(d.getFullYear(), d.getMonth() + 1, 0);
       end.setHours(23, 59, 59, 999);
       
-      const monthlyAgg = await prisma.xeroInvoice.aggregate({
-        where: { ...whereBase, date: { gte: start, lte: end }, status: { in: ['AUTHORISED', 'PAID'] } },
-        _sum: { total: true }
+      const monthlyAgg = await prisma.xeroInvoiceLineItem.aggregate({
+        where: getLineItemWhere(start, end),
+        _sum: { lineAmount: true }
       });
       
       series.push({
         monthLabel: getMonthLabel(start),
-        total: monthlyAgg._sum.total?.toNumber() || 0
+        total: monthlyAgg._sum.lineAmount?.toNumber() || 0
       });
     }
 
@@ -312,11 +318,13 @@ export const supplierInsightsService = {
     const allLineItems = await prisma.xeroInvoiceLineItem.findMany({
       where: {
         invoice: {
-          ...whereBase,
+          organisationId,
+          ...(locationId ? { locationId } : {}),
           date: { gte: priceMovementStart, lte: priceMovementEnd },
           status: { in: ['AUTHORISED', 'PAID'] }
         },
-        quantity: { gt: 0 }
+        quantity: { gt: 0 },
+        ...(accountCodes && accountCodes.length > 0 ? { accountCode: { in: accountCodes } } : {})
       },
       select: {
         description: true,
@@ -421,7 +429,7 @@ export const supplierInsightsService = {
     }
 
     // 5. Forecast
-    const forecast = await forecastService.getForecastForOrgAndLocation(organisationId, locationId);
+    const forecast = await forecastService.getForecastForOrgAndLocation(organisationId, locationId, accountCodes);
 
     return {
       totalSupplierSpendPerMonth,
@@ -439,7 +447,7 @@ export const supplierInsightsService = {
     };
   },
 
-  async getRecentPriceChanges(organisationId: string, locationId?: string, limit = 5): Promise<PriceChangeItem[]> {
+  async getRecentPriceChanges(organisationId: string, locationId?: string, accountCodes?: string[], limit = 5): Promise<PriceChangeItem[]> {
     const last3m = getFullCalendarMonths(3);
     const whereBase = {
         organisationId,
@@ -454,7 +462,8 @@ export const supplierInsightsService = {
           ...whereBase,
           date: { gte: last3m.start },
           status: { in: ['AUTHORISED', 'PAID'] }
-        }
+        },
+        ...(accountCodes && accountCodes.length > 0 ? { accountCode: { in: accountCodes } } : {})
       },
       include: {
         product: true,
@@ -519,63 +528,79 @@ export const supplierInsightsService = {
     return results.slice(0, limit);
   },
 
-  async getSpendBreakdown(organisationId: string, locationId?: string): Promise<SpendBreakdown> {
+  async getSpendBreakdown(organisationId: string, locationId?: string, accountCodes?: string[]): Promise<SpendBreakdown> {
     const last12m = getFullCalendarMonths(12);
-    const whereBase = {
+    const whereInvoiceBase = {
         organisationId,
         ...(locationId ? { locationId } : {}),
-    };
-    
-    const supplierSpend = await prisma.xeroInvoice.groupBy({
-      by: ['supplierId'],
-      where: {
-        ...whereBase,
         date: { gte: last12m.start, lte: last12m.end },
         status: { in: ['AUTHORISED', 'PAID'] }
-      },
-      _sum: { total: true }
-    });
-    
-    const supplierIds = supplierSpend.map(s => s.supplierId).filter(id => id !== null) as string[];
-    const suppliers = await prisma.supplier.findMany({
-      where: { id: { in: supplierIds } }
-    });
-    const supplierNameMap = new Map(suppliers.map(s => [s.id, s.name]));
-    
-    const bySupplier = supplierSpend
-      .filter(s => s.supplierId && s._sum.total && s._sum.total.toNumber() > 0)
-      .map(s => ({
-        supplierId: s.supplierId!,
-        supplierName: supplierNameMap.get(s.supplierId!) || 'Unknown',
-        totalSpend12m: s._sum.total!.toNumber()
-      }))
-      .sort((a, b) => b.totalSpend12m - a.totalSpend12m);
+    };
 
-    const categorySpend = await prisma.xeroInvoiceLineItem.groupBy({
-      by: ['accountCode'],
-      where: {
-        invoice: {
-          ...whereBase,
-          date: { gte: last12m.start, lte: last12m.end },
-          status: { in: ['AUTHORISED', 'PAID'] }
-        }
-      },
-      _sum: { lineAmount: true }
-    });
+    // Use line items for supplier breakdown if account filters active OR just to be consistent
+    // If no account filter, invoice aggregation is faster. But we want consistency.
+    // Plan says: "Refactor getSpendBreakdown: Apply accountCodes filter to line items."
     
-    const byCategory = categorySpend
-      .filter(c => c.accountCode && c._sum.lineAmount && c._sum.lineAmount.toNumber() > 0)
-      .map(c => ({
-        categoryId: c.accountCode!,
-        categoryName: getCategoryName(c.accountCode),
-        totalSpend12m: c._sum.lineAmount!.toNumber()
-      }))
-      .sort((a, b) => b.totalSpend12m - a.totalSpend12m);
+    // For bySupplier:
+    const lineItems = await prisma.xeroInvoiceLineItem.findMany({
+        where: {
+            invoice: whereInvoiceBase,
+            ...(accountCodes && accountCodes.length > 0 ? { accountCode: { in: accountCodes } } : {})
+        },
+        select: {
+            lineAmount: true,
+            invoice: {
+                select: {
+                    supplierId: true,
+                    supplier: { select: { name: true } }
+                }
+            },
+            accountCode: true
+        }
+    });
+
+    const supplierMap = new Map<string, { name: string, total: number }>();
+    const categoryMap = new Map<string, { total: number }>();
+
+    for (const item of lineItems) {
+        const amount = Number(item.lineAmount || 0);
+        if (amount <= 0) continue;
+
+        // Supplier
+        const supId = item.invoice.supplierId;
+        const supName = item.invoice.supplier?.name || 'Unknown';
+        if (supId) {
+             if (!supplierMap.has(supId)) {
+                 supplierMap.set(supId, { name: supName, total: 0 });
+             }
+             supplierMap.get(supId)!.total += amount;
+        }
+
+        // Category
+        if (item.accountCode) {
+            if (!categoryMap.has(item.accountCode)) {
+                categoryMap.set(item.accountCode, { total: 0 });
+            }
+            categoryMap.get(item.accountCode)!.total += amount;
+        }
+    }
+
+    const bySupplier = Array.from(supplierMap.entries()).map(([id, data]) => ({
+        supplierId: id,
+        supplierName: data.name,
+        totalSpend12m: data.total
+    })).sort((a, b) => b.totalSpend12m - a.totalSpend12m);
+
+    const byCategory = Array.from(categoryMap.entries()).map(([code, data]) => ({
+        categoryId: code,
+        categoryName: getCategoryName(code),
+        totalSpend12m: data.total
+    })).sort((a, b) => b.totalSpend12m - a.totalSpend12m);
 
     return { bySupplier, byCategory };
   },
 
-  async getCostCreepAlerts(organisationId: string, locationId?: string, thresholdPercent = 5): Promise<CostCreepAlert[]> {
+  async getCostCreepAlerts(organisationId: string, locationId?: string, accountCodes?: string[], thresholdPercent = 5): Promise<CostCreepAlert[]> {
     const thisMonth = getCurrentMonthRange();
     const last3m = getFullCalendarMonths(3);
     const whereBase = {
@@ -594,7 +619,8 @@ export const supplierInsightsService = {
                     date: { gte: start, lte: end },
                     status: { in: ['AUTHORISED', 'PAID'] }
                 },
-                quantity: { not: 0 }
+                quantity: { not: 0 },
+                ...(accountCodes && accountCodes.length > 0 ? { accountCode: { in: accountCodes } } : {})
             },
             _sum: { lineAmount: true, quantity: true }
         });
@@ -720,7 +746,8 @@ export const supplierInsightsService = {
                 ...whereInvoiceBase,
                 date: { gte: last12m.start, lte: last12m.end },
                 status: { in: ['AUTHORISED', 'PAID'] }
-            }
+            },
+            ...(params.accountCodes && params.accountCodes.length > 0 ? { accountCode: { in: params.accountCodes } } : {})
         },
         _sum: { lineAmount: true }
     });
@@ -809,7 +836,7 @@ export const supplierInsightsService = {
     const priceLookbackDate = subMonths(new Date(), 6); // Look back 6 months to find at least 2 data points
     
     // Pass locationId to helper
-    const priceMap = await computeWeightedAveragePrices(organisationId, pageProductIds, priceLookbackDate, new Date(), locationId);
+    const priceMap = await computeWeightedAveragePrices(organisationId, pageProductIds, priceLookbackDate, new Date(), locationId, params.accountCodes);
 
     const hydratedItems = paginatedItems.map(item => {
         const productPrices = priceMap.get(item.productId);

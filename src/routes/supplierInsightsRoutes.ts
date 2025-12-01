@@ -14,6 +14,9 @@ export default async function supplierInsightsRoutes(fastify: FastifyInstance) {
     schema: {
       tags: ['Supplier Insights'],
       summary: 'Get supplier spend summary and charts data',
+      querystring: z.object({
+          accountCodes: z.union([z.string(), z.array(z.string())]).optional(),
+      }),
       // Removed headers validation
       response: {
         200: z.object({
@@ -67,6 +70,17 @@ export default async function supplierInsightsRoutes(fastify: FastifyInstance) {
     }
   }, async (request, reply) => {
     const { organisationId, locationId, tokenType } = request.authContext;
+    const { accountCodes } = request.query as any;
+
+    // Normalize accountCodes
+    let normalizedAccountCodes: string[] | undefined = undefined;
+    if (accountCodes) {
+        if (Array.isArray(accountCodes)) {
+            normalizedAccountCodes = accountCodes;
+        } else if (typeof accountCodes === 'string') {
+            normalizedAccountCodes = accountCodes.split(',').map(s => s.trim()).filter(s => s.length > 0);
+        }
+    }
 
     if (!organisationId) {
       // Should not happen if auth passed and we enforce org token, but safer to check
@@ -80,10 +94,10 @@ export default async function supplierInsightsRoutes(fastify: FastifyInstance) {
     }
 
     const [summary, recentPriceChanges, spendBreakdown, alerts] = await Promise.all([
-        supplierInsightsService.getSupplierSpendSummary(organisationId, locationId),
-        supplierInsightsService.getRecentPriceChanges(organisationId, locationId),
-        supplierInsightsService.getSpendBreakdown(organisationId, locationId),
-        supplierInsightsService.getCostCreepAlerts(organisationId, locationId)
+        supplierInsightsService.getSupplierSpendSummary(organisationId, locationId, normalizedAccountCodes),
+        supplierInsightsService.getRecentPriceChanges(organisationId, locationId, normalizedAccountCodes),
+        supplierInsightsService.getSpendBreakdown(organisationId, locationId, normalizedAccountCodes),
+        supplierInsightsService.getCostCreepAlerts(organisationId, locationId, normalizedAccountCodes)
     ]);
 
     return {
@@ -104,7 +118,8 @@ export default async function supplierInsightsRoutes(fastify: FastifyInstance) {
         pageSize: z.coerce.number().default(20),
         sortBy: z.enum(['productName', 'supplierName', 'unitCost', 'lastPriceChangePercent', 'spend12m']).optional(),
         sortDirection: z.enum(['asc', 'desc']).default('desc'),
-        search: z.string().optional()
+        search: z.string().optional(),
+        accountCodes: z.union([z.string(), z.array(z.string())]).optional(),
       }),
       response: {
           200: z.object({
@@ -127,6 +142,17 @@ export default async function supplierInsightsRoutes(fastify: FastifyInstance) {
     }
   }, async (request, reply) => {
     const { organisationId, locationId, tokenType } = request.authContext;
+    const { accountCodes } = request.query as any;
+
+    // Normalize accountCodes
+    let normalizedAccountCodes: string[] | undefined = undefined;
+    if (accountCodes) {
+        if (Array.isArray(accountCodes)) {
+            normalizedAccountCodes = accountCodes;
+        } else if (typeof accountCodes === 'string') {
+            normalizedAccountCodes = accountCodes.split(',').map(s => s.trim()).filter(s => s.length > 0);
+        }
+    }
 
     if (!organisationId) {
         return reply.status(400).send({ error: { code: 'MISSING_ORG_ID', message: 'Organisation ID is required' } } as any);
@@ -136,7 +162,7 @@ export default async function supplierInsightsRoutes(fastify: FastifyInstance) {
        return reply.status(403).send({ error: { code: 'FORBIDDEN', message: 'Location context required' } } as any);
     }
 
-    return supplierInsightsService.getProducts(organisationId, locationId, request.query);
+    return supplierInsightsService.getProducts(organisationId, locationId, { ...request.query, accountCodes: normalizedAccountCodes });
   });
 
   app.get('/products/:productId', {
