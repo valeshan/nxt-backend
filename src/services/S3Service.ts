@@ -3,6 +3,14 @@ import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
 import { config } from '../config/env';
 import { Readable } from 'stream';
 
+
+console.log('AWS Config Check:', {
+    region: config.AWS_REGION,
+    hasAccessKey: !!config.AWS_ACCESS_KEY_ID,
+    hasSecretKey: !!config.AWS_SECRET_ACCESS_KEY,
+    accessKeyLength: config.AWS_ACCESS_KEY_ID ? config.AWS_ACCESS_KEY_ID.length : 0
+  });
+  
 const s3Client = new S3Client({
   region: config.AWS_REGION,
   credentials: config.AWS_ACCESS_KEY_ID && config.AWS_SECRET_ACCESS_KEY ? {
