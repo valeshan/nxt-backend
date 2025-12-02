@@ -5,6 +5,13 @@ import { supplierResolutionService } from './SupplierResolutionService';
 import { InvoiceSourceType, ProcessingStatus, ReviewStatus } from '@prisma/client';
 import { randomUUID } from 'crypto';
 
+export class InvoiceFileNotFoundError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'InvoiceFileNotFoundError';
+  }
+}
+
 export const invoicePipelineService = {
   async submitForProcessing(
     fileStream: any, 
@@ -89,91 +96,95 @@ export const invoicePipelineService = {
   async pollProcessing(invoiceFileId: string) {
     const file = await prisma.invoiceFile.findUnique({
         where: { id: invoiceFileId },
-        include: { invoice: { include: { lineItems: true, supplier: true } }, ocrResult: true }
+        include: { 
+            invoice: { include: { lineItems: true, supplier: true } }, 
+            ocrResult: true 
+        }
     });
 
-    if (!file) throw new Error('Invoice file not found');
-
-    // If complete or failed, return status immediately
-    if (file.processingStatus === ProcessingStatus.OCR_COMPLETE || file.processingStatus === ProcessingStatus.OCR_FAILED) {
-         return this.enrichStatus(file);
-    }
+    if (!file) throw new InvoiceFileNotFoundError('Invoice file not found');
 
     if (file.processingStatus === ProcessingStatus.OCR_PROCESSING && file.ocrJobId) {
-        const result = await ocrService.getAnalysisResults(file.ocrJobId);
-        
-        if (result.JobStatus === 'SUCCEEDED') {
-            // Parse
-            const parsed = ocrService.parseTextractOutput(result);
-            
-            // Resolve Supplier
-            const resolution = await supplierResolutionService.resolveSupplier(parsed.supplierName || '', file.organisationId);
-            
-            // Create OcrResult
-            await prisma.invoiceOcrResult.create({
-                data: {
-                    invoiceFileId: file.id,
-                    rawResultJson: result as any,
-                    parsedJson: parsed as any
-                }
-            });
+        // Check if we need to update status
+        try {
+             const result = await ocrService.getAnalysisResults(file.ocrJobId);
+             
+             if (result.JobStatus === 'SUCCEEDED') {
+                 // ... (Processing Logic) ...
+                 // Parse
+                 const parsed = ocrService.parseTextractOutput(result);
+                 
+                 // Resolve Supplier
+                 const resolution = await supplierResolutionService.resolveSupplier(parsed.supplierName || '', file.organisationId);
+                 
+                 // Create OcrResult
+                 await prisma.invoiceOcrResult.create({
+                     data: {
+                         invoiceFileId: file.id,
+                         rawResultJson: result as any,
+                         parsedJson: parsed as any
+                     }
+                 });
 
-            // Create Invoice
-            await prisma.invoice.create({
-                data: {
-                    organisationId: file.organisationId,
-                    locationId: file.locationId,
-                    invoiceFileId: file.id,
-                    supplierId: resolution?.supplier.id,
-                    invoiceNumber: parsed.invoiceNumber,
-                    date: parsed.date,
-                    total: parsed.total,
-                    tax: parsed.tax,
-                    subtotal: parsed.subtotal,
-                    sourceType: file.sourceType,
-                    lineItems: {
-                        create: parsed.lineItems.map(item => ({
-                            description: item.description,
-                            quantity: item.quantity,
-                            unitPrice: item.unitPrice,
-                            lineTotal: item.lineTotal,
-                            productCode: item.productCode
-                        }))
-                    }
-                }
-            });
+                 // Create Invoice
+                 await prisma.invoice.create({
+                     data: {
+                         organisationId: file.organisationId,
+                         locationId: file.locationId,
+                         invoiceFileId: file.id,
+                         supplierId: resolution?.supplier.id,
+                         invoiceNumber: parsed.invoiceNumber,
+                         date: parsed.date,
+                         total: parsed.total,
+                         tax: parsed.tax,
+                         subtotal: parsed.subtotal,
+                         sourceType: file.sourceType,
+                         lineItems: {
+                             create: parsed.lineItems.map(item => ({
+                                 description: item.description,
+                                 quantity: item.quantity,
+                                 unitPrice: item.unitPrice,
+                                 lineTotal: item.lineTotal,
+                                 productCode: item.productCode
+                             }))
+                         }
+                     }
+                 });
 
-            // Determine Review Status
-            let reviewStatus = ReviewStatus.NEEDS_REVIEW;
-            // Simple rule: High confidence (>95) and valid total implies verified?
-            // For now, let's require manual verification unless perfect confidence.
-            // Plan says: VERIFIED if confidenceScore >= 0.95 and no validationErrors.
-            if (parsed.confidenceScore >= 95) {
-                // reviewStatus = ReviewStatus.VERIFIED; 
-            }
+                 // Determine Review Status
+                 let reviewStatus = ReviewStatus.NEEDS_REVIEW;
+                 if (parsed.confidenceScore >= 95) {
+                     // reviewStatus = ReviewStatus.VERIFIED; 
+                 }
 
-            // Update File Status
-            const updatedFile = await prisma.invoiceFile.update({
-                where: { id: file.id },
-                data: {
-                    processingStatus: ProcessingStatus.OCR_COMPLETE,
-                    reviewStatus: reviewStatus,
-                    confidenceScore: parsed.confidenceScore,
-                },
-                include: { invoice: { include: { lineItems: true, supplier: true } }, ocrResult: true }
-            });
-            
-            return this.enrichStatus(updatedFile);
+                 // Update File Status and return FRESH enriched object
+                 const updatedFile = await prisma.invoiceFile.update({
+                     where: { id: file.id },
+                     data: {
+                         processingStatus: ProcessingStatus.OCR_COMPLETE,
+                         reviewStatus: reviewStatus,
+                         confidenceScore: parsed.confidenceScore,
+                     },
+                     include: { invoice: { include: { lineItems: true, supplier: true } }, ocrResult: true }
+                 });
+                 
+                 return this.enrichStatus(updatedFile);
 
-        } else if (result.JobStatus === 'FAILED') {
-             const updated = await prisma.invoiceFile.update({
-                where: { id: file.id },
-                data: { processingStatus: ProcessingStatus.OCR_FAILED }
-             });
-             return this.enrichStatus(updated);
+             } else if (result.JobStatus === 'FAILED') {
+                  const updated = await prisma.invoiceFile.update({
+                     where: { id: file.id },
+                     data: { processingStatus: ProcessingStatus.OCR_FAILED }
+                  });
+                  // Return enriched status even on failure
+                  return this.enrichStatus(updated);
+             }
+        } catch (e) {
+            console.error(`Error polling job ${file.ocrJobId}`, e);
+            // Fall through to return current status
         }
     }
 
+    // Always return enriched status for any other state (PENDING, COMPLETE, VERIFIED, FAILED)
     return this.enrichStatus(file);
   },
 
@@ -199,57 +210,61 @@ export const invoicePipelineService = {
       createAlias?: boolean;
       aliasName?: string;
   }) {
-      return await prisma.$transaction(async (tx) => {
-          const invoice = await tx.invoice.findUnique({
-              where: { id: invoiceId },
-              include: { invoiceFile: true }
+      console.log('[InvoicePipeline] verifyInvoice start', { invoiceId, ...data });
+
+      // 1. Fetch Invoice
+      const invoice = await prisma.invoice.findUnique({
+          where: { id: invoiceId },
+          include: { invoiceFile: true }
+      });
+      
+      if (!invoice) {
+        console.log(`[InvoicePipeline] verifyInvoice failed: Invoice ${invoiceId} not found`);
+        return null;
+      }
+
+      // 2. Update Invoice
+      const updatedInvoice = await prisma.invoice.update({
+          where: { id: invoiceId },
+          data: {
+              supplierId: data.supplierId,
+              total: data.total,
+              isVerified: true,
+          },
+          include: { supplier: true, lineItems: true }
+      });
+
+      // 3. Update InvoiceFile
+      if (invoice.invoiceFileId) {
+          await prisma.invoiceFile.update({
+              where: { id: invoice.invoiceFileId },
+              data: { reviewStatus: ReviewStatus.VERIFIED }
           });
-          
-          if (!invoice) throw new Error('Invoice not found');
+      }
 
-          // Update Invoice
-          const updatedInvoice = await tx.invoice.update({
-              where: { id: invoiceId },
-              data: {
-                  supplierId: data.supplierId,
-                  total: data.total,
-                  isVerified: true,
-              },
-              include: { supplier: true, lineItems: true }
-          });
-
-          // Update InvoiceFile
-          if (invoice.invoiceFileId) {
-              await tx.invoiceFile.update({
-                  where: { id: invoice.invoiceFileId },
-                  data: { reviewStatus: ReviewStatus.VERIFIED }
-              });
-          }
-
-          // Create Alias if requested
-          if (data.createAlias && data.aliasName && data.supplierId) {
-              // We use the service but we can't use it inside tx unless we pass tx to it.
-              // Or we just use tx here directly.
-              const normalized = data.aliasName.toLowerCase().trim();
-              await tx.supplierAlias.upsert({
-                where: {
-                    organisationId_normalisedAliasName: {
-                        organisationId: invoice.organisationId,
-                        normalisedAliasName: normalized
-                    }
-                },
-                update: { supplierId: data.supplierId },
-                create: {
+      // 4. Create Alias if requested
+      if (data.createAlias && data.aliasName && data.supplierId) {
+          const normalized = data.aliasName.toLowerCase().trim();
+          // Use upsert to avoid P2002 if alias exists
+          await prisma.supplierAlias.upsert({
+            where: {
+                organisationId_normalisedAliasName: {
                     organisationId: invoice.organisationId,
-                    supplierId: data.supplierId,
-                    aliasName: data.aliasName,
                     normalisedAliasName: normalized
                 }
-            });
-          }
+            },
+            update: { supplierId: data.supplierId },
+            create: {
+                organisationId: invoice.organisationId,
+                supplierId: data.supplierId,
+                aliasName: data.aliasName,
+                normalisedAliasName: normalized
+            }
+        });
+      }
 
-          return updatedInvoice;
-      });
+      console.log('[InvoicePipeline] verifyInvoice success', { invoiceId, supplierId: data.supplierId });
+      return updatedInvoice;
   },
   
   async listInvoices(locationId: string, page = 1, limit = 20) {

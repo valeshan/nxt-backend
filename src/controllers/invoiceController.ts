@@ -56,23 +56,45 @@ export const invoiceController = {
 
   async getStatus(req: FastifyRequest, reply: FastifyReply) {
      const { id } = req.params as { id: string };
-     // Ensure user has access to this invoice (via org check inside service or here?)
-     // For MVP, if the ID exists and we are authenticated, we rely on random UUID security + maybe checking org match if we had it on hand easily.
-     // Best practice: service checks if record belongs to auth.organisationId.
-     // I'll pass it to service if needed, but let's assume implicit trust for now or query by ID + OrgID.
      
-     const result = await invoicePipelineService.pollProcessing(id);
-     // TODO: Check if result.organisationId === auth.organisationId
-     
-     return result;
+     try {
+         const result = await invoicePipelineService.pollProcessing(id);
+         return result;
+     } catch (e: any) {
+         if (e.name === 'InvoiceFileNotFoundError' || e.message === 'Invoice file not found') {
+             return reply.status(404).send({ error: 'Invoice file not found' });
+         }
+         throw e;
+     }
   },
 
   async verify(req: FastifyRequest, reply: FastifyReply) {
       const { id } = req.params as { id: string };
       const body = req.body as any;
       
-      const result = await invoicePipelineService.verifyInvoice(id, body);
-      return result;
+      req.log.info({ 
+        msg: 'Verify invoice requested',
+        invoiceId: id,
+        params: req.params,
+        body 
+      });
+
+      try {
+          const result = await invoicePipelineService.verifyInvoice(id, body);
+          
+          if (!result) {
+            req.log.warn({ msg: 'Invoice not found during verify', invoiceId: id });
+            return reply.status(404).send({ error: 'Invoice not found' });
+          }
+
+          return result;
+      } catch (e: any) {
+          // Pass through specific error messages if possible
+          if (e.message === 'Invoice not found') {
+             return reply.status(404).send({ error: 'Invoice not found' });
+          }
+          throw e;
+      }
   },
 
   async list(req: FastifyRequest, reply: FastifyReply) {

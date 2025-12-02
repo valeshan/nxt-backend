@@ -73,14 +73,28 @@ export class SupplierController {
     let activityFilter = {};
     if (activityStatus === 'current') {
         activityFilter = {
-            invoices: {
-                some: {
-                    organisationId: orgId,
-                    ...(locationId ? { locationId } : {}),
-                    date: { gte: twelveMonthsAgo },
-                    status: { in: ['AUTHORISED', 'PAID'] }
+            OR: [
+                {
+                    invoices: {
+                        some: {
+                            organisationId: orgId,
+                            ...(locationId ? { locationId } : {}),
+                            date: { gte: twelveMonthsAgo },
+                            status: { in: ['AUTHORISED', 'PAID'] }
+                        }
+                    }
+                },
+                {
+                    ocrInvoices: {
+                        some: {
+                            organisationId: orgId,
+                            ...(locationId ? { locationId } : {}),
+                            date: { gte: twelveMonthsAgo },
+                            isVerified: true
+                        }
+                    }
                 }
-            }
+            ]
         };
     }
 
