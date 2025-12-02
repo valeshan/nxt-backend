@@ -19,13 +19,29 @@ const s3Client = new S3Client({
   } : undefined,
 });
 
+const streamToBuffer = async (stream: Readable): Promise<Buffer> => {
+  const chunks: Buffer[] = [];
+  for await (const chunk of stream) {
+    chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+  }
+  return Buffer.concat(chunks);
+};
+
 export const s3Service = {
   async uploadFile(fileStream: Readable | Buffer, key: string, mimeType: string) {
     try {
+      let fileBuffer: Buffer;
+      if (Buffer.isBuffer(fileStream)) {
+        fileBuffer = fileStream;
+      } else {
+        fileBuffer = await streamToBuffer(fileStream as Readable);
+      }
+
       const command = new PutObjectCommand({
         Bucket: config.S3_INVOICE_BUCKET,
         Key: key,
-        Body: fileStream,
+        Body: fileBuffer,
+        ContentLength: fileBuffer.length,
         ContentType: mimeType,
       });
 
