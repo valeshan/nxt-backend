@@ -17,6 +17,16 @@ export const invoiceController = {
     if (!data) {
         return reply.status(400).send({ error: 'No file uploaded' });
     }
+
+    // Log incoming file metadata
+    req.log.info({
+        msg: 'Incoming invoice upload',
+        fileName: data.filename,
+        mimeType: data.mimetype,
+        locationId,
+        organisationId: auth.organisationId,
+        fileStreamReadable: data.file?.readable
+    });
     
     // Additional validation
     if (data.mimetype !== 'application/pdf') {
@@ -31,8 +41,15 @@ export const invoiceController = {
             mimeType: data.mimetype,
         });
         return reply.status(202).send(result);
-    } catch (e) {
-        req.log.error(e);
+    } catch (e: any) {
+        req.log.error({
+            msg: 'Upload processing failed',
+            error: e.name,
+            message: e.message,
+            stack: e.stack,
+            stage: e.stage || 'unknown',
+            awsCode: e.awsCode
+        });
         return reply.status(500).send({ error: 'Upload processing failed' });
     }
   },

@@ -15,26 +15,47 @@ export const invoicePipelineService = {
         mimeType: string; 
     }
   ) {
+    // Guard: Check if stream is readable
+    if (fileStream.readable === false) {
+        throw new Error("Invalid file stream: not readable");
+    }
+
     const key = `invoices/${metadata.organisationId}/${randomUUID()}.pdf`;
     
     // 1. Upload to S3
-    await s3Service.uploadFile(fileStream, key, metadata.mimeType);
+    console.log(`[InvoicePipeline] Starting S3 upload for ${key}`);
+    try {
+        await s3Service.uploadFile(fileStream, key, metadata.mimeType);
+        console.log(`[InvoicePipeline] S3 upload complete for ${key}`);
+    } catch (err: any) {
+        err.stage = 's3-upload';
+        throw err;
+    }
 
     // 2. Create InvoiceFile
-    const invoiceFile = await prisma.invoiceFile.create({
-        data: {
-            organisationId: metadata.organisationId,
-            locationId: metadata.locationId,
-            sourceType: InvoiceSourceType.UPLOAD,
-            fileName: metadata.fileName,
-            mimeType: metadata.mimeType,
-            storageKey: key,
-            processingStatus: ProcessingStatus.PENDING_OCR,
-            reviewStatus: ReviewStatus.NONE,
-        }
-    });
+    console.log(`[InvoicePipeline] Creating InvoiceFile record for ${key}`);
+    let invoiceFile;
+    try {
+        invoiceFile = await prisma.invoiceFile.create({
+            data: {
+                organisationId: metadata.organisationId,
+                locationId: metadata.locationId,
+                sourceType: InvoiceSourceType.UPLOAD,
+                fileName: metadata.fileName,
+                mimeType: metadata.mimeType,
+                storageKey: key,
+                processingStatus: ProcessingStatus.PENDING_OCR,
+                reviewStatus: ReviewStatus.NONE,
+            }
+        });
+        console.log(`[InvoicePipeline] InvoiceFile created: ${invoiceFile.id}`);
+    } catch (err: any) {
+        err.stage = 'db-create';
+        throw err;
+    }
 
     // 3. Start OCR
+    console.log(`[InvoicePipeline] Starting OCR for ${invoiceFile.id}`);
     try {
         const jobId = await ocrService.startAnalysis(key);
         
@@ -45,15 +66,23 @@ export const invoicePipelineService = {
                 processingStatus: ProcessingStatus.OCR_PROCESSING
             }
         });
+        console.log(`[InvoicePipeline] OCR started for ${invoiceFile.id}, JobId: ${jobId}`);
         return updated;
-    } catch (error) {
-        console.error('Failed to start OCR:', error);
+    } catch (error: any) {
+        console.error(`[InvoicePipeline] Failed to start OCR for ${invoiceFile.id}:`, error);
+        
+        // Capture AWS specific error codes
+        const awsCode = error.name || (error as any).code;
+
         await prisma.invoiceFile.update({
             where: { id: invoiceFile.id },
             data: { processingStatus: ProcessingStatus.OCR_FAILED }
         });
-        // We return the file with FAILED status rather than throwing, so the UI can show it
-        return await prisma.invoiceFile.findUniqueOrThrow({ where: { id: invoiceFile.id } });
+        
+        // Rethrow with stage info so controller can log it
+        error.stage = 'ocr-start';
+        error.awsCode = awsCode;
+        throw error;
     }
   },
 

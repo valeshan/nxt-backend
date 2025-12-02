@@ -13,15 +13,23 @@ const s3Client = new S3Client({
 
 export const s3Service = {
   async uploadFile(fileStream: Readable | Buffer, key: string, mimeType: string) {
-    const command = new PutObjectCommand({
-      Bucket: config.S3_INVOICE_BUCKET,
-      Key: key,
-      Body: fileStream,
-      ContentType: mimeType,
-    });
+    try {
+      const command = new PutObjectCommand({
+        Bucket: config.S3_INVOICE_BUCKET,
+        Key: key,
+        Body: fileStream,
+        ContentType: mimeType,
+      });
 
-    await s3Client.send(command);
-    return key;
+      await s3Client.send(command);
+      return key;
+    } catch (error: any) {
+      console.error(`[S3 Upload Failed] Bucket=${config.S3_INVOICE_BUCKET} Key=${key} Error=${error.name} Message=${error.message}`);
+      const enhancedError = new Error(`S3 Upload Failed: ${error.message}`);
+      (enhancedError as any).code = error.name;
+      (enhancedError as any).originalError = error;
+      throw enhancedError;
+    }
   },
 
   async getSignedUrl(key: string) {
