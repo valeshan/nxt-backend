@@ -38,6 +38,8 @@ model Organisation {
   products               Product[]
   xeroSyncRuns           XeroSyncRun[]
   locationAccountConfigs LocationAccountConfig[]
+  supplierAliases        SupplierAlias[]
+  ocrInvoices            Invoice[]
 }
 
 model Location {
@@ -51,6 +53,7 @@ model Location {
   xeroLocationLinks XeroLocationLink[]
   xeroInvoices      XeroInvoice[]
   accountConfigs    LocationAccountConfig[]
+  ocrInvoices       Invoice[]
 }
 
 model LocationAccountConfig {
@@ -186,6 +189,8 @@ model Supplier {
   invoices     XeroInvoice[]
   sourceLinks  SupplierSourceLink[]
   products     Product[]
+  aliases      SupplierAlias[]
+  ocrInvoices  Invoice[]
 
   @@index([organisationId])
   @@index([normalizedName])
@@ -345,4 +350,112 @@ model XeroAuthSession {
   locationIds    String[]
   createdAt      DateTime @default(now())
   expiresAt      DateTime
+}
+
+// Invoice OCR & Ingestion Models
+
+enum InvoiceSourceType {
+  UPLOAD
+  XERO
+  EMAIL
+}
+
+enum ProcessingStatus {
+  PENDING_OCR
+  OCR_PROCESSING
+  OCR_COMPLETE
+  OCR_FAILED
+}
+
+enum ReviewStatus {
+  NONE
+  NEEDS_REVIEW
+  VERIFIED
+}
+
+model SupplierAlias {
+  id                String   @id @default(uuid())
+  organisationId    String
+  supplierId        String
+  aliasName         String
+  normalisedAliasName String
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+
+  organisation      Organisation @relation(fields: [organisationId], references: [id])
+  supplier          Supplier     @relation(fields: [supplierId], references: [id])
+
+  @@unique([organisationId, normalisedAliasName])
+  @@index([organisationId])
+}
+
+model InvoiceFile {
+  id                String            @id @default(uuid())
+  organisationId    String
+  locationId        String
+  sourceType        InvoiceSourceType
+  sourceReference   String?           // Xero bill ID, email ID, etc
+  storageKey        String            // S3 key
+  fileName          String
+  mimeType          String
+  processingStatus  ProcessingStatus
+  reviewStatus      ReviewStatus      @default(NONE)
+  confidenceScore   Float?
+  validationErrors  Json?
+  ocrJobId          String?           // Textract job reference
+  createdAt         DateTime          @default(now())
+  updatedAt         DateTime          @updatedAt
+
+  ocrResult         InvoiceOcrResult?
+  invoice           Invoice?
+}
+
+model InvoiceOcrResult {
+  id            String      @id @default(uuid())
+  invoiceFileId String      @unique
+  rawResultJson Json        // full Textract or provider output
+  parsedJson    Json        // normalized schema: header plus line items
+  createdAt     DateTime    @default(now())
+  updatedAt     DateTime    @updatedAt
+
+  invoiceFile   InvoiceFile @relation(fields: [invoiceFileId], references: [id])
+}
+
+model Invoice {
+  id              String            @id @default(uuid())
+  organisationId  String
+  locationId      String
+  invoiceFileId   String?           @unique
+  supplierId      String?
+  invoiceNumber   String?
+  date            DateTime?
+  total           Decimal?          @db.Decimal(19, 4)
+  tax             Decimal?          @db.Decimal(19, 4)
+  subtotal        Decimal?          @db.Decimal(19, 4)
+  sourceType      InvoiceSourceType
+  sourceReference String?
+  isVerified      Boolean           @default(false)
+  createdAt       DateTime          @default(now())
+  updatedAt       DateTime          @updatedAt
+
+  invoiceFile     InvoiceFile?      @relation(fields: [invoiceFileId], references: [id])
+  supplier        Supplier?         @relation(fields: [supplierId], references: [id])
+  lineItems       InvoiceLineItem[]
+  organisation    Organisation      @relation(fields: [organisationId], references: [id])
+  location        Location          @relation(fields: [locationId], references: [id])
+}
+
+model InvoiceLineItem {
+  id          String   @id @default(uuid())
+  invoiceId   String
+  description String
+  productCode String?
+  quantity    Decimal? @db.Decimal(19, 4)
+  unitPrice   Decimal? @db.Decimal(19, 4)
+  lineTotal   Decimal? @db.Decimal(19, 4)
+  accountCode String?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  invoice     Invoice  @relation(fields: [invoiceId], references: [id], onDelete: Cascade)
 }

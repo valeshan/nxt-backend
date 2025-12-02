@@ -1,5 +1,6 @@
 import Fastify, { FastifyInstance } from 'fastify';
 import cors from '@fastify/cors';
+import multipart from '@fastify/multipart';
 import cookie from '@fastify/cookie';
 import fastifyRawBody from 'fastify-raw-body';
 import { serializerCompiler, validatorCompiler, ZodTypeProvider } from 'fastify-type-provider-zod';
@@ -10,6 +11,7 @@ import organisationRoutes from './routes/organisationRoutes';
 import locationRoutes from './routes/locationRoutes';
 import supplierRoutes from './routes/supplierRoutes';
 import supplierInsightsRoutes from './routes/supplierInsightsRoutes';
+import invoiceRoutes from './routes/invoiceRoutes';
 import xeroWebhookRoutes from './controllers/xeroWebhookController'; // Assuming we'll create this
 import { config } from './config/env';
 
@@ -22,6 +24,18 @@ export function buildApp(): FastifyInstance {
   app.register(fastifyRawBody, {
     global: false,
     runFirst: true,
+  });
+
+  // Register Multipart for file uploads
+  app.register(multipart, {
+    limits: {
+      fileSize: 10 * 1024 * 1024, // 10MB
+      files: 1,
+    },
+    // Only allow PDF (checking mime type)
+    // Note: fastify-multipart doesn't strictly enforce mime type in the config unless using attachFieldsToBody: true (which we might not want for streaming),
+    // but we can check it in the handler. However, if we want to block it early, we can use the onFile handler or similar.
+    // For now, we'll stick to limits here and validate mime type in the controller/service.
   });
 
   // Setup Zod validation
@@ -62,6 +76,7 @@ export function buildApp(): FastifyInstance {
   app.register(xeroRoutes, { prefix: '/xero' });
   app.register(supplierRoutes, { prefix: '/suppliers' });
   app.register(supplierInsightsRoutes, { prefix: '/supplier-insights' });
+  app.register(invoiceRoutes, { prefix: '/invoices' });
 
   // Health Check
   app.get('/health', async () => {

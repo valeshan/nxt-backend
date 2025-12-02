@@ -13,6 +13,12 @@ const envSchema = z.object({
   APP_URL: z.string().url().optional(),
   FRONTEND_URL: z.string().url().optional().default('https://app.thenxt.ai'),
   XERO_SYNC_TIMEOUT_MINUTES: z.coerce.number().default(60),
+  
+  // AWS Configuration
+  AWS_ACCESS_KEY_ID: z.string().optional(),
+  AWS_SECRET_ACCESS_KEY: z.string().optional(),
+  AWS_REGION: z.string().default('us-east-1'),
+  S3_INVOICE_BUCKET: z.string().optional().default('nxt-invoices-dev'),
 });
 
 const parsed = envSchema.safeParse(process.env);
