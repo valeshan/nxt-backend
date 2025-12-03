@@ -30,3 +30,6 @@ export function verifyXeroWebhookSignature(rawBody: string, signature: string, s
   return crypto.timingSafeEqual(signatureBuffer, digestBuffer);
 }
 
+
+
+

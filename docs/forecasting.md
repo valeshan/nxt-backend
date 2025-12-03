@@ -65,3 +65,6 @@ The forecast returns a confidence flag:
 - **Scenario Modelling**: Allow users to adjust "what if" scenarios (e.g. "Rent increases by 5%").
 
 
+
+
+

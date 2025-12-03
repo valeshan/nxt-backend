@@ -57,15 +57,21 @@ export const s3Service = {
   },
 
   async getSignedUrl(key: string) {
-    const command = new GetObjectCommand({
-      Bucket: config.S3_INVOICE_BUCKET,
-      Key: key,
-      ResponseContentDisposition: 'inline',
-      ResponseContentType: 'application/pdf',
-    });
+    try {
+      const command = new GetObjectCommand({
+        Bucket: config.S3_INVOICE_BUCKET,
+        Key: key,
+        ResponseContentDisposition: 'inline',
+        ResponseContentType: 'application/pdf',
+      });
 
-    // Expires in 15 minutes
-    return getSignedUrl(s3Client, command, { expiresIn: 900 });
+      // Expires in 15 minutes
+      const url = await getSignedUrl(s3Client, command, { expiresIn: 900 });
+      return url;
+    } catch (error: any) {
+      console.error(`[S3 Presign Failed] Bucket=${config.S3_INVOICE_BUCKET} Key=${key} Error=${error.name} Message=${error.message}`);
+      throw error;
+    }
   },
 };
 

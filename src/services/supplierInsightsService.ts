@@ -3,6 +3,8 @@ import prisma from '../infrastructure/prismaClient';
 import { getCategoryName } from '../config/categoryMap';
 import { startOfMonth, subMonths } from 'date-fns';
 import { forecastService } from './forecast/forecastService';
+import { MANUAL_COGS_ACCOUNT_CODE } from '../config/constants';
+import { mergeTimeSeries, TimeSeriesPoint } from '../utils/dataMerging';
 
 // --- Types & DTOs ---
 
@@ -199,12 +201,43 @@ async function computeWeightedAveragePrices(
     return results;
 }
 
+/**
+ * Determines if manual invoice data should be included based on accountCodes filter
+ */
+function shouldIncludeManualData(accountCodes?: string[]): boolean {
+    if (!accountCodes || accountCodes.length === 0) {
+        return true; // Include all data when no filter
+    }
+    return accountCodes.includes(MANUAL_COGS_ACCOUNT_CODE);
+}
+
+/**
+ * Builds where clause for manual invoice line items
+ * Note: This should only be called when shouldIncludeManualData returns true
+ */
+function getManualLineItemWhere(
+    organisationId: string,
+    locationId: string | undefined,
+    startDate: Date,
+    endDate?: Date
+): Prisma.InvoiceLineItemWhereInput {
+    return {
+        invoice: {
+            organisationId,
+            ...(locationId ? { locationId } : {}),
+            date: { gte: startDate, ...(endDate ? { lte: endDate } : {}) },
+        },
+        // Manual invoices always use the MANUAL_COGS_ACCOUNT_CODE
+        accountCode: MANUAL_COGS_ACCOUNT_CODE
+    };
+}
+
 
 // --- Service Functions ---
 
 export const supplierInsightsService = {
   async getSupplierSpendSummary(organisationId: string, locationId?: string, accountCodes?: string[]): Promise<SpendSummary> {
-    // Helper for line item filtering
+    // Helper for Xero line item filtering
     const getLineItemWhere = (startDate: Date, endDate?: Date) => ({
         invoice: {
             organisationId,
@@ -215,19 +248,26 @@ export const supplierInsightsService = {
         ...(accountCodes && accountCodes.length > 0 ? { accountCode: { in: accountCodes } } : {})
     });
 
+    const safeSum = (agg: any) => agg?._sum?.lineAmount?.toNumber() || 0;
+    const safeSumManual = (agg: any) => agg?._sum?.lineTotal?.toNumber() || 0;
+
     // 1. Total Supplier Spend Per Month (Last 90 days / 3)
     const ninetyDaysAgo = new Date();
     ninetyDaysAgo.setDate(ninetyDaysAgo.getDate() - 90);
     
-    // Switch to Line Item Aggregation
-    const recentSpendAgg = await prisma.xeroInvoiceLineItem.aggregate({
-      where: getLineItemWhere(ninetyDaysAgo),
-      _sum: { lineAmount: true }
-    });
-    
-    const safeSum = (agg: any) => agg?._sum?.lineAmount?.toNumber() || 0;
+    // Fetch Xero and Manual data in parallel
+    const [recentSpendAgg, recentManualSpendAgg] = await Promise.all([
+      prisma.xeroInvoiceLineItem.aggregate({
+        where: getLineItemWhere(ninetyDaysAgo),
+        _sum: { lineAmount: true }
+      }),
+      shouldIncludeManualData(accountCodes) ? prisma.invoiceLineItem.aggregate({
+        where: getManualLineItemWhere(organisationId, locationId, ninetyDaysAgo),
+        _sum: { lineTotal: true }
+      }) : Promise.resolve({ _sum: { lineTotal: null } })
+    ]);
 
-    const totalRecentSpend = safeSum(recentSpendAgg);
+    const totalRecentSpend = safeSum(recentSpendAgg) + safeSumManual(recentManualSpendAgg);
     const totalSupplierSpendPerMonth = totalRecentSpend / 3;
 
     // 1.5 Calculate Spend Trend Last 6m vs Prev 6m
@@ -243,17 +283,27 @@ export const supplierInsightsService = {
     prev6mEnd.setDate(prev6mEnd.getDate() - 1);
     prev6mEnd.setHours(23, 59, 59, 999);
 
-    const last6mAgg = await prisma.xeroInvoiceLineItem.aggregate({
-      where: getLineItemWhere(last6m.start, last6m.end),
-      _sum: { lineAmount: true }
-    });
-    const prev6mAgg = await prisma.xeroInvoiceLineItem.aggregate({
-      where: getLineItemWhere(prev6mStart, prev6mEnd),
-      _sum: { lineAmount: true }
-    });
+    const [last6mAgg, last6mManualAgg, prev6mAgg, prev6mManualAgg] = await Promise.all([
+      prisma.xeroInvoiceLineItem.aggregate({
+        where: getLineItemWhere(last6m.start, last6m.end),
+        _sum: { lineAmount: true }
+      }),
+      shouldIncludeManualData(accountCodes) ? prisma.invoiceLineItem.aggregate({
+        where: getManualLineItemWhere(organisationId, locationId, last6m.start, last6m.end),
+        _sum: { lineTotal: true }
+      }) : Promise.resolve({ _sum: { lineTotal: null } }),
+      prisma.xeroInvoiceLineItem.aggregate({
+        where: getLineItemWhere(prev6mStart, prev6mEnd),
+        _sum: { lineAmount: true }
+      }),
+      shouldIncludeManualData(accountCodes) ? prisma.invoiceLineItem.aggregate({
+        where: getManualLineItemWhere(organisationId, locationId, prev6mStart, prev6mEnd),
+        _sum: { lineTotal: true }
+      }) : Promise.resolve({ _sum: { lineTotal: null } })
+    ]);
 
-    const spendLast6m = safeSum(last6mAgg);
-    const spendPrev6m = safeSum(prev6mAgg);
+    const spendLast6m = safeSum(last6mAgg) + safeSumManual(last6mManualAgg);
+    const spendPrev6m = safeSum(prev6mAgg) + safeSumManual(prev6mManualAgg);
     
     let totalSpendTrendLast6mPercent = 0;
     if (spendPrev6m > 0) {
@@ -261,24 +311,50 @@ export const supplierInsightsService = {
     }
 
     // 2. Total Spend Trend Series (Monthly for last 12 months)
-    const series: { monthLabel: string; total: number }[] = [];
+    const xeroSeries: TimeSeriesPoint[] = [];
+    const manualSeries: TimeSeriesPoint[] = [];
+    
+    // Build all month queries in parallel
+    const monthQueries: Promise<{ monthLabel: string; xeroTotal: number; manualTotal: number }>[] = [];
+    
     for (let i = 11; i >= 0; i--) {
       const d = new Date();
       d.setMonth(d.getMonth() - 1 - i);
       const start = new Date(d.getFullYear(), d.getMonth(), 1);
       const end = new Date(d.getFullYear(), d.getMonth() + 1, 0);
       end.setHours(23, 59, 59, 999);
+      const monthLabel = getMonthLabel(start);
       
-      const monthlyAgg = await prisma.xeroInvoiceLineItem.aggregate({
-        where: getLineItemWhere(start, end),
-        _sum: { lineAmount: true }
-      });
+      const query = Promise.all([
+        prisma.xeroInvoiceLineItem.aggregate({
+          where: getLineItemWhere(start, end),
+          _sum: { lineAmount: true }
+        }),
+        shouldIncludeManualData(accountCodes) ? prisma.invoiceLineItem.aggregate({
+          where: getManualLineItemWhere(organisationId, locationId, start, end),
+          _sum: { lineTotal: true }
+        }) : Promise.resolve({ _sum: { lineTotal: null } })
+      ]).then(([xeroAgg, manualAgg]) => ({
+        monthLabel,
+        xeroTotal: safeSum(xeroAgg),
+        manualTotal: safeSumManual(manualAgg)
+      }));
       
-      series.push({
-        monthLabel: getMonthLabel(start),
-        total: monthlyAgg._sum.lineAmount?.toNumber() || 0
-      });
+      monthQueries.push(query);
     }
+    
+    const monthResults = await Promise.all(monthQueries);
+    
+    for (const result of monthResults) {
+      xeroSeries.push({ monthLabel: result.monthLabel, total: result.xeroTotal });
+      if (shouldIncludeManualData(accountCodes)) {
+        manualSeries.push({ monthLabel: result.monthLabel, total: result.manualTotal });
+      }
+    }
+    
+    const series = shouldIncludeManualData(accountCodes) 
+      ? mergeTimeSeries(xeroSeries, manualSeries)
+      : xeroSeries;
 
     // 3. Calculate averageMonthlyVariancePercent
     const monthTotals = series.map(s => s.total);
@@ -538,32 +614,44 @@ export const supplierInsightsService = {
         status: { in: ['AUTHORISED', 'PAID'] }
     };
 
-    // Use line items for supplier breakdown if account filters active OR just to be consistent
-    // If no account filter, invoice aggregation is faster. But we want consistency.
-    // Plan says: "Refactor getSpendBreakdown: Apply accountCodes filter to line items."
-    
-    // For bySupplier:
-    const lineItems = await prisma.xeroInvoiceLineItem.findMany({
+    // Fetch Xero and Manual line items in parallel
+    const [xeroLineItems, manualLineItems] = await Promise.all([
+      prisma.xeroInvoiceLineItem.findMany({
         where: {
-            invoice: whereInvoiceBase,
-            ...(accountCodes && accountCodes.length > 0 ? { accountCode: { in: accountCodes } } : {})
+          invoice: whereInvoiceBase,
+          ...(accountCodes && accountCodes.length > 0 ? { accountCode: { in: accountCodes } } : {})
         },
         select: {
-            lineAmount: true,
-            invoice: {
-                select: {
-                    supplierId: true,
-                    supplier: { select: { name: true } }
-                }
-            },
-            accountCode: true
+          lineAmount: true,
+          invoice: {
+            select: {
+              supplierId: true,
+              supplier: { select: { name: true } }
+            }
+          },
+          accountCode: true
         }
-    });
+      }),
+      shouldIncludeManualData(accountCodes) ? prisma.invoiceLineItem.findMany({
+        where: getManualLineItemWhere(organisationId, locationId, last12m.start, last12m.end),
+        select: {
+          lineTotal: true,
+          invoice: {
+            select: {
+              supplierId: true,
+              supplier: { select: { name: true } }
+            }
+          },
+          accountCode: true
+        }
+      }) : Promise.resolve([])
+    ]);
 
     const supplierMap = new Map<string, { name: string, total: number }>();
     const categoryMap = new Map<string, { total: number }>();
 
-    for (const item of lineItems) {
+    // Process Xero line items
+    for (const item of xeroLineItems) {
         const amount = Number(item.lineAmount || 0);
         if (amount <= 0) continue;
 
@@ -584,6 +672,29 @@ export const supplierInsightsService = {
             }
             categoryMap.get(item.accountCode)!.total += amount;
         }
+    }
+
+    // Process Manual line items
+    for (const item of manualLineItems) {
+        const amount = Number(item.lineTotal || 0);
+        if (amount <= 0) continue;
+
+        // Supplier
+        const supId = item.invoice.supplierId;
+        const supName = item.invoice.supplier?.name || 'Unknown';
+        if (supId) {
+             if (!supplierMap.has(supId)) {
+                 supplierMap.set(supId, { name: supName, total: 0 });
+             }
+             supplierMap.get(supId)!.total += amount;
+        }
+
+        // Category (manual invoices use MANUAL_COGS_ACCOUNT_CODE)
+        const accountCode = item.accountCode || MANUAL_COGS_ACCOUNT_CODE;
+        if (!categoryMap.has(accountCode)) {
+            categoryMap.set(accountCode, { total: 0 });
+        }
+        categoryMap.get(accountCode)!.total += amount;
     }
 
     const bySupplier = Array.from(supplierMap.entries()).map(([id, data]) => ({
@@ -871,7 +982,241 @@ export const supplierInsightsService = {
     };
   },
 
+  async getManualProductDetail(organisationId: string, productId: string, locationId?: string): Promise<ProductDetail | null> {
+    // Parse manual ID: manual:supplierId:base64Key
+    const parts = productId.split(':');
+    if (parts.length !== 3 || parts[0] !== 'manual') {
+        return null;
+    }
+    
+    const supplierId = parts[1];
+    const keyBase64 = parts[2];
+    let productKey: string;
+    try {
+        productKey = Buffer.from(keyBase64, 'base64').toString('utf-8');
+    } catch (e) {
+        return null;
+    }
+
+    // Verify supplier exists and belongs to org
+    const supplier = await prisma.supplier.findUnique({
+        where: { id: supplierId }
+    });
+    
+    if (!supplier || supplier.organisationId !== organisationId) {
+        return null;
+    }
+
+    // Date ranges
+    const now = new Date();
+    const startOfCurrentMonth = startOfMonth(now);
+    const windowStart = startOfMonth(subMonths(startOfCurrentMonth, 12)); // Last 12 full months
+
+    const whereInvoiceBase = {
+        organisationId,
+        supplierId,
+        ...(locationId ? { locationId } : {}),
+        isVerified: true,
+    };
+
+    // Build where clause for line items matching the product key
+    // Match either productCode or normalized description
+    const normalizedKey = productKey.toLowerCase().trim();
+
+    // 1. Calculate Stats (Spend, Qty) using InvoiceLineItem aggregation
+    const lineItems = await prisma.invoiceLineItem.findMany({
+        where: {
+            invoice: {
+                ...whereInvoiceBase,
+                date: { gte: windowStart, lte: now }
+            },
+            OR: [
+                { productCode: { equals: normalizedKey, mode: 'insensitive' } },
+                {
+                    AND: [
+                        { productCode: null },
+                        { description: { contains: productKey, mode: 'insensitive' } }
+                    ]
+                }
+            ]
+        },
+        select: {
+            lineTotal: true,
+            quantity: true,
+            unitPrice: true,
+            description: true,
+            productCode: true,
+            accountCode: true,
+            invoice: {
+                select: {
+                    date: true
+                }
+            }
+        }
+    });
+
+    // Filter more strictly in JS to match exact key
+    // The key is generated as: COALESCE(productCode, LOWER(TRIM(description)))
+    // So we match if: (productCode exists and matches) OR (productCode is null and normalized description matches)
+    const filteredItems = lineItems.filter(item => {
+        const itemProductCode = item.productCode?.toLowerCase().trim();
+        const itemDescription = item.description?.toLowerCase().trim() || '';
+        
+        if (itemProductCode) {
+            return itemProductCode === normalizedKey;
+        } else {
+            return itemDescription === normalizedKey;
+        }
+    });
+
+    if (filteredItems.length === 0) {
+        return null;
+    }
+
+    // Calculate totals
+    const totalSpend12m = filteredItems.reduce((sum, item) => sum + Number(item.lineTotal || 0), 0);
+    const quantityPurchased12m = filteredItems.reduce((sum, item) => sum + Number(item.quantity || 0), 0);
+    const averageMonthlySpend = totalSpend12m / 12;
+
+    // Calculate spend trend (last 6m vs prev 6m)
+    const last6m = getFullCalendarMonths(6);
+    const prev6mStart = new Date(last6m.start);
+    prev6mStart.setMonth(prev6mStart.getMonth() - 6);
+    const prev6mEnd = new Date(last6m.start);
+    prev6mEnd.setDate(prev6mEnd.getDate() - 1);
+    prev6mEnd.setHours(23, 59, 59, 999);
+
+    const last6mItems = filteredItems.filter(item => {
+        const itemDate = item.invoice.date;
+        return itemDate && itemDate >= last6m.start && itemDate <= last6m.end;
+    });
+    const prev6mItems = filteredItems.filter(item => {
+        const itemDate = item.invoice.date;
+        return itemDate && itemDate >= prev6mStart && itemDate <= prev6mEnd;
+    });
+
+    const sLast = last6mItems.reduce((sum, item) => sum + Number(item.lineTotal || 0), 0);
+    const sPrev = prev6mItems.reduce((sum, item) => sum + Number(item.lineTotal || 0), 0);
+    let spendTrend12mPercent = 0;
+    if (sPrev > 0) {
+        spendTrend12mPercent = ((sLast - sPrev) / sPrev) * 100;
+    }
+
+    // 2. Price History (Last 12 months) - group by month
+    const priceHistoryMap = new Map<string, { totalAmount: number; totalQty: number }>();
+
+    for (const item of filteredItems) {
+        if (!item.invoice.date) continue;
+        const monthKey = `${item.invoice.date.getFullYear()}-${String(item.invoice.date.getMonth() + 1).padStart(2, '0')}`;
+        const amount = Number(item.lineTotal || 0);
+        const qty = Number(item.quantity || 0);
+        
+        if (qty <= 0) continue;
+
+        const existing = priceHistoryMap.get(monthKey) || { totalAmount: 0, totalQty: 0 };
+        priceHistoryMap.set(monthKey, {
+            totalAmount: existing.totalAmount + amount,
+            totalQty: existing.totalQty + qty
+        });
+    }
+
+    // Build price history array for last 12 months
+    const priceHistory: { monthLabel: string; averageUnitPrice: number | null }[] = [];
+    const unitPriceHistory: { monthLabel: string; averageUnitPrice: number | null }[] = [];
+
+    for (let i = 11; i >= 0; i--) {
+        const d = new Date();
+        d.setMonth(d.getMonth() - i);
+        const monthKey = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
+        const label = getMonthLabel(d);
+        
+        const monthData = priceHistoryMap.get(monthKey);
+        const price = monthData && monthData.totalQty > 0 
+            ? monthData.totalAmount / monthData.totalQty 
+            : null;
+        
+        priceHistory.push({ monthLabel: label, averageUnitPrice: price });
+        unitPriceHistory.push({ monthLabel: label, averageUnitPrice: price });
+    }
+
+    // 3. Calculate Product Price Trend
+    let productPriceTrendPercent = 0;
+    let canCalculateProductPriceTrend = false;
+
+    const sortedMonths = Array.from(priceHistoryMap.keys()).sort();
+    if (sortedMonths.length >= 2) {
+        const latestMonth = sortedMonths[sortedMonths.length - 1];
+        const latestData = priceHistoryMap.get(latestMonth);
+        const latestPrice = latestData && latestData.totalQty > 0 
+            ? latestData.totalAmount / latestData.totalQty 
+            : 0;
+
+        // Find comparison point approx 3-6 months back
+        const lookbackIndex = sortedMonths.length - 4;
+        let comparisonPrice = 0;
+        if (lookbackIndex >= 0) {
+            const comparisonData = priceHistoryMap.get(sortedMonths[lookbackIndex]);
+            comparisonPrice = comparisonData && comparisonData.totalQty > 0
+                ? comparisonData.totalAmount / comparisonData.totalQty
+                : 0;
+        } else if (sortedMonths.length > 0) {
+            const oldestData = priceHistoryMap.get(sortedMonths[0]);
+            comparisonPrice = oldestData && oldestData.totalQty > 0
+                ? oldestData.totalAmount / oldestData.totalQty
+                : 0;
+        }
+
+        if (comparisonPrice > 0 && latestPrice > 0) {
+            productPriceTrendPercent = ((latestPrice - comparisonPrice) / comparisonPrice) * 100;
+            canCalculateProductPriceTrend = true;
+        }
+    }
+
+    // Get product name from most recent item
+    const productName = filteredItems[filteredItems.length - 1]?.description || 'Unknown Product';
+
+    // Resolve Category Name (from most frequent account code)
+    let categoryName = 'Uncategorized';
+    const accountCodeCounts = new Map<string, number>();
+    for (const item of filteredItems) {
+        const accountCode = item.accountCode;
+        if (accountCode) {
+            accountCodeCounts.set(accountCode, (accountCodeCounts.get(accountCode) || 0) + 1);
+        }
+    }
+    
+    if (accountCodeCounts.size > 0) {
+        const topCategory = Array.from(accountCodeCounts.entries())
+            .sort((a, b) => b[1] - a[1])[0];
+        if (topCategory) {
+            categoryName = getCategoryName(topCategory[0]);
+        }
+    }
+
+    return {
+        productId: productId,
+        productName: productName,
+        supplierName: supplier.name,
+        categoryName,
+        stats12m: {
+            totalSpend12m,
+            averageMonthlySpend,
+            quantityPurchased12m,
+            spendTrend12mPercent
+        },
+        priceHistory,
+        unitPriceHistory,
+        productPriceTrendPercent,
+        canCalculateProductPriceTrend
+    };
+  },
+
   async getProductDetail(organisationId: string, productId: string, locationId?: string): Promise<ProductDetail | null> {
+    // Check if this is a manual product ID (format: manual:supplierId:base64Key)
+    if (productId.startsWith('manual:')) {
+        return this.getManualProductDetail(organisationId, productId, locationId);
+    }
+
     const product = await prisma.product.findUnique({
         where: { id: productId },
         include: { supplier: true }
@@ -1068,7 +1413,16 @@ export const supplierInsightsService = {
           },
       });
 
-      // 2. Fetch Location Config
+      // 2. Check if manual invoices exist for this org/location
+      const hasManualInvoices = await prisma.invoiceLineItem.count({
+          where: {
+              invoice: whereInvoice,
+              accountCode: MANUAL_COGS_ACCOUNT_CODE
+          },
+          take: 1
+      }) > 0;
+
+      // 3. Fetch Location Config
       const cogsSet = new Set<string>();
       if (locationId) {
           const config = await prisma.locationAccountConfig.findMany({
@@ -1078,7 +1432,7 @@ export const supplierInsightsService = {
           config.forEach(c => cogsSet.add(c.accountCode));
       }
 
-      // 3. Map to DTO
+      // 4. Map to DTO
       const accountMap = new Map<string, string | null>();
       
       for (const acc of accounts) {
@@ -1099,6 +1453,15 @@ export const supplierInsightsService = {
             code, 
             name,
             isCogs: cogsSet.has(code) 
+          });
+      }
+
+      // 5. Add manual account if manual invoices exist (and not already present)
+      if (hasManualInvoices && !accountMap.has(MANUAL_COGS_ACCOUNT_CODE)) {
+          result.push({
+              code: MANUAL_COGS_ACCOUNT_CODE,
+              name: MANUAL_COGS_ACCOUNT_CODE,
+              isCogs: cogsSet.has(MANUAL_COGS_ACCOUNT_CODE)
           });
       }
       
@@ -1142,18 +1505,51 @@ export const supplierInsightsService = {
         return {};
     }
 
-    return {
-        invoices: {
-            some: {
-                organisationId,
-                ...(locationId ? { locationId } : {}),
-                lineItems: {
-                    some: {
-                        accountCode: { in: accountCodes }
+    const hasManualCogsCode = accountCodes.includes(MANUAL_COGS_ACCOUNT_CODE);
+    const xeroAccountCodes = accountCodes.filter(code => code !== MANUAL_COGS_ACCOUNT_CODE);
+
+    // Build conditions for Xero invoices and manual invoices
+    const conditions: Prisma.SupplierWhereInput[] = [];
+
+    // Condition 1: Xero invoices with matching account codes
+    if (xeroAccountCodes.length > 0) {
+        conditions.push({
+            invoices: {
+                some: {
+                    organisationId,
+                    ...(locationId ? { locationId } : {}),
+                    lineItems: {
+                        some: {
+                            accountCode: { in: xeroAccountCodes }
+                        }
                     }
                 }
             }
-        }
-    };
+        });
+    }
+
+    // Condition 2: Manual invoices (ocrInvoices) - all verified manual invoices are considered COGS
+    if (hasManualCogsCode) {
+        conditions.push({
+            ocrInvoices: {
+                some: {
+                    organisationId,
+                    ...(locationId ? { locationId } : {}),
+                    isVerified: true
+                }
+            }
+        });
+    }
+
+    // If we have both conditions, use OR; otherwise return the single condition
+    if (conditions.length === 0) {
+        return {};
+    } else if (conditions.length === 1) {
+        return conditions[0];
+    } else {
+        return {
+            OR: conditions
+        };
+    }
   }
 };

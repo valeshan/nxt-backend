@@ -29,6 +29,7 @@ export default async function invoiceRoutes(fastify: FastifyInstance) {
           params: z.object({ id: z.string() }),
           body: z.object({
               supplierId: z.string().optional(),
+              supplierName: z.string().optional(),
               total: z.number().optional(), // Should be number for JSON payload
               createAlias: z.boolean().optional(),
               aliasName: z.string().optional(),

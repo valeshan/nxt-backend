@@ -2,8 +2,9 @@ import prisma from '../infrastructure/prismaClient';
 import { s3Service } from './S3Service';
 import { ocrService } from './OcrService';
 import { supplierResolutionService } from './SupplierResolutionService';
-import { InvoiceSourceType, ProcessingStatus, ReviewStatus } from '@prisma/client';
+import { InvoiceSourceType, ProcessingStatus, ReviewStatus, SupplierSourceType, SupplierStatus } from '@prisma/client';
 import { randomUUID } from 'crypto';
+import { MANUAL_COGS_ACCOUNT_CODE } from '../config/constants';
 
 export class InvoiceFileNotFoundError extends Error {
   constructor(message: string) {
@@ -104,6 +105,13 @@ export const invoicePipelineService = {
 
     if (!file) throw new InvoiceFileNotFoundError('Invoice file not found');
 
+    console.log(`[InvoicePipeline] pollProcessing fileId=${file.id} status=${file.processingStatus} storageKey=${file.storageKey ? 'YES' : 'NO'}`);
+
+    // If complete or failed, return status immediately
+    if (file.processingStatus === ProcessingStatus.OCR_COMPLETE || file.processingStatus === ProcessingStatus.OCR_FAILED || file.processingStatus === ProcessingStatus.PENDING_OCR) {
+         return this.enrichStatus(file);
+    }
+
     if (file.processingStatus === ProcessingStatus.OCR_PROCESSING && file.ocrJobId) {
         // Check if we need to update status
         try {
@@ -145,7 +153,8 @@ export const invoicePipelineService = {
                                  quantity: item.quantity,
                                  unitPrice: item.unitPrice,
                                  lineTotal: item.lineTotal,
-                                 productCode: item.productCode
+                                 productCode: item.productCode,
+                                 accountCode: MANUAL_COGS_ACCOUNT_CODE
                              }))
                          }
                      }
@@ -191,9 +200,11 @@ export const invoicePipelineService = {
   async enrichStatus(file: any) {
       // Generate presigned URL
       let presignedUrl: string | null = null;
+      console.log(`[InvoicePipeline] enrichStatus fileId=${file.id} hasStorageKey=${!!file.storageKey}`);
       if (file.storageKey) {
           try {
             presignedUrl = await s3Service.getSignedUrl(file.storageKey);
+            console.log(`[InvoicePipeline] Generated presignedUrl length=${presignedUrl?.length}`);
           } catch (e) {
             console.error('Error generating presigned URL', e);
           }
@@ -206,11 +217,16 @@ export const invoicePipelineService = {
 
   async verifyInvoice(invoiceId: string, data: { 
       supplierId?: string; 
+      supplierName?: string;
       total?: number; 
       createAlias?: boolean;
       aliasName?: string;
   }) {
       console.log('[InvoicePipeline] verifyInvoice start', { invoiceId, ...data });
+
+      if (!data.supplierId && !data.supplierName) {
+          throw new Error("Supplier is required (either supplierId or supplierName)");
+      }
 
       // 1. Fetch Invoice
       const invoice = await prisma.invoice.findUnique({
@@ -223,18 +239,50 @@ export const invoicePipelineService = {
         return null;
       }
 
-      // 2. Update Invoice
+      let targetSupplierId = data.supplierId;
+
+      // 2. Resolve or Create Supplier if needed
+      if (!targetSupplierId && data.supplierName) {
+          const normalizedName = data.supplierName.toLowerCase().trim();
+          
+          // Check if exists
+          const existingSupplier = await prisma.supplier.findFirst({
+              where: {
+                  organisationId: invoice.organisationId,
+                  normalizedName
+              }
+          });
+
+          if (existingSupplier) {
+              targetSupplierId = existingSupplier.id;
+          } else {
+              // Create new supplier
+              const newSupplier = await prisma.supplier.create({
+                  data: {
+                      organisationId: invoice.organisationId,
+                      name: data.supplierName.trim(),
+                      normalizedName,
+                      sourceType: SupplierSourceType.MANUAL,
+                      status: SupplierStatus.ACTIVE
+                  }
+              });
+              targetSupplierId = newSupplier.id;
+              console.log(`[InvoicePipeline] Created new supplier: ${newSupplier.name} (${newSupplier.id})`);
+          }
+      }
+
+      // 3. Update Invoice
       const updatedInvoice = await prisma.invoice.update({
           where: { id: invoiceId },
           data: {
-              supplierId: data.supplierId,
+              supplierId: targetSupplierId,
               total: data.total,
               isVerified: true,
           },
           include: { supplier: true, lineItems: true }
       });
 
-      // 3. Update InvoiceFile
+      // 4. Update InvoiceFile
       if (invoice.invoiceFileId) {
           await prisma.invoiceFile.update({
               where: { id: invoice.invoiceFileId },
@@ -242,28 +290,32 @@ export const invoicePipelineService = {
           });
       }
 
-      // 4. Create Alias if requested
-      if (data.createAlias && data.aliasName && data.supplierId) {
-          const normalized = data.aliasName.toLowerCase().trim();
-          // Use upsert to avoid P2002 if alias exists
-          await prisma.supplierAlias.upsert({
-            where: {
-                organisationId_normalisedAliasName: {
+      // 5. Create Alias if requested
+      if (data.createAlias) {
+          const aliasName = data.aliasName || data.supplierName; // Fallback to supplier name if alias name empty
+          
+          if (aliasName && targetSupplierId) {
+            const normalized = aliasName.toLowerCase().trim();
+            // Use upsert to avoid P2002 if alias exists
+            await prisma.supplierAlias.upsert({
+                where: {
+                    organisationId_normalisedAliasName: {
+                        organisationId: invoice.organisationId,
+                        normalisedAliasName: normalized
+                    }
+                },
+                update: { supplierId: targetSupplierId },
+                create: {
                     organisationId: invoice.organisationId,
+                    supplierId: targetSupplierId,
+                    aliasName: aliasName,
                     normalisedAliasName: normalized
                 }
-            },
-            update: { supplierId: data.supplierId },
-            create: {
-                organisationId: invoice.organisationId,
-                supplierId: data.supplierId,
-                aliasName: data.aliasName,
-                normalisedAliasName: normalized
-            }
-        });
+            });
+          }
       }
 
-      console.log('[InvoicePipeline] verifyInvoice success', { invoiceId, supplierId: data.supplierId });
+      console.log('[InvoicePipeline] verifyInvoice success', { invoiceId, supplierId: targetSupplierId });
       return updatedInvoice;
   },
   

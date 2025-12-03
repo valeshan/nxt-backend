@@ -3,6 +3,7 @@ import prisma from '../infrastructure/prismaClient';
 import { normalizeSupplierName } from '../utils/normalizeSupplierName';
 import { Prisma } from '@prisma/client';
 import { supplierInsightsService } from '../services/supplierInsightsService';
+import { MANUAL_COGS_ACCOUNT_CODE } from '../config/constants';
 
 export class SupplierController {
   
@@ -61,6 +62,35 @@ export class SupplierController {
         }
     }
     
+    // Helper to build manual invoice filter based on account codes
+    // If MANUAL_COGS_ACCOUNT_CODE is in the filter, include all verified manual invoices
+    // Otherwise, filter by the specified account codes
+    const getManualInvoiceFilter = (): Prisma.InvoiceWhereInput => {
+        if (!normalizedAccountCodes || normalizedAccountCodes.length === 0) {
+            return {}; // No filter - include all verified invoices
+        }
+        
+        const hasManualCogsCode = normalizedAccountCodes.includes(MANUAL_COGS_ACCOUNT_CODE);
+        const otherAccountCodes = normalizedAccountCodes.filter(code => code !== MANUAL_COGS_ACCOUNT_CODE);
+        
+        if (hasManualCogsCode) {
+            // MANUAL_COGS_ACCOUNT_CODE selected - include all verified manual invoices
+            // (they're all considered manual COGS regardless of line item account codes)
+            // If other codes are also selected, we still include all manual invoices
+            // since they're all manual COGS by definition
+            return {}; // No filter - include all verified manual invoices
+        } else {
+            // Only other account codes - filter by those codes
+            return {
+                lineItems: {
+                    some: {
+                        accountCode: { in: otherAccountCodes }
+                    }
+                }
+            };
+        }
+    };
+    
     // Note: Suppliers themselves are Organisation-scoped.
     // However, their invoices and activity can be Location-scoped.
     // If we want to list only suppliers active in a location, we'd need to join invoices.
@@ -101,17 +131,39 @@ export class SupplierController {
     // Account Filter Logic (from service)
     const accountFilter = supplierInsightsService.getSupplierFilterWhereClause(orgId, locationId, normalizedAccountCodes);
 
+    // 1. Pre-fetch Supplier IDs for the given location (if locationId is present)
+    let locationSupplierIds: string[] | null = null;
+
+    if (locationId && activityStatus !== 'current') {
+        console.log(`[SupplierController] listSuppliers: Pre-fetching IDs for loc=${locationId} org=${orgId}`);
+        const [manualIds, xeroIds] = await Promise.all([
+            prisma.invoice.findMany({
+                where: { organisationId: orgId, locationId, isVerified: true },
+                select: { supplierId: true },
+                distinct: ['supplierId']
+            }).then(rows => {
+                console.log(`[SupplierController] Found ${rows.length} manual supplier IDs`);
+                return rows.map(r => r.supplierId).filter(Boolean) as string[];
+            }),
+            prisma.xeroInvoice.findMany({
+                where: { organisationId: orgId, locationId, status: { in: ['AUTHORISED', 'PAID'] } },
+                select: { supplierId: true },
+                distinct: ['supplierId']
+            }).then(rows => {
+                console.log(`[SupplierController] Found ${rows.length} Xero supplier IDs`);
+                return rows.map(r => r.supplierId).filter(Boolean) as string[];
+            })
+        ]);
+        locationSupplierIds = Array.from(new Set([...manualIds, ...xeroIds]));
+        console.log(`[SupplierController] Total unique location supplier IDs: ${locationSupplierIds.length}`);
+    }
+
     const where: Prisma.SupplierWhereInput = {
       organisationId: orgId,
       status: { not: 'ARCHIVED' },
       ...(search ? { name: { contains: search, mode: 'insensitive' } } : {}),
-      ...(locationId && activityStatus !== 'current' ? {
-        invoices: {
-          some: {
-            locationId: locationId
-          }
-        }
-      } : {}),
+      // Use explicitly fetched IDs if location filtering is active
+      ...(locationSupplierIds !== null ? { id: { in: locationSupplierIds } } : {}),
       ...activityFilter,
       ...accountFilter // Merge account filter logic
     };
@@ -130,6 +182,8 @@ export class SupplierController {
       prisma.supplier.count({ where }),
     ]);
     
+    console.log(`[SupplierController] Final supplier count: ${suppliers.length}, Total: ${total}`);
+
     // ...
     
     // Metrics Where Clause Base
@@ -170,87 +224,234 @@ export class SupplierController {
     const startOfPriorPeriod = new Date(startOfCurrentPeriod);
     startOfPriorPeriod.setMonth(startOfPriorPeriod.getMonth() - 6); 
 
-    // Metrics for Current Period (Spend)
-    const currentPeriodMetrics = await prisma.xeroInvoice.groupBy({
-      by: ['supplierId'],
-      where: {
-        ...metricsWhereBase,
-        supplierId: { in: supplierIds },
-        date: { gte: startOfCurrentPeriod, lte: endOfCurrentPeriod },
-      },
-      _sum: { total: true },
-    });
-
-    // Metrics for Prior Period (Spend)
-    const priorPeriodMetrics = await prisma.xeroInvoice.groupBy({
-      by: ['supplierId'],
-      where: {
-        ...metricsWhereBase,
-        supplierId: { in: supplierIds },
-        date: { gte: startOfPriorPeriod, lte: endOfPriorPeriod },
-      },
-      _sum: { total: true },
-    });
-
-    // Standard 12m Metrics
+    // Metrics-specific windows based on now2
     const twelveMonthsAgoMetric = new Date(now2.getFullYear() - 1, now2.getMonth(), now2.getDate());
     const sixMonthsAgo = new Date(now2.getFullYear(), now2.getMonth() - 6, now2.getDate());
 
-    const metrics12m = await prisma.xeroInvoice.groupBy({
-      by: ['supplierId'],
-      where: {
-        ...metricsWhereBase,
-        supplierId: { in: supplierIds },
-        date: { gte: twelveMonthsAgoMetric },
-      },
-      _sum: { total: true },
-      _count: { id: true }
-    });
+    // Build account code filter for manual invoices (used in raw SQL query)
+    const hasManualCogsCode = normalizedAccountCodes?.includes(MANUAL_COGS_ACCOUNT_CODE) || false;
+    const otherAccountCodes = normalizedAccountCodes?.filter(code => code !== MANUAL_COGS_ACCOUNT_CODE) || [];
+    const manualItemAccountFilter = (() => {
+        if (!normalizedAccountCodes || normalizedAccountCodes.length === 0) {
+            return Prisma.empty;
+        }
+        if (hasManualCogsCode && otherAccountCodes.length === 0) {
+            // Only MANUAL_COGS_ACCOUNT_CODE - include all (no filter)
+            return Prisma.empty;
+        } else if (hasManualCogsCode && otherAccountCodes.length > 0) {
+            // MANUAL_COGS_ACCOUNT_CODE + other codes - include manual COGS OR other codes
+            return Prisma.sql`AND (li."accountCode" = ${MANUAL_COGS_ACCOUNT_CODE} OR li."accountCode" IN (${Prisma.join(otherAccountCodes)}))`;
+        } else {
+            // Only other codes - filter by those
+            return Prisma.sql`AND li."accountCode" IN (${Prisma.join(otherAccountCodes)})`;
+        }
+    })();
 
-    // Metrics for Recurring Logic
-    const metrics6m = await prisma.xeroInvoice.groupBy({
-      by: ['supplierId'],
-      where: {
-        ...metricsWhereBase,
-        supplierId: { in: supplierIds },
-        date: { gte: sixMonthsAgo },
-      },
-      _count: { id: true }
-    });
+    // Metrics for Current Period (Spend)
+    // Using Promise.all for parallel execution
+    const [
+        currentPeriodMetricsXero,
+        priorPeriodMetricsXero,
+        metrics12mXero,
+        metrics6mXero,
+        currentPeriodMetricsManual,
+        priorPeriodMetricsManual,
+        metrics12mManual,
+        metrics6mManual,
+        xeroItemRows,
+        manualItemRows
+    ] = await Promise.all([
+        // Xero Metrics
+        prisma.xeroInvoice.groupBy({
+            by: ['supplierId'],
+            where: {
+                ...metricsWhereBase,
+                supplierId: { in: supplierIds },
+                date: { gte: startOfCurrentPeriod, lte: endOfCurrentPeriod },
+            },
+            _sum: { total: true },
+        }),
+        prisma.xeroInvoice.groupBy({
+            by: ['supplierId'],
+            where: {
+                ...metricsWhereBase,
+                supplierId: { in: supplierIds },
+                date: { gte: startOfPriorPeriod, lte: endOfPriorPeriod },
+            },
+            _sum: { total: true },
+        }),
+        prisma.xeroInvoice.groupBy({
+            by: ['supplierId'],
+            where: {
+                ...metricsWhereBase,
+                supplierId: { in: supplierIds },
+                date: { gte: twelveMonthsAgoMetric },
+            },
+            _sum: { total: true },
+            _count: { id: true }
+        }),
+        prisma.xeroInvoice.groupBy({
+            by: ['supplierId'],
+            where: {
+                ...metricsWhereBase,
+                supplierId: { in: supplierIds },
+                date: { gte: sixMonthsAgo },
+            },
+            _count: { id: true }
+        }),
+        // Manual Invoice Metrics
+        prisma.invoice.groupBy({
+            by: ['supplierId'],
+            where: {
+                supplierId: { in: supplierIds },
+                isVerified: true,
+                organisationId: orgId,
+                ...(locationId ? { locationId } : {}),
+                date: { gte: startOfCurrentPeriod, lte: endOfCurrentPeriod },
+                ...getManualInvoiceFilter()
+            },
+            _sum: { total: true },
+        }),
+        prisma.invoice.groupBy({
+            by: ['supplierId'],
+            where: {
+                supplierId: { in: supplierIds },
+                isVerified: true,
+                organisationId: orgId,
+                ...(locationId ? { locationId } : {}),
+                date: { gte: startOfPriorPeriod, lte: endOfPriorPeriod },
+                ...getManualInvoiceFilter()
+            },
+            _sum: { total: true },
+        }),
+        prisma.invoice.groupBy({
+            by: ['supplierId'],
+            where: {
+                supplierId: { in: supplierIds },
+                isVerified: true,
+                organisationId: orgId,
+                ...(locationId ? { locationId } : {}),
+                date: { gte: twelveMonthsAgoMetric },
+                ...getManualInvoiceFilter()
+            },
+            _sum: { total: true },
+            _count: { id: true }
+        }),
+        prisma.invoice.groupBy({
+            by: ['supplierId'],
+            where: {
+                supplierId: { in: supplierIds },
+                isVerified: true,
+                organisationId: orgId,
+                ...(locationId ? { locationId } : {}),
+                date: { gte: sixMonthsAgo },
+                ...getManualInvoiceFilter()
+            },
+            _count: { id: true }
+        }),
+        // Xero Item Rows
+        prisma.$queryRaw<Array<{ supplierId: string, normalisedKey: string }>>`
+            SELECT DISTINCT
+                i."supplierId",
+                COALESCE(li."itemCode", LOWER(TRIM(li."description"))) as "normalisedKey"
+            FROM "XeroInvoiceLineItem" li
+            JOIN "XeroInvoice" i ON li."invoiceId" = i.id
+            WHERE i."supplierId" IN (${Prisma.join(supplierIds)})
+            AND i."organisationId" = ${orgId}
+            AND i."status" IN ('AUTHORISED', 'PAID')
+            AND i."date" >= ${twelveMonthsAgoMetric}
+            ${locationId ? Prisma.sql`AND i."locationId" = ${locationId}` : Prisma.empty}
+            ${normalizedAccountCodes && normalizedAccountCodes.length > 0 
+                ? Prisma.sql`AND li."accountCode" IN (${Prisma.join(normalizedAccountCodes)})` 
+                : Prisma.empty}
+        `,
+        // Manual Item Rows
+        prisma.$queryRaw<Array<{ supplierId: string, normalisedKey: string }>>`
+            SELECT DISTINCT
+                i."supplierId",
+                COALESCE(li."productCode", LOWER(TRIM(li."description"))) as "normalisedKey"
+            FROM "InvoiceLineItem" li
+            JOIN "Invoice" i ON li."invoiceId" = i.id
+            WHERE i."supplierId" IN (${Prisma.join(supplierIds)})
+            AND i."organisationId" = ${orgId}
+            AND i."isVerified" = true
+            AND i."date" >= ${twelveMonthsAgoMetric}
+            ${locationId ? Prisma.sql`AND i."locationId" = ${locationId}` : Prisma.empty}
+            ${manualItemAccountFilter}
+        `
+    ]);
 
-    // Calculate item counts (distinct products) per supplier
-    let itemCountsMap = new Map<string, number>();
+    // Helper to merge metrics
+    const mergeMetrics = (xeroData: any[], manualData: any[], key = '_sum', valueKey = 'total') => {
+        const map = new Map<string, number>();
+        xeroData.forEach(d => {
+            const val = d[key] ? Number(d[key][valueKey] || 0) : Number(d[valueKey] || 0); // Handle both _sum/count structure and direct count
+            map.set(d.supplierId, val);
+        });
+        manualData.forEach(d => {
+            // Manual Invoice supplierId can be null in DB type but here it's filtered by ID list so safe
+             if (!d.supplierId) return;
+             const val = d[key] ? Number(d[key][valueKey] || 0) : Number(d[valueKey] || 0);
+             const current = map.get(d.supplierId) || 0;
+             map.set(d.supplierId, current + val);
+        });
+        return map;
+    };
     
-    if (supplierIds.length > 0) {
-      // Raw query needs explicit location filter if present
-      const locationFilter = locationId 
-        ? Prisma.sql`AND i."locationId" = ${locationId}` 
-        : Prisma.empty;
-      
-      // Account filter for raw query
-      const accountFilterRaw = (normalizedAccountCodes && normalizedAccountCodes.length > 0)
-        ? Prisma.sql`AND li."accountCode" IN (${Prisma.join(normalizedAccountCodes)})`
-        : Prisma.empty;
-
-      const itemCounts: any[] = await prisma.$queryRaw`
-        SELECT i."supplierId", COUNT(DISTINCT COALESCE("itemCode", LOWER(TRIM("description"))))::int as "count"
-        FROM "XeroInvoiceLineItem" li
-        JOIN "XeroInvoice" i ON li."invoiceId" = i.id
-        WHERE i."supplierId" IN (${Prisma.join(supplierIds)})
-        AND i."status" IN ('AUTHORISED', 'PAID')
-        AND i."organisationId" = ${orgId}
-        ${locationFilter}
-        ${accountFilterRaw}
-        GROUP BY i."supplierId"
-      `;
-      itemCountsMap = new Map(itemCounts.map((c: any) => [c.supplierId, c.count]));
-    }
-
     // Maps
-    const currentPeriodMap = new Map(currentPeriodMetrics.map(m => [m.supplierId, Number(m._sum.total || 0)]));
-    const priorPeriodMap = new Map(priorPeriodMetrics.map(m => [m.supplierId, Number(m._sum.total || 0)]));
-    const metrics12mMap = new Map(metrics12m.map(m => [m.supplierId, { total: Number(m._sum.total || 0), count: m._count.id }]));
-    const metrics6mMap = new Map(metrics6m.map(m => [m.supplierId, m._count.id]));
+    const currentPeriodMap = mergeMetrics(currentPeriodMetricsXero, currentPeriodMetricsManual);
+    const priorPeriodMap = mergeMetrics(priorPeriodMetricsXero, priorPeriodMetricsManual);
+    
+    // Special handling for 12m because it has both total and count
+    const metrics12mMap = new Map<string, { total: number, count: number }>();
+    const process12m = (data: any[]) => {
+        data.forEach(d => {
+            if(!d.supplierId) return;
+            const current = metrics12mMap.get(d.supplierId) || { total: 0, count: 0 };
+            metrics12mMap.set(d.supplierId, {
+                total: current.total + Number(d._sum.total || 0),
+                count: current.count + (d._count.id || 0)
+            });
+        });
+    };
+    process12m(metrics12mXero);
+    process12m(metrics12mManual);
+
+    // Special handling for 6m count
+    const metrics6mMap = new Map<string, number>();
+    const process6m = (data: any[]) => {
+        data.forEach(d => {
+             if(!d.supplierId) return;
+             const current = metrics6mMap.get(d.supplierId) || 0;
+             metrics6mMap.set(d.supplierId, current + (d._count.id || 0));
+        });
+    };
+    process6m(metrics6mXero);
+    process6m(metrics6mManual);
+
+    // Build itemCountsMap with true distinct counts across both sources
+    const itemSetsBySupplier = new Map<string, Set<string>>();
+
+    const processItemRows = (rows: any[]) => {
+        for (const row of rows) {
+            const sId = row.supplierId;
+            const key = (row.normalisedKey || '').trim().toLowerCase();
+            if (sId && key) {
+                if (!itemSetsBySupplier.has(sId)) {
+                    itemSetsBySupplier.set(sId, new Set());
+                }
+                itemSetsBySupplier.get(sId)!.add(key);
+            }
+        }
+    };
+
+    processItemRows(xeroItemRows);
+    processItemRows(manualItemRows);
+
+    const itemCountsMap = new Map<string, number>();
+    for (const [sId, set] of itemSetsBySupplier.entries()) {
+        itemCountsMap.set(sId, set.size);
+    }
     
     const MIN_BASELINE = 200;
 
@@ -374,28 +575,91 @@ export class SupplierController {
 
     // Raw query to aggregate products
     const locationFilter = locationId 
-        ? Prisma.sql`AND "XeroInvoice"."locationId" = ${locationId}` 
+        ? Prisma.sql`AND i."locationId" = ${locationId}` 
         : Prisma.empty;
 
-    const products = await prisma.$queryRaw`
+    // Query 1: Xero Products
+    const xeroProducts: any[] = await prisma.$queryRaw`
         SELECT 
-            MAX("XeroInvoiceLineItem"."productId") as "productId",
+            MAX(li."productId") as "productId",
             COALESCE(MAX("description"), 'Unknown Product') as "name",
             SUM("lineAmount") as "totalSpend",
             SUM("quantity") as "totalQuantity",
-            AVG("unitAmount") as "averageCost"
-        FROM "XeroInvoiceLineItem"
-        JOIN "XeroInvoice" ON "XeroInvoiceLineItem"."invoiceId" = "XeroInvoice"."id"
-        WHERE "XeroInvoice"."supplierId" = ${id}
-        AND "XeroInvoice"."status" IN ('AUTHORISED', 'PAID')
-        AND "XeroInvoice"."organisationId" = ${orgId}
+            AVG("unitAmount") as "averageCost",
+            COALESCE("itemCode", LOWER(TRIM("description"))) as "key"
+        FROM "XeroInvoiceLineItem" li
+        JOIN "XeroInvoice" i ON li."invoiceId" = i.id
+        WHERE i."supplierId" = ${id}
+        AND i."status" IN ('AUTHORISED', 'PAID')
+        AND i."organisationId" = ${orgId}
         ${locationFilter}
         GROUP BY COALESCE("itemCode", LOWER(TRIM("description")))
         ORDER BY "totalSpend" DESC
         LIMIT 100
     `;
 
-    return reply.send(products);
+    // Query 2: Manual Products
+    const manualProducts: any[] = await prisma.$queryRaw`
+        SELECT 
+            COALESCE(MAX("description"), 'Unknown Product') as "name",
+            SUM("lineTotal") as "totalSpend",
+            SUM("quantity") as "totalQuantity",
+            AVG("unitPrice") as "averageCost",
+            COALESCE("productCode", LOWER(TRIM("description"))) as "key"
+        FROM "InvoiceLineItem" li
+        JOIN "Invoice" i ON li."invoiceId" = i.id
+        WHERE i."supplierId" = ${id}
+        AND i."isVerified" = true
+        AND i."organisationId" = ${orgId}
+        ${locationFilter}
+        GROUP BY COALESCE("productCode", LOWER(TRIM("description")))
+        ORDER BY "totalSpend" DESC
+        LIMIT 100
+    `;
+
+    // Merge
+    const mergedProducts = new Map<string, any>();
+
+    const addToMap = (products: any[], isManual = false) => {
+        for (const p of products) {
+            const key = (p.key || '').trim().toLowerCase();
+            if (!key) continue;
+
+            const existing = mergedProducts.get(key);
+            if (existing) {
+                existing.totalSpend = Number(existing.totalSpend) + Number(p.totalSpend);
+                existing.totalQuantity = Number(existing.totalQuantity) + Number(p.totalQuantity);
+                // Simple average cost update (weighted would be better but simple avg is OK for MVP)
+                existing.averageCost = (Number(existing.averageCost) + Number(p.averageCost)) / 2;
+            } else {
+                // Generate composite ID for manual products if they don't have a productId
+                let productId = p.productId;
+                if (!productId && isManual) {
+                    // Generate composite ID: manual:supplierId:base64(key)
+                    const keyBase64 = Buffer.from(key).toString('base64');
+                    productId = `manual:${id}:${keyBase64}`;
+                }
+                
+                mergedProducts.set(key, {
+                    productId: productId || null,
+                    name: p.name,
+                    totalSpend: Number(p.totalSpend),
+                    totalQuantity: Number(p.totalQuantity),
+                    averageCost: Number(p.averageCost)
+                });
+            }
+        }
+    };
+
+    addToMap(xeroProducts);
+    addToMap(manualProducts, true);
+
+    // Convert to array, sort and limit
+    const result = Array.from(mergedProducts.values())
+        .sort((a, b) => b.totalSpend - a.totalSpend)
+        .slice(0, 100);
+
+    return reply.send(result);
   }
 
   getProductDetails = async (request: FastifyRequest, reply: FastifyReply) => {

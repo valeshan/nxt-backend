@@ -171,7 +171,7 @@ export default async function supplierInsightsRoutes(fastify: FastifyInstance) {
         summary: 'Get product details',
         // Removed headers validation
         params: z.object({
-            productId: z.string().uuid()
+            productId: z.string() // Allow UUID or manual:supplierId:base64 format
         }),
         response: {
             200: z.object({
@@ -211,7 +211,7 @@ export default async function supplierInsightsRoutes(fastify: FastifyInstance) {
     }
 
     try {
-        const detail = await supplierInsightsService.getProductDetail(organisationId, productId);
+        const detail = await supplierInsightsService.getProductDetail(organisationId, productId, locationId);
         if (!detail) {
             return reply.status(404).send({ error: { code: 'NOT_FOUND', message: 'Product not found' } });
         }

@@ -70,17 +70,24 @@ export const invoiceController = {
 
   async verify(req: FastifyRequest, reply: FastifyReply) {
       const { id } = req.params as { id: string };
-      const body = req.body as any;
+      // Extract all relevant fields from body
+      const { supplierId, supplierName, total, createAlias, aliasName } = req.body as any;
       
       req.log.info({ 
         msg: 'Verify invoice requested',
         invoiceId: id,
         params: req.params,
-        body 
+        body: req.body 
       });
 
       try {
-          const result = await invoicePipelineService.verifyInvoice(id, body);
+          const result = await invoicePipelineService.verifyInvoice(id, {
+              supplierId,
+              supplierName,
+              total,
+              createAlias,
+              aliasName
+          });
           
           if (!result) {
             req.log.warn({ msg: 'Invoice not found during verify', invoiceId: id });
@@ -92,6 +99,10 @@ export const invoiceController = {
           // Pass through specific error messages if possible
           if (e.message === 'Invoice not found') {
              return reply.status(404).send({ error: 'Invoice not found' });
+          }
+          // Handle the validation error we added
+          if (e.message === "Supplier is required (either supplierId or supplierName)") {
+              return reply.status(400).send({ error: e.message });
           }
           throw e;
       }
