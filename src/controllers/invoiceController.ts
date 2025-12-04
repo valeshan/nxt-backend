@@ -71,8 +71,12 @@ export const invoiceController = {
   async verify(req: FastifyRequest, reply: FastifyReply) {
       const { id } = req.params as { id: string };
       // Extract all relevant fields from body
-      const { supplierId, supplierName, total, createAlias, aliasName } = req.body as any;
+      const { supplierId, supplierName, total, createAlias, aliasName, selectedLineItemIds, date } = req.body as any;
       
+      if (selectedLineItemIds !== undefined && !Array.isArray(selectedLineItemIds)) {
+          return reply.status(400).send({ error: 'selectedLineItemIds must be an array of strings' });
+      }
+
       req.log.info({ 
         msg: 'Verify invoice requested',
         invoiceId: id,
@@ -86,7 +90,9 @@ export const invoiceController = {
               supplierName,
               total,
               createAlias,
-              aliasName
+              aliasName,
+              selectedLineItemIds,
+              date
           });
           
           if (!result) {
@@ -101,7 +107,9 @@ export const invoiceController = {
              return reply.status(404).send({ error: 'Invoice not found' });
           }
           // Handle the validation error we added
-          if (e.message === "Supplier is required (either supplierId or supplierName)") {
+          if (e.message === "Supplier is required (either supplierId or supplierName)" || 
+              e.message === "At least one line item must be selected" ||
+              e.message.startsWith("Invalid line items")) {
               return reply.status(400).send({ error: e.message });
           }
           throw e;
@@ -114,6 +122,32 @@ export const invoiceController = {
       
       const result = await invoicePipelineService.listInvoices(locationId, page, limit);
       return result;
+  },
+
+  async delete(req: FastifyRequest, reply: FastifyReply) {
+      const { id } = req.params as { id: string };
+      const auth = req.authContext;
+
+      if (!auth || !auth.organisationId) {
+          return reply.status(401).send({ error: 'Unauthorized' });
+      }
+
+      try {
+          await invoicePipelineService.deleteInvoice(id, auth.organisationId);
+          return reply.status(200).send({ success: true });
+      } catch (e: any) {
+          req.log.error({
+              msg: 'Delete invoice failed',
+              invoiceId: id,
+              error: e.message
+          });
+
+          if (e.message === 'Invoice not found or access denied') {
+              return reply.status(404).send({ error: e.message });
+          }
+          
+          return reply.status(500).send({ error: 'Failed to delete invoice' });
+      }
   }
 };
 

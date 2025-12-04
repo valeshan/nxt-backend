@@ -221,8 +221,16 @@ export const invoicePipelineService = {
       total?: number; 
       createAlias?: boolean;
       aliasName?: string;
+      selectedLineItemIds?: string[];
+      date?: string | Date;
   }) {
       console.log('[InvoicePipeline] verifyInvoice start', { invoiceId, ...data });
+
+      const selectedIds = new Set(data.selectedLineItemIds ?? []);
+
+      if (data.selectedLineItemIds && selectedIds.size === 0) {
+         throw new Error("At least one line item must be selected");
+      }
 
       if (!data.supplierId && !data.supplierName) {
           throw new Error("Supplier is required (either supplierId or supplierName)");
@@ -237,6 +245,20 @@ export const invoicePipelineService = {
       if (!invoice) {
         console.log(`[InvoicePipeline] verifyInvoice failed: Invoice ${invoiceId} not found`);
         return null;
+      }
+
+      // 1b. Validate Line Item Ownership
+      if (data.selectedLineItemIds) {
+          const count = await prisma.invoiceLineItem.count({
+              where: {
+                  id: { in: Array.from(selectedIds) },
+                  invoiceId: invoiceId
+              }
+          });
+
+          if (count !== selectedIds.size) {
+              throw new Error("Invalid line items: Some items do not belong to this invoice");
+          }
       }
 
       let targetSupplierId = data.supplierId;
@@ -271,13 +293,46 @@ export const invoicePipelineService = {
           }
       }
 
-      // 3. Update Invoice
+      // 3. Delete Unselected Line Items
+      if (data.selectedLineItemIds) {
+          const selectedIdsArray = Array.from(selectedIds);
+          console.log(`[InvoicePipeline] Deleting unselected items for invoice ${invoiceId}. Keeping: ${selectedIdsArray.length} items.`);
+          console.log(`[InvoicePipeline] Kept IDs:`, selectedIdsArray);
+          
+          const deleteResult = await prisma.invoiceLineItem.deleteMany({
+              where: {
+                  invoiceId: invoiceId,
+                  id: { notIn: selectedIdsArray }
+              }
+          });
+          console.log(`[InvoicePipeline] Deleted ${deleteResult.count} unselected items.`);
+          
+          // Verification Check
+          const remainingCount = await prisma.invoiceLineItem.count({
+              where: { invoiceId: invoiceId }
+          });
+          console.log(`[InvoicePipeline] Verification: Invoice now has ${remainingCount} items (Expected: ${selectedIdsArray.length})`);
+          
+          if (remainingCount !== selectedIdsArray.length) {
+              console.warn(`[InvoicePipeline] WARNING: Mismatch in line item count after deletion!`);
+          }
+      }
+
+      // 3b. Enforce Manual COGS Account Code on remaining items
+      // This guarantees that verified items always have the correct account code, even if OCR missed it.
+      await prisma.invoiceLineItem.updateMany({
+          where: { invoiceId: invoiceId },
+          data: { accountCode: MANUAL_COGS_ACCOUNT_CODE }
+      });
+
+      // 4. Update Invoice
       const updatedInvoice = await prisma.invoice.update({
           where: { id: invoiceId },
           data: {
               supplierId: targetSupplierId,
               total: data.total,
               isVerified: true,
+              date: data.date ? new Date(data.date) : undefined
           },
           include: { supplier: true, lineItems: true }
       });
@@ -338,6 +393,54 @@ export const invoicePipelineService = {
           page,
           pages: Math.ceil(count / limit)
       };
+  },
+
+  async deleteInvoice(invoiceId: string, organisationId: string) {
+      console.log(`[InvoicePipeline] Request to delete invoice ${invoiceId} for org ${organisationId}`);
+
+      // 1. Fetch Invoice to get File ID and verify ownership
+      const invoice = await prisma.invoice.findFirst({
+          where: { id: invoiceId, organisationId },
+          include: { invoiceFile: true }
+      });
+
+      if (!invoice) {
+          throw new Error('Invoice not found or access denied');
+      }
+
+      const invoiceFileId = invoice.invoiceFileId;
+
+      console.log(`[InvoicePipeline] Deleting invoice ${invoiceId}. Linked File: ${invoiceFileId || 'None'}`);
+
+      // 2. Perform Transactional Deletion
+      // We delete in order: LineItems -> OcrResult (if via File) -> Invoice -> InvoiceFile
+      // Actually, OcrResult is linked to InvoiceFile usually.
+      
+      await prisma.$transaction(async (tx) => {
+          // A. Delete Line Items
+          await tx.invoiceLineItem.deleteMany({
+              where: { invoiceId: invoiceId }
+          });
+          
+          // B. Delete Invoice Record
+          await tx.invoice.delete({
+              where: { id: invoiceId }
+          });
+
+          // C. Delete Invoice OCR Result and Parent File if present
+          if (invoiceFileId) {
+             await tx.invoiceOcrResult.deleteMany({
+                 where: { invoiceFileId }
+             });
+
+             await tx.invoiceFile.delete({
+                 where: { id: invoiceFileId }
+             });
+          }
+      });
+
+      console.log(`[InvoicePipeline] Successfully deleted invoice ${invoiceId} and associated records.`);
+      return true;
   }
 };
 

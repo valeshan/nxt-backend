@@ -70,14 +70,19 @@ const xeroWebhookController: FastifyPluginAsync = async (fastify) => {
     // 3. Process per Tenant (Fire-and-Forget)
     for (const tenantId of tenantIds) {
         // Find Connection
+        // Deterministic lookup: Find the most recently updated connection for this tenant
         const connection = await prisma.xeroConnection.findFirst({
-            where: { xeroTenantId: tenantId }
+            where: { xeroTenantId: tenantId },
+            orderBy: { updatedAt: 'desc' }
         });
 
         if (!connection) {
             request.log.warn(`[XeroWebhook] No connection found for tenant ${tenantId}. Skipping.`);
             continue;
         }
+
+        const channel = pusherService.getOrgChannel(connection.organisationId);
+        request.log.info(`[XeroWebhook] Processing event for Tenant=${tenantId}, Connection=${connection.id}, Org=${connection.organisationId}, Channel=${channel}`);
 
         // Concurrency Check: Check for active runs
         // We do this check here to decide whether to queue a new run or ignore

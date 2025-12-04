@@ -33,6 +33,8 @@ export default async function invoiceRoutes(fastify: FastifyInstance) {
               total: z.number().optional(), // Should be number for JSON payload
               createAlias: z.boolean().optional(),
               aliasName: z.string().optional(),
+              selectedLineItemIds: z.array(z.string()).optional(),
+              date: z.string().optional(),
           })
       }
   }, invoiceController.verify);
@@ -47,5 +49,12 @@ export default async function invoiceRoutes(fastify: FastifyInstance) {
           })
       }
   }, invoiceController.list);
+
+  // DELETE /invoices/:id
+  app.delete('/:id', {
+      schema: {
+          params: z.object({ id: z.string() })
+      }
+  }, invoiceController.delete);
 }
 

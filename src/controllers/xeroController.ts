@@ -253,6 +253,9 @@ export class XeroController {
     );
 
     // 5. Fire-and-Forget Call
+    const channel = pusherService.getOrgChannel(connection.organisationId);
+    console.log(`[XeroController] Triggering manual sync for Connection=${connectionId}, Org=${connection.organisationId}, Channel=${channel}`);
+
     void xeroSyncService.syncConnection({
         connectionId,
         organisationId,

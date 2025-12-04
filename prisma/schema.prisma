@@ -120,7 +120,7 @@ model XeroConnection {
   id                   String    @id @default(uuid())
   userId               String
   organisationId       String
-  xeroTenantId         String
+  xeroTenantId         String    @unique
   tenantName           String
   accessToken          String
   refreshToken         String

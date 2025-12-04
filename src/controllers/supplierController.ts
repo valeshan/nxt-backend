@@ -528,26 +528,43 @@ export class SupplierController {
     const now = new Date();
     const twelveMonthsAgo = new Date(now.getFullYear() - 1, now.getMonth(), now.getDate());
     
-    // Aggregate Invoices
-    const invoices = await prisma.xeroInvoice.findMany({
-        where: {
-            supplierId: id,
-            date: { gte: twelveMonthsAgo },
-            status: { in: ['AUTHORISED', 'PAID'] },
-            organisationId: orgId,
-            ...(locationId ? { locationId } : {})
-        },
-        select: {
-            total: true,
-            date: true
-        }
-    });
+    // Aggregate Invoices (Xero + Manual)
+    const [xeroInvoices, manualInvoices] = await Promise.all([
+      prisma.xeroInvoice.findMany({
+          where: {
+              supplierId: id,
+              date: { gte: twelveMonthsAgo },
+              status: { in: ['AUTHORISED', 'PAID'] },
+              organisationId: orgId,
+              ...(locationId ? { locationId } : {})
+          },
+          select: {
+              total: true,
+              date: true
+          }
+      }),
+      prisma.invoice.findMany({
+          where: {
+              supplierId: id,
+              date: { gte: twelveMonthsAgo },
+              isVerified: true,
+              organisationId: orgId,
+              ...(locationId ? { locationId } : {})
+          },
+          select: {
+              total: true,
+              date: true
+          }
+      })
+    ]);
 
-    const totalSpend12m = invoices.reduce((sum, inv) => sum + (Number(inv.total) || 0), 0);
+    const allInvoices = [...xeroInvoices, ...manualInvoices];
+
+    const totalSpend12m = allInvoices.reduce((sum, inv) => sum + (Number(inv.total) || 0), 0);
     const avgMonthlySpend = totalSpend12m / 12;
 
     const spendTrend = Array(12).fill(0);
-    invoices.forEach(inv => {
+    allInvoices.forEach(inv => {
         if (inv.date) {
             const monthDiff = (now.getFullYear() - inv.date.getFullYear()) * 12 + (now.getMonth() - inv.date.getMonth());
             if (monthDiff >= 0 && monthDiff < 12) {

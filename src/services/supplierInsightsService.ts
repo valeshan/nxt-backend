@@ -226,9 +226,13 @@ function getManualLineItemWhere(
             organisationId,
             ...(locationId ? { locationId } : {}),
             date: { gte: startDate, ...(endDate ? { lte: endDate } : {}) },
+            isVerified: true,
         },
-        // Manual invoices always use the MANUAL_COGS_ACCOUNT_CODE
-        accountCode: MANUAL_COGS_ACCOUNT_CODE
+        // Relaxed: Don't force MANUAL_COGS_ACCOUNT_CODE if looking for "all"
+        // But shouldIncludeManualData checks if MANUAL_COGS_ACCOUNT_CODE is in list.
+        // If accountCodes is undefined, we want all.
+        // If this helper is called, we assume we want manual data.
+        // We'll leave it optional here to catch items with null accountCode
     };
 }
 
@@ -319,7 +323,7 @@ export const supplierInsightsService = {
     
     for (let i = 11; i >= 0; i--) {
       const d = new Date();
-      d.setMonth(d.getMonth() - 1 - i);
+      d.setMonth(d.getMonth() - i);
       const start = new Date(d.getFullYear(), d.getMonth(), 1);
       const end = new Date(d.getFullYear(), d.getMonth() + 1, 0);
       end.setHours(23, 59, 59, 999);
@@ -610,7 +614,7 @@ export const supplierInsightsService = {
     const whereInvoiceBase = {
         organisationId,
         ...(locationId ? { locationId } : {}),
-        date: { gte: last12m.start, lte: last12m.end },
+        date: { gte: last12m.start, lte: new Date() },
         status: { in: ['AUTHORISED', 'PAID'] }
     };
 
@@ -633,7 +637,7 @@ export const supplierInsightsService = {
         }
       }),
       shouldIncludeManualData(accountCodes) ? prisma.invoiceLineItem.findMany({
-        where: getManualLineItemWhere(organisationId, locationId, last12m.start, last12m.end),
+        where: getManualLineItemWhere(organisationId, locationId, last12m.start, new Date()),
         select: {
           lineTotal: true,
           invoice: {
@@ -837,48 +841,165 @@ export const supplierInsightsService = {
         ...(locationId ? { locationId } : {}),
     };
 
-    // 1. Fetch Paginated Products
-    // Note: Sorting by Spend still requires pre-aggregation if we want it perfect, 
-    // but for this fix we focus on Unit Cost accuracy.
-    
-    // Lightweight fetch first
-    const allProducts = await prisma.product.findMany({
+    // 1. Fetch All Products & Stats (Xero + Manual)
+    // Note: Sorting by Spend requires fetching all then sorting in memory (or complex UNION).
+    // For now we fetch all candidates and merge.
+
+    // A. Xero Products
+    const xeroProducts = await prisma.product.findMany({
         where: whereClause,
         select: { id: true, name: true, supplierId: true, supplier: { select: { name: true } } }
     });
     
-    // We need Spend to sort by spend (default).
-    const productIds = allProducts.map(p => p.id);
+    const productIds = xeroProducts.map(p => p.id);
     
-    const stats = await prisma.xeroInvoiceLineItem.groupBy({
+    // Stats for Xero Products
+    const xeroStats = await prisma.xeroInvoiceLineItem.groupBy({
         by: ['productId'],
         where: {
             productId: { in: productIds },
             invoice: {
                 ...whereInvoiceBase,
-                date: { gte: last12m.start, lte: last12m.end },
+                date: { gte: last12m.start, lte: new Date() },
                 status: { in: ['AUTHORISED', 'PAID'] }
             },
             ...(params.accountCodes && params.accountCodes.length > 0 ? { accountCode: { in: params.accountCodes } } : {})
         },
         _sum: { lineAmount: true }
     });
-    
-    const spendMap = new Map<string, number>();
-    stats.forEach(s => {
-        if (s.productId) spendMap.set(s.productId, s._sum.lineAmount?.toNumber() || 0);
+
+    // B. Manual Products (Virtual)
+    // Group by Supplier + Key
+    const manualStats = await prisma.invoiceLineItem.groupBy({
+        by: ['productCode', 'description', 'invoiceId'], 
+        where: {
+            invoice: {
+                ...whereInvoiceBase,
+                date: { gte: last12m.start, lte: new Date() },
+                isVerified: true
+            },
+            // Account Code filtering for manual items: 
+            // If specific codes requested, filter by them.
+            // Otherwise, include ALL verified manual items (don't restrict to MANUAL_COGS_ACCOUNT_CODE)
+            // This ensures items with null accountCode are included if no filter is applied.
+             ...(params.accountCodes && params.accountCodes.length > 0 
+                ? { 
+                    OR: [
+                        { accountCode: { in: params.accountCodes } },
+                        ...(params.accountCodes.includes(MANUAL_COGS_ACCOUNT_CODE) ? [{ accountCode: null }] : [])
+                    ]
+                  } 
+                : {})
+        },
+        _sum: { lineTotal: true }
     });
-    
-    let items = allProducts.map(p => ({
-        productId: p.id,
-        productName: p.name,
-        supplierName: p.supplier?.name || 'Unknown',
-        latestUnitCost: 0, 
-        lastPriceChangePercent: 0, 
-        spend12m: spendMap.get(p.id) || 0
+
+    // We need supplier info for manual stats. Fetch distinct invoices to get supplierId.
+    // Optimization: query invoiceLineItem with include invoice is heavy if many items.
+    // Instead, we'll fetch supplier map for the invoices involved.
+    const manualInvoiceIds = [...new Set(manualStats.map(s => s.invoiceId))];
+    const manualInvoices = await prisma.invoice.findMany({
+        where: { id: { in: manualInvoiceIds } },
+        select: { id: true, supplierId: true, supplier: { select: { name: true } } }
+    });
+    const invoiceSupplierMap = new Map(manualInvoices.map(i => [i.id, i]));
+
+
+    // Merge Logic
+    const mergedMap = new Map<string, {
+        productId: string;
+        productName: string;
+        supplierId?: string;
+        supplierName: string;
+        spend12m: number;
+        isManual: boolean;
+    }>();
+
+    // Helper key gen
+    const getProductKey = (supplierId: string, code: string | null, desc: string | null) => {
+        const key = code || desc || '';
+        return `${supplierId}::${key.trim().toLowerCase()}`;
+    };
+
+    // 1. Process Xero Results
+    const xeroSpendMap = new Map<string, number>();
+    xeroStats.forEach(s => {
+        if (s.productId) xeroSpendMap.set(s.productId, s._sum.lineAmount?.toNumber() || 0);
+    });
+
+    for (const p of xeroProducts) {
+        // For Xero products, we use productId as the primary key in our map to avoid collisions if names change, 
+        // BUT to merge with manual, we might want to check name/code collision?
+        // Plan says: "Insert Xero products first."
+        // If a manual item matches a Xero product key, should we merge? 
+        // Xero products have a stable ID. Manual ones don't. 
+        // We'll rely on the fact that Xero products exist. 
+        // Ideally we map Xero products to their key too to allow merging.
+        // For now, let's just treat them as separate entries unless we want advanced deduping.
+        // The plan says: "Use COALESCE... as unique key per supplier".
+        // Let's generate the key for Xero products too if possible. 
+        // Product table has 'productKey' (often code) and 'name'.
+        // We don't have 'productKey' selected above, let's assume 'name' or fetch key?
+        // Let's stick to: Xero products are the source of truth. Manual items are added if distinct.
+        // Wait, if I have a manual invoice for "Milk" and a Xero product "Milk", I want them combined?
+        // That's complex because one has a UUID and one doesn't. 
+        // Simplest approach: Add Manual items as "Virtual" products.
+        
+        // We use the ID as the map key for Xero items to preserve their identity.
+        mergedMap.set(p.id, {
+            productId: p.id,
+            productName: p.name,
+            supplierId: p.supplierId || undefined,
+            supplierName: p.supplier?.name || 'Unknown',
+            spend12m: xeroSpendMap.get(p.id) || 0,
+            isManual: false
+        });
+    }
+
+    // 2. Process Manual Results
+    for (const stat of manualStats) {
+        const inv = invoiceSupplierMap.get(stat.invoiceId);
+        if (!inv || !inv.supplierId) continue;
+
+        const key = (stat.productCode || stat.description || 'Unknown').trim();
+        const normalizedKey = key.toLowerCase();
+        const compositeKey = `${inv.supplierId}::${normalizedKey}`;
+        const spend = stat._sum.lineTotal?.toNumber() || 0;
+
+        // Check if this "virtual" product corresponds to an existing Xero product?
+        // Hard without efficient lookup. 
+        // We'll store manual items by their composite key.
+        
+        // Check if we already added this manual item (aggregating across invoices)
+        const existingManual = mergedMap.get(compositeKey);
+        if (existingManual) {
+            existingManual.spend12m += spend;
+        } else {
+             // New virtual product
+             // Generate a stable-ish ID: manual:supplierId:base64(key)
+             const id = `manual:${inv.supplierId}:${Buffer.from(normalizedKey).toString('base64')}`;
+             mergedMap.set(compositeKey, {
+                 productId: id,
+                 productName: key,
+                 supplierId: inv.supplierId,
+                 supplierName: inv.supplier?.name || 'Unknown',
+                 spend12m: spend,
+                 isManual: true
+             });
+        }
+    }
+
+    // Convert to Array
+    let items = Array.from(mergedMap.values()).map(i => ({
+        productId: i.productId,
+        productName: i.productName,
+        supplierName: i.supplierName,
+        latestUnitCost: 0,
+        lastPriceChangePercent: 0,
+        spend12m: i.spend12m
     }));
     
-    // Default filter: only show items with spend (optional, but common for insights)
+    // Filter
     items = items.filter(i => i.spend12m > 0);
     
     // Sort
@@ -893,13 +1014,15 @@ export const supplierInsightsService = {
          items.sort((a, b) => params.sortDirection === 'asc' ? a.spend12m - b.spend12m : b.spend12m - a.spend12m);
     }
     
+    // Pagination (In-Memory)
     const totalItems = items.length;
     const totalPages = Math.ceil(totalItems / pageSize);
     const paginatedItems = items.slice(skip, skip + pageSize);
 
-    // 1.5 Resolve Missing Suppliers from Invoice History
+    // 1.5 Resolve Missing Suppliers (Only for Xero items that might be missing it)
+    // (Manual items always have supplier from invoice)
     const unknownProductIds = paginatedItems
-        .filter(p => p.supplierName === 'Unknown')
+        .filter(p => p.supplierName === 'Unknown' && !p.productId.startsWith('manual:'))
         .map(p => p.productId);
 
     if (unknownProductIds.length > 0) {
@@ -908,8 +1031,6 @@ export const supplierInsightsService = {
                 productId: { in: unknownProductIds },
                 invoice: {
                     status: { not: 'VOIDED' },
-                    // We can't easily filter by location here if product isn't linked to location?
-                    // But product table has locationId.
                 }
             },
             distinct: ['productId'],
@@ -943,11 +1064,9 @@ export const supplierInsightsService = {
     }
     
     // 2. Hydrate Price Data Efficiently (Bulk)
-    // Fetch price history for the items on THIS page only, going back 3-6 months to find recent changes.
     const pageProductIds = paginatedItems.map(p => p.productId);
-    const priceLookbackDate = subMonths(new Date(), 6); // Look back 6 months to find at least 2 data points
+    const priceLookbackDate = subMonths(new Date(), 6); 
     
-    // Pass locationId to helper
     const priceMap = await computeWeightedAveragePrices(organisationId, pageProductIds, priceLookbackDate, new Date(), locationId, params.accountCodes);
 
     const hydratedItems = paginatedItems.map(item => {
@@ -956,14 +1075,10 @@ export const supplierInsightsService = {
         let lastPriceChangePercent = 0;
 
         if (productPrices && productPrices.size > 0) {
-            // Sort months desc
             const sortedMonths = Array.from(productPrices.keys()).sort().reverse();
-            
-            // Latest month with data
             const latestMonth = sortedMonths[0];
             latestUnitCost = productPrices.get(latestMonth) || 0;
 
-            // Previous month with data
             if (sortedMonths.length > 1) {
                 const prevMonth = sortedMonths[1];
                 const prevCost = productPrices.get(prevMonth) || 0;

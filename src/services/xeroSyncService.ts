@@ -43,6 +43,8 @@ export class XeroSyncService {
     let currentRunId = runId;
     let effectiveScope = scope;
 
+    console.log(`[XeroSync] Service processing run. Org=${organisationId}, Connection=${connectionId}`);
+
     if (runId) {
         // Case A: runId provided (Controller created it)
         // Load existing run and transition to IN_PROGRESS
