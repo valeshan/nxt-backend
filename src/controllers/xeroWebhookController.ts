@@ -1,5 +1,6 @@
 import { FastifyPluginAsync, FastifyRequest } from 'fastify';
 import { XeroSyncService } from '../services/xeroSyncService';
+import { pusherService } from '../services/pusherService';
 import { verifyXeroWebhookSignature } from '../utils/xeroWebhook';
 import { config } from '../config/env';
 import prisma from '../infrastructure/prismaClient';
@@ -106,6 +107,18 @@ const xeroWebhookController: FastifyPluginAsync = async (fastify) => {
         });
 
         request.log.info(`[XeroWebhook] Queued sync run ${newRun.id} for connection ${connection.id}`);
+
+        // Notify frontend via Pusher
+        await pusherService.triggerEvent(
+            pusherService.getOrgChannel(connection.organisationId),
+            'xero-sync-started',
+            {
+                organisationId: connection.organisationId,
+                runId: newRun.id,
+                connectionId: connection.id,
+                startedAt: new Date().toISOString()
+            }
+        );
 
         // Fire-and-Forget Sync
         void xeroSyncService.syncConnection({

@@ -4,6 +4,7 @@ import prisma from '../infrastructure/prismaClient';
 import { XeroConnectionRepository } from '../repositories/xeroConnectionRepository';
 import { SupplierService } from './supplierService';
 import { XeroService } from './xeroService';
+import { pusherService } from './pusherService';
 import { decryptToken } from '../utils/crypto';
 import { Prisma, XeroSyncScope, XeroSyncStatus, XeroSyncTriggerType, XeroConnection } from '@prisma/client';
 import { getProductKeyFromLineItem } from './helpers/productKey';
@@ -263,6 +264,21 @@ export class XeroSyncService {
             data: { lastSuccessfulSyncAt: newSyncTimestamp }
         });
 
+        // Notify frontend via Pusher (Success)
+        if (currentRunId) {
+            await pusherService.triggerEvent(
+                pusherService.getOrgChannel(organisationId),
+                'xero-sync-completed',
+                {
+                    organisationId,
+                    connectionId,
+                    runId: currentRunId,
+                    status: 'SUCCESS',
+                    lastSyncAt: finishedAt.toISOString()
+                }
+            );
+        }
+
         return updatedConnection;
 
     } catch (error: any) {
@@ -278,6 +294,19 @@ export class XeroSyncService {
                     errorMessage: error instanceof Error ? error.message : String(error)
                 }
             });
+
+            // Notify frontend via Pusher (Failed)
+            await pusherService.triggerEvent(
+                pusherService.getOrgChannel(organisationId),
+                'xero-sync-completed',
+                {
+                    organisationId,
+                    connectionId,
+                    runId: currentRunId,
+                    status: 'FAILED',
+                    errorMessage: error instanceof Error ? error.message : String(error)
+                }
+            );
         }
         
         // Re-throw to ensure caller knows it failed (if awaited)

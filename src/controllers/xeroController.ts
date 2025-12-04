@@ -1,5 +1,6 @@
 import { FastifyRequest, FastifyReply } from 'fastify';
 import { XeroService } from '../services/xeroService';
+import { pusherService } from '../services/pusherService';
 import { CreateConnectionRequest, LinkLocationsRequest, ListConnectionsQuery, XeroAuthoriseCallbackRequest, StartConnectRequest, CompleteConnectRequest } from '../dtos/xeroDtos';
 
 import { XeroSyncService } from '../services/xeroSyncService';
@@ -238,6 +239,18 @@ export class XeroController {
             status: XeroSyncStatus.PENDING
         }
     });
+
+    // Notify frontend via Pusher
+    await pusherService.triggerEvent(
+        pusherService.getOrgChannel(connection.organisationId),
+        'xero-sync-started',
+        {
+            organisationId: connection.organisationId,
+            runId: newRun.id,
+            connectionId: connection.id,
+            startedAt: new Date().toISOString()
+        }
+    );
 
     // 5. Fire-and-Forget Call
     void xeroSyncService.syncConnection({

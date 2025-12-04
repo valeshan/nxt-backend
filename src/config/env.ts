@@ -19,6 +19,12 @@ const envSchema = z.object({
   AWS_SECRET_ACCESS_KEY: z.string().optional(),
   AWS_REGION: z.string().default('us-east-1'),
   S3_INVOICE_BUCKET: z.string().optional().default('nxt-invoices-dev'),
+
+  // Pusher Configuration
+  PUSHER_APP_ID: z.string().optional(),
+  PUSHER_KEY: z.string().optional(),
+  PUSHER_SECRET: z.string().optional(),
+  PUSHER_CLUSTER: z.string().optional().default('ap4'),
 });
 
 const parsed = envSchema.safeParse(process.env);
