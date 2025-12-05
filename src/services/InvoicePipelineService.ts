@@ -6,6 +6,8 @@ import { InvoiceSourceType, ProcessingStatus, ReviewStatus, SupplierSourceType, 
 import { randomUUID } from 'crypto';
 import { MANUAL_COGS_ACCOUNT_CODE } from '../config/constants';
 
+import { getProductKeyFromLineItem } from './helpers/productKey';
+
 export class InvoiceFileNotFoundError extends Error {
   constructor(message: string) {
     super(message);
@@ -340,7 +342,42 @@ export const invoicePipelineService = {
           include: { supplier: true, lineItems: true }
       });
 
-      // 4. Update InvoiceFile
+      // 4b. Upsert Products for Verified Line Items
+      // Now that the invoice is verified, we treat these items as "Truth" and ensure they exist in our Product catalog
+      if (updatedInvoice.lineItems.length > 0) {
+          for (const item of updatedInvoice.lineItems) {
+              // Generate product key (using item code or description)
+              const productKey = getProductKeyFromLineItem(item.productCode, item.description);
+              
+              if (productKey !== 'unknown') {
+                  // Upsert Product
+                  await prisma.product.upsert({
+                      where: {
+                          organisationId_locationId_productKey: {
+                              organisationId: updatedInvoice.organisationId,
+                              locationId: updatedInvoice.locationId,
+                              productKey
+                          }
+                      },
+                      update: {
+                          // Optionally update name or supplier if we want the latest invoice to be the source of truth
+                          // For now, let's just ensure it exists.
+                          // If we want to link supplier:
+                          supplierId: targetSupplierId
+                      },
+                      create: {
+                          organisationId: updatedInvoice.organisationId,
+                          locationId: updatedInvoice.locationId,
+                          productKey,
+                          name: (item.productCode || item.description).trim(),
+                          supplierId: targetSupplierId
+                      }
+                  });
+              }
+          }
+      }
+
+      // 4c. Update InvoiceFile
       if (invoice.invoiceFileId) {
           await prisma.invoiceFile.update({
               where: { id: invoice.invoiceFileId },
@@ -379,7 +416,7 @@ export const invoicePipelineService = {
   
   async listInvoices(locationId: string, page = 1, limit = 20) {
       const skip = (page - 1) * limit;
-      const [items, count] = await Promise.all([
+      let [items, count] = await Promise.all([
           prisma.invoiceFile.findMany({
               where: { locationId },
               include: { invoice: { include: { supplier: true } } },
@@ -390,6 +427,47 @@ export const invoicePipelineService = {
           prisma.invoiceFile.count({ where: { locationId } })
       ]);
       
+      // Check for items that need status updates (OCR_PROCESSING)
+      // We actively poll them so the list reflects the real-time status from AWS
+      const processingItems = items.filter(
+          item => item.processingStatus === ProcessingStatus.OCR_PROCESSING && item.ocrJobId
+      );
+
+      if (processingItems.length > 0) {
+          console.log(`[InvoicePipeline] List contains ${processingItems.length} processing items. Refreshing status...`);
+          
+          try {
+              // Run pollProcessing for each in parallel
+              // pollProcessing handles the DB update if status changed
+              const updates = await Promise.allSettled(
+                  processingItems.map(item => this.pollProcessing(item.id))
+              );
+
+              // Map updated items back into the list
+              const updatedMap = new Map();
+              updates.forEach((result, index) => {
+                  if (result.status === 'fulfilled' && result.value) {
+                      const originalId = processingItems[index].id;
+                      updatedMap.set(originalId, result.value);
+                  }
+              });
+
+              items = items.map(item => {
+                  if (updatedMap.has(item.id)) {
+                      // We merge the updated data. 
+                      // Note: pollProcessing returns lineItems/ocrResult which aren't usually in list view,
+                      // but it's fine to include them or we could strip them if payload size is a concern.
+                      // For now, simply replacing is safest to get the new status/invoice data.
+                      return updatedMap.get(item.id);
+                  }
+                  return item;
+              });
+          } catch (e) {
+              console.error("[InvoicePipeline] Error refreshing item statuses in list", e);
+              // Fallback to returning original items if update fails
+          }
+      }
+
       return {
           items,
           total: count,

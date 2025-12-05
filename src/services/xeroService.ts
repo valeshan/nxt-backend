@@ -201,7 +201,12 @@ export class XeroService {
 
     const clientId = config.XERO_CLIENT_ID;
     const clientSecret = config.XERO_CLIENT_SECRET;
-    const redirectUri = config.XERO_REDIRECT_URI;
+    const redirectUri = config.XERO_REDIRECT_URI || '';
+
+    if (!clientId || !redirectUri) {
+      throw new Error('Missing Xero configuration: CLIENT_ID or REDIRECT_URI');
+    }
+
     const scopes = 'offline_access accounting.settings.read accounting.transactions.read accounting.attachments.read';
     
     // Store session ID in state to verify on callback
