@@ -68,6 +68,7 @@ export interface ProductDetail {
   unitPriceHistory: { monthLabel: string; averageUnitPrice: number | null }[];
   productPriceTrendPercent: number;
   canCalculateProductPriceTrend: boolean;
+  latestUnitCost: number;
 }
 
 export interface GetProductsParams {
@@ -133,69 +134,178 @@ async function computeWeightedAveragePrices(
     locationId?: string,
     accountCodes?: string[]
 ) {
-    // Fetch all line items for these products in the window
-    const lineItems = await prisma.xeroInvoiceLineItem.findMany({
-        where: {
-            productId: { in: productIds },
-            quantity: { gt: 0 }, // Rule 1 & 4: Ignore zero/negative quantity
-            invoice: {
-                organisationId,
-                ...(locationId ? { locationId } : {}),
-                status: { in: ['AUTHORISED', 'PAID'] },
-                date: { gte: startDate, lte: endDate }
+    // Split product IDs into Xero (UUID) and Manual (manual:...)
+    const xeroProductIds = productIds.filter(id => !id.startsWith('manual:'));
+    const manualProductIds = productIds.filter(id => id.startsWith('manual:'));
+
+    const results = new Map<string, Map<string, number>>();
+
+    // 1. Process Xero Products
+    if (xeroProductIds.length > 0) {
+        // Fetch all line items for these products in the window
+        const lineItems = await prisma.xeroInvoiceLineItem.findMany({
+            where: {
+                productId: { in: xeroProductIds },
+                quantity: { gt: 0 }, // Rule 1 & 4: Ignore zero/negative quantity
+                invoice: {
+                    organisationId,
+                    ...(locationId ? { locationId } : {}),
+                    status: { in: ['AUTHORISED', 'PAID'] },
+                    date: { gte: startDate, lte: endDate }
+                },
+                ...(accountCodes && accountCodes.length > 0 ? { accountCode: { in: accountCodes } } : {})
             },
-            ...(accountCodes && accountCodes.length > 0 ? { accountCode: { in: accountCodes } } : {})
-        },
-        select: {
-            productId: true,
-            lineAmount: true,
-            quantity: true,
-            unitAmount: true,
-            invoice: { select: { date: true } }
+            select: {
+                productId: true,
+                lineAmount: true,
+                quantity: true,
+                unitAmount: true,
+                invoice: { select: { date: true } }
+            }
+        });
+
+        // Aggregation buckets: productId -> monthKey -> { totalAmount, totalQty }
+        const buckets = new Map<string, Map<string, { totalAmount: number, totalQty: number }>>();
+
+        for (const item of lineItems) {
+            if (!item.productId || !item.invoice.date) continue;
+
+            const amount = Number(item.lineAmount || 0);
+            const qty = Number(item.quantity || 0);
+
+            if (qty <= 0) continue;
+
+            const date = item.invoice.date;
+            const monthKey = `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}`;
+
+            if (!buckets.has(item.productId)) {
+                buckets.set(item.productId, new Map());
+            }
+            const prodMap = buckets.get(item.productId)!;
+            
+            if (!prodMap.has(monthKey)) {
+                prodMap.set(monthKey, { totalAmount: 0, totalQty: 0 });
+            }
+            const current = prodMap.get(monthKey)!;
+            
+            current.totalAmount += amount;
+            current.totalQty += qty;
         }
-    });
 
-    // Aggregation buckets: productId -> monthKey -> { totalAmount, totalQty }
-    const buckets = new Map<string, Map<string, { totalAmount: number, totalQty: number }>>();
-
-    for (const item of lineItems) {
-        if (!item.productId || !item.invoice.date) continue;
-
-        // Rule 1: Use unitAmount if reliable? 
-        // Requirement says: "Define unitPrice... as lineAmount / quantity" to be safe against tax/total issues.
-        // We use the sum of lineAmounts divided by sum of quantities for the month (Weighted Average).
-        const amount = Number(item.lineAmount || 0);
-        const qty = Number(item.quantity || 0);
-
-        if (qty <= 0) continue;
-
-        const date = item.invoice.date;
-        const monthKey = `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}`;
-
-        if (!buckets.has(item.productId)) {
-            buckets.set(item.productId, new Map());
+        // Compute final averages
+        for (const [pid, months] of buckets.entries()) {
+            const monthMap = new Map<string, number>();
+            for (const [mKey, data] of months.entries()) {
+                if (data.totalQty > 0) {
+                    monthMap.set(mKey, data.totalAmount / data.totalQty);
+                }
+            }
+            results.set(pid, monthMap);
         }
-        const prodMap = buckets.get(item.productId)!;
-        
-        if (!prodMap.has(monthKey)) {
-            prodMap.set(monthKey, { totalAmount: 0, totalQty: 0 });
-        }
-        const current = prodMap.get(monthKey)!;
-        
-        current.totalAmount += amount;
-        current.totalQty += qty;
     }
 
-    // Compute final averages
-    const results = new Map<string, Map<string, number>>();
-    for (const [pid, months] of buckets.entries()) {
-        const monthMap = new Map<string, number>();
-        for (const [mKey, data] of months.entries()) {
-            if (data.totalQty > 0) {
-                monthMap.set(mKey, data.totalAmount / data.totalQty);
+    // 2. Process Manual Products (if any)
+    if (manualProductIds.length > 0) {
+        // Each manual ID contains the search criteria: manual:supplierId:base64Key
+        // We need to query for each one essentially, or build a complex OR query.
+        // Since manual IDs are relatively few per page (max 20), we can iterate or build a large OR.
+        
+        const manualBuckets = new Map<string, Map<string, { totalAmount: number, totalQty: number }>>();
+
+        // Build OR conditions for fetching line items
+        const conditions: Prisma.InvoiceLineItemWhereInput[] = [];
+        
+        // Map to store which condition index maps to which manual ID
+        // Actually, fetching all potential matching lines then filtering in memory might be safer 
+        // if the number of manual products is small (page size).
+        
+        // Let's fetch lines for relevant suppliers and filter in memory.
+        const supplierIds = new Set<string>();
+        manualProductIds.forEach(id => {
+            const parts = id.split(':');
+            if (parts.length === 3) supplierIds.add(parts[1]);
+        });
+
+        const manualLineItems = await prisma.invoiceLineItem.findMany({
+            where: {
+                invoice: {
+                    organisationId,
+                    ...(locationId ? { locationId } : {}),
+                    supplierId: { in: Array.from(supplierIds) },
+                    date: { gte: startDate, lte: endDate },
+                    isVerified: true
+                },
+                // Optimization: only fetch verified items
+            },
+            select: {
+                invoice: { select: { date: true, supplierId: true } },
+                productCode: true,
+                description: true,
+                lineTotal: true,
+                quantity: true
+            }
+        });
+
+        // Process manual items and match to manualProductIds
+        for (const manualId of manualProductIds) {
+            const parts = manualId.split(':');
+            if (parts.length !== 3) continue;
+            const supplierId = parts[1];
+            let productKey = '';
+            try {
+                productKey = Buffer.from(parts[2], 'base64').toString('utf-8');
+            } catch (e) { continue; }
+            
+            const normalizedKey = productKey.toLowerCase().trim();
+
+            // Filter matching lines
+            const matchingLines = manualLineItems.filter(item => {
+                if (item.invoice.supplierId !== supplierId) return false;
+                
+                const itemCode = item.productCode?.toLowerCase().trim();
+                const itemDesc = item.description?.toLowerCase().trim() || '';
+                
+                if (itemCode) return itemCode === normalizedKey;
+                return itemDesc === normalizedKey;
+            });
+
+            if (matchingLines.length === 0) continue;
+
+            // Aggregate
+            if (!manualBuckets.has(manualId)) {
+                manualBuckets.set(manualId, new Map());
+            }
+            const prodMap = manualBuckets.get(manualId)!;
+
+            for (const item of matchingLines) {
+                if (!item.invoice.date) continue;
+                const amount = Number(item.lineTotal || 0);
+                const qty = Number(item.quantity || 0);
+                
+                if (qty <= 0) continue;
+
+                const date = item.invoice.date;
+                const monthKey = `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}`;
+
+                if (!prodMap.has(monthKey)) {
+                    prodMap.set(monthKey, { totalAmount: 0, totalQty: 0 });
+                }
+                const current = prodMap.get(monthKey)!;
+                current.totalAmount += amount;
+                current.totalQty += qty;
             }
         }
-        results.set(pid, monthMap);
+
+        // Compute averages for manual products
+        for (const [pid, months] of manualBuckets.entries()) {
+            const monthMap = new Map<string, number>();
+            for (const [mKey, data] of months.entries()) {
+                if (data.totalQty > 0) {
+                    monthMap.set(mKey, data.totalAmount / data.totalQty);
+                }
+            }
+            results.set(pid, monthMap);
+        }
     }
     
     return results;
@@ -1065,7 +1175,7 @@ export const supplierInsightsService = {
     
     // 2. Hydrate Price Data Efficiently (Bulk)
     const pageProductIds = paginatedItems.map(p => p.productId);
-    const priceLookbackDate = subMonths(new Date(), 6); 
+    const priceLookbackDate = subMonths(new Date(), 12); 
     
     const priceMap = await computeWeightedAveragePrices(organisationId, pageProductIds, priceLookbackDate, new Date(), locationId, params.accountCodes);
 
@@ -1287,6 +1397,14 @@ export const supplierInsightsService = {
         }
     }
 
+    // Calculate latestUnitCost from priceHistory (most recent non-null)
+    let latestUnitCost = 0;
+    for (let i = 0; i < priceHistory.length; i++) {
+        if (priceHistory[i].averageUnitPrice !== null) {
+            latestUnitCost = priceHistory[i].averageUnitPrice!;
+        }
+    }
+
     // Get product name from most recent item
     const productName = filteredItems[filteredItems.length - 1]?.description || 'Unknown Product';
 
@@ -1322,7 +1440,8 @@ export const supplierInsightsService = {
         priceHistory,
         unitPriceHistory,
         productPriceTrendPercent,
-        canCalculateProductPriceTrend
+        canCalculateProductPriceTrend,
+        latestUnitCost
     };
   },
 
@@ -1457,6 +1576,14 @@ export const supplierInsightsService = {
          }
     }
 
+    // Calculate latestUnitCost from priceHistory (most recent non-null)
+    let latestUnitCost = 0;
+    for (let i = 0; i < priceHistory.length; i++) {
+        if (priceHistory[i].averageUnitPrice !== null) {
+            latestUnitCost = priceHistory[i].averageUnitPrice!;
+        }
+    }
+
     // Resolve Supplier Name if missing
     let supplierName = product.supplier?.name;
     if (!supplierName) {
@@ -1509,7 +1636,8 @@ export const supplierInsightsService = {
         priceHistory,
         unitPriceHistory,
         productPriceTrendPercent,
-        canCalculateProductPriceTrend
+        canCalculateProductPriceTrend,
+        latestUnitCost
     };
   },
 
