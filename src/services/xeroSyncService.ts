@@ -122,11 +122,12 @@ export class XeroSyncService {
         // 4. Determine Sync Window
         let lastModified: Date | undefined = undefined;
         if (effectiveScope === XeroSyncScope.INCREMENTAL && connection.lastSuccessfulSyncAt) {
-            lastModified = connection.lastSuccessfulSyncAt;
+            // Rewind 5 minutes to catch race conditions/updates during previous sync
+            lastModified = new Date(connection.lastSuccessfulSyncAt.getTime() - 5 * 60 * 1000);
         }
         // If FULL, lastModified stays undefined (syncs everything available or default window)
 
-        console.log(`[XeroSync] Syncing with LastModified: ${lastModified}`);
+        console.log(`[XeroSync] Syncing with LastModified: ${lastModified?.toISOString() ?? 'FULL SYNC'}`);
 
         // 5. Initialize Xero Client
         const xero = new XeroClient({
@@ -210,6 +211,7 @@ export class XeroSyncService {
             console.log(`[XeroSync] Page ${page} returned ${invoices.length} invoices.`);
             
             if (invoices.length === 0) {
+                console.log(`[XeroSync] Zero invoices on page ${page}, stopping.`);
                 hasMore = false;
                 break;
             }
@@ -217,6 +219,7 @@ export class XeroSyncService {
             console.log(`[XeroSync] Processing page ${page} with ${invoices.length} invoices`);
 
             for (const invoice of invoices) {
+                console.log(`[XeroSync] Processing Invoice: ${invoice.invoiceNumber} (${invoice.invoiceID}) UpdatedAt: ${invoice.updatedDateUTC}`);
                 try {
                     await this.processInvoice(organisationId, connectionId, invoice, accountMap);
                     totalRowsProcessed++;
@@ -264,6 +267,7 @@ export class XeroSyncService {
         
         // 6b. Trigger PDF Sync (Fire and forget, or await if critical)
         // We wrap in try/catch so it doesn't fail the main data sync
+        console.log(`[XeroSync] Checking OCR Flag: ${config.ENABLE_XERO_OCR} (Type: ${typeof config.ENABLE_XERO_OCR})`);
         if (config.ENABLE_XERO_OCR === 'true') {
             try {
                 await xeroInvoiceOcrService.syncInvoicePdfsForOrg(organisationId, connectionId);

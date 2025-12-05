@@ -131,7 +131,10 @@ export const xeroInvoiceOcrService = {
         let processedCount = 0;
 
         for (const invoice of invoices) {
-            if (!invoice.invoiceID) continue;
+            if (!invoice.invoiceID) {
+                console.log(`[XeroOCR] Skipping invoice without ID`);
+                continue;
+            }
 
             // 5. Iterate & Filter
             
@@ -145,6 +148,7 @@ export const xeroInvoiceOcrService = {
             });
 
             if (existingFile) {
+                console.log(`[XeroOCR] Skipping ${invoice.invoiceNumber}: Already processed (FileID: ${existingFile.id})`);
                 continue; // Already processed
             }
 
@@ -157,6 +161,7 @@ export const xeroInvoiceOcrService = {
                     continue;
                 }
 
+                console.log(`[XeroOCR] Inspecting attachments for ${invoice.invoiceNumber}...`);
                 try {
                     const attachmentsResponse = await xero.accountingApi.getInvoiceAttachments(
                         connection.xeroTenantId,
@@ -164,6 +169,7 @@ export const xeroInvoiceOcrService = {
                     );
 
                     const attachments = attachmentsResponse.body.attachments || [];
+                    console.log(`[XeroOCR] Found ${attachments.length} attachments for ${invoice.invoiceNumber}`);
                     
                     // Filter for PDFs
                     const pdfAttachment = attachments.find(a => a.mimeType === 'application/pdf');
