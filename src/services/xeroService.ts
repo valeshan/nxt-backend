@@ -199,10 +199,10 @@ export class XeroService {
         onboardingSessionId = session.id;
     }
 
-    const clientId = config.XERO_CLIENT_ID || process.env.XERO_CLIENT_ID || 'stub_client_id';
-    // Prioritize env var, fallback to frontend URL
-    const redirectUri = config.XERO_REDIRECT_URI || process.env.XERO_REDIRECT_URI || 'http://localhost:3000/xero/authorise';
-    const scopes = 'offline_access accounting.settings.read accounting.transactions.read';
+    const clientId = config.XERO_CLIENT_ID;
+    const clientSecret = config.XERO_CLIENT_SECRET;
+    const redirectUri = config.XERO_REDIRECT_URI;
+    const scopes = 'offline_access accounting.settings.read accounting.transactions.read accounting.attachments.read';
     
     // Store session ID in state to verify on callback
     // Format: onboard_<sessionId>_<timestamp>
@@ -457,7 +457,7 @@ export class XeroService {
         clientId: clientId || '',
         clientSecret: clientSecret || '',
         redirectUris: [redirectUri],
-        scopes: 'offline_access accounting.settings.read accounting.transactions.read'.split(' '),
+        scopes: 'offline_access accounting.settings.read accounting.transactions.read accounting.attachments.read'.split(' '),
       });
 
       // Create token set from the access token
@@ -553,10 +553,10 @@ export class XeroService {
       },
     });
 
-    const clientId = config.XERO_CLIENT_ID || process.env.XERO_CLIENT_ID;
+    const clientId = config.XERO_CLIENT_ID;
     const appUrl = process.env.APP_URL || config.FRONTEND_URL;
     const redirectUri = `${appUrl}/xero/callback`;
-    const scopes = 'offline_access accounting.settings.read accounting.transactions.read';
+    const scopes = 'offline_access accounting.settings.read accounting.transactions.read accounting.attachments.read';
     const state = session.id;
 
     const url = `https://login.xero.com/identity/connect/authorize?response_type=code&client_id=${clientId}&redirect_uri=${encodeURIComponent(redirectUri)}&scope=${encodeURIComponent(scopes)}&state=${state}`;
@@ -591,7 +591,7 @@ export class XeroService {
         clientId: clientId || '',
         clientSecret: clientSecret || '',
         redirectUris: [redirectUri],
-        scopes: 'offline_access accounting.settings.read accounting.transactions.read'.split(' '),
+        scopes: 'offline_access accounting.settings.read accounting.transactions.read accounting.attachments.read'.split(' '),
         state: params.state,
       });
 
