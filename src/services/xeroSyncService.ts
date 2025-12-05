@@ -8,6 +8,7 @@ import { pusherService } from './pusherService';
 import { decryptToken } from '../utils/crypto';
 import { Prisma, XeroSyncScope, XeroSyncStatus, XeroSyncTriggerType, XeroConnection } from '@prisma/client';
 import { getProductKeyFromLineItem } from './helpers/productKey';
+import { xeroInvoiceOcrService } from './xeroInvoiceOcrService';
 
 const connectionRepo = new XeroConnectionRepository();
 const supplierService = new SupplierService();
@@ -260,6 +261,16 @@ export class XeroSyncService {
         // Or keep previous? If we found nothing, nothing changed.
         // Let's update to 'now' if full sync succeeded, or maxModifiedDate if incremental found stuff.
         const newSyncTimestamp = maxModifiedDate || finishedAt;
+        
+        // 6b. Trigger PDF Sync (Fire and forget, or await if critical)
+        // We wrap in try/catch so it doesn't fail the main data sync
+        if (config.ENABLE_XERO_OCR === 'true') {
+            try {
+                await xeroInvoiceOcrService.syncInvoicePdfsForOrg(organisationId, connectionId);
+            } catch (ocrError) {
+                console.error('[XeroSync] PDF OCR sync failed (non-fatal)', ocrError);
+            }
+        }
         
         const updatedConnection = await prisma.xeroConnection.update({
             where: { id: connectionId },

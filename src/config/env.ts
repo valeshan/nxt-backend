@@ -25,6 +25,9 @@ const envSchema = z.object({
   PUSHER_KEY: z.string().optional(),
   PUSHER_SECRET: z.string().optional(),
   PUSHER_CLUSTER: z.string().optional().default('ap4'),
+  
+  // Feature Flags
+  ENABLE_XERO_OCR: z.string().optional().default('false'),
 });
 
 const parsed = envSchema.safeParse(process.env);

@@ -184,6 +184,13 @@ export class SupplierController {
     
     console.log(`[SupplierController] Final supplier count: ${suppliers.length}, Total: ${total}`);
 
+    if (suppliers.length === 0) {
+      return reply.send({
+        data: [],
+        pagination: { total, page: Number(page), limit: Number(limit) }
+      });
+    }
+
     // ...
     
     // Metrics Where Clause Base

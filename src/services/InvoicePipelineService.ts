@@ -21,6 +21,8 @@ export const invoicePipelineService = {
         locationId: string; 
         fileName: string; 
         mimeType: string; 
+        sourceType?: InvoiceSourceType;
+        sourceReference?: string;
     }
   ) {
     // Guard: Check if stream is readable
@@ -48,7 +50,8 @@ export const invoicePipelineService = {
             data: {
                 organisationId: metadata.organisationId,
                 locationId: metadata.locationId,
-                sourceType: InvoiceSourceType.UPLOAD,
+                sourceType: metadata.sourceType ?? InvoiceSourceType.UPLOAD,
+                sourceReference: metadata.sourceReference,
                 fileName: metadata.fileName,
                 mimeType: metadata.mimeType,
                 storageKey: key,
