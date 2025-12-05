@@ -1,16 +1,19 @@
 import { XeroClient } from 'xero-node';
 import { config } from '../config/env';
 import prisma from '../infrastructure/prismaClient';
+import { XeroService } from './xeroService';
 import { invoicePipelineService } from './InvoicePipelineService';
 import { InvoiceSourceType } from '@prisma/client';
-import { xeroService } from './xeroService';
+
+// Need to instantiate XeroService since it's a class
+const xeroServiceInstance = new XeroService();
 
 export const xeroInvoiceOcrService = {
     async syncInvoicePdfsForOrg(organisationId: string, connectionId: string) {
         console.log(`[XeroOCR] Starting PDF sync for org ${organisationId}`);
 
         // 1. Get Valid Connection (handles token refresh automatically)
-        const connection = await xeroService.getValidConnection(connectionId);
+        const connection = await xeroServiceInstance.getValidConnection(connectionId);
 
         // 2. Location Resolution
         // If 1 location, use it. If >1 or 0, use null (Organisation Level)
@@ -169,7 +172,7 @@ export const xeroInvoiceOcrService = {
                         console.log(`[XeroOCR] Downloading PDF for invoice ${invoice.invoiceNumber}: ${pdfAttachment.fileName}`);
 
                         // 6. Download Content
-                        const attachmentContent = await xero.accountingApi.getInvoiceAttachmentContent(
+                        const attachmentContent = await xero.accountingApi.getInvoiceAttachmentById(
                             connection.xeroTenantId,
                             invoice.invoiceID,
                             pdfAttachment.attachmentID,
