@@ -151,7 +151,8 @@ async function computeWeightedAveragePrices(
                     organisationId,
                     ...(locationId ? { locationId } : {}),
                     status: { in: ['AUTHORISED', 'PAID'] },
-                    date: { gte: startDate, lte: endDate }
+                    date: { gte: startDate, lte: endDate },
+                    deletedAt: null
                 },
                 ...(accountCodes && accountCodes.length > 0 ? { accountCode: { in: accountCodes } } : {})
             },
@@ -359,7 +360,8 @@ export const supplierInsightsService = {
             organisationId,
             ...(locationId ? { locationId } : {}),
             date: { gte: startDate, ...(endDate ? { lte: endDate } : {}) },
-            status: { in: ['AUTHORISED', 'PAID'] }
+            status: { in: ['AUTHORISED', 'PAID'] },
+            deletedAt: null
         },
         ...(accountCodes && accountCodes.length > 0 ? { accountCode: { in: accountCodes } } : {})
     });
@@ -514,7 +516,8 @@ export const supplierInsightsService = {
           organisationId,
           ...(locationId ? { locationId } : {}),
           date: { gte: priceMovementStart, lte: priceMovementEnd },
-          status: { in: ['AUTHORISED', 'PAID'] }
+          status: { in: ['AUTHORISED', 'PAID'] },
+          deletedAt: null
         },
         quantity: { gt: 0 },
         ...(accountCodes && accountCodes.length > 0 ? { accountCode: { in: accountCodes } } : {})
@@ -654,7 +657,8 @@ export const supplierInsightsService = {
         invoice: {
           ...whereBase,
           date: { gte: last3m.start },
-          status: { in: ['AUTHORISED', 'PAID'] }
+          status: { in: ['AUTHORISED', 'PAID'] },
+          deletedAt: null
         },
         ...(accountCodes && accountCodes.length > 0 ? { accountCode: { in: accountCodes } } : {})
       },
@@ -727,7 +731,8 @@ export const supplierInsightsService = {
         organisationId,
         ...(locationId ? { locationId } : {}),
         date: { gte: last12m.start, lte: new Date() },
-        status: { in: ['AUTHORISED', 'PAID'] }
+        status: { in: ['AUTHORISED', 'PAID'] },
+        deletedAt: null
     };
 
     // Fetch Xero and Manual line items in parallel
@@ -845,7 +850,8 @@ export const supplierInsightsService = {
                 invoice: {
                     ...whereBase,
                     date: { gte: start, lte: end },
-                    status: { in: ['AUTHORISED', 'PAID'] }
+                    status: { in: ['AUTHORISED', 'PAID'] },
+                    deletedAt: null
                 },
                 quantity: { not: 0 },
                 ...(accountCodes && accountCodes.length > 0 ? { accountCode: { in: accountCodes } } : {})
@@ -909,7 +915,7 @@ export const supplierInsightsService = {
             } else if (product) {
                  // Fallback: find latest invoice for this product to get supplier
                  const latestLine = await prisma.xeroInvoiceLineItem.findFirst({
-                     where: { productId: product.id, invoice: whereBase },
+                     where: { productId: product.id, invoice: { ...whereBase, deletedAt: null } },
                      include: { invoice: { include: { supplier: true } } },
                      orderBy: { invoice: { date: 'desc' } }
                  });
@@ -951,6 +957,7 @@ export const supplierInsightsService = {
     const whereInvoiceBase = {
         organisationId,
         ...(locationId ? { locationId } : {}),
+        deletedAt: null
     };
 
     // 1. Fetch All Products & Stats (Xero + Manual)
@@ -1144,6 +1151,7 @@ export const supplierInsightsService = {
                 productId: { in: unknownProductIds },
                 invoice: {
                     status: { not: 'VOIDED' },
+                    deletedAt: null
                 }
             },
             distinct: ['productId'],
@@ -1470,6 +1478,7 @@ export const supplierInsightsService = {
     const whereInvoiceBase = {
         organisationId,
         ...(locationId ? { locationId } : {}),
+        deletedAt: null
     };
 
     // 1. Calculate Stats (Spend, Qty) using raw aggregation
@@ -1594,7 +1603,7 @@ export const supplierInsightsService = {
         const latestLine = await prisma.xeroInvoiceLineItem.findFirst({
             where: {
                 productId: product.id,
-                invoice: whereInvoiceBase
+                invoice: { ...whereInvoiceBase, deletedAt: null }
             },
             include: {
                 invoice: {
@@ -1617,7 +1626,7 @@ export const supplierInsightsService = {
     let categoryName = 'Uncategorized';
     const topCategory = await prisma.xeroInvoiceLineItem.groupBy({
         by: ['accountCode'],
-        where: { productId: productId },
+        where: { productId: productId, invoice: { deletedAt: null } },
         _count: { accountCode: true },
         orderBy: { _count: { accountCode: 'desc' } },
         take: 1
@@ -1649,6 +1658,7 @@ export const supplierInsightsService = {
       const whereInvoice = {
           organisationId,
           ...(locationId ? { locationId } : {}),
+          deletedAt: null
       };
 
       // 1. Group by accountCode and accountName to get distinct pairs
@@ -1765,6 +1775,7 @@ export const supplierInsightsService = {
                 some: {
                     organisationId,
                     ...(locationId ? { locationId } : {}),
+                    deletedAt: null,
                     lineItems: {
                         some: {
                             accountCode: { in: xeroAccountCodes }

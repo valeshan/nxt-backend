@@ -256,9 +256,10 @@ model XeroInvoice {
   xeroTenantId String?
 
   lineItems XeroInvoiceLineItem[]
-
+  
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
+  deletedAt DateTime?
 
   @@index([organisationId])
   @@index([supplierId])

@@ -175,40 +175,53 @@ export const invoicePipelineService = {
                  // Resolve Supplier
                  const resolution = await supplierResolutionService.resolveSupplier(parsed.supplierName || '', file.organisationId);
                  
-                 // Create OcrResult
-                 await prisma.invoiceOcrResult.create({
-                     data: {
+                 // Create or Update OcrResult
+                 await prisma.invoiceOcrResult.upsert({
+                     where: { invoiceFileId: file.id },
+                     create: {
                          invoiceFileId: file.id,
+                         rawResultJson: result as any,
+                         parsedJson: parsed as any
+                     },
+                     update: {
                          rawResultJson: result as any,
                          parsedJson: parsed as any
                      }
                  });
 
-                 // Create Invoice
-                 await prisma.invoice.create({
-                     data: {
-                         organisationId: file.organisationId,
-                         locationId: file.locationId,
-                         invoiceFileId: file.id,
-                         supplierId: resolution?.supplier.id,
-                         invoiceNumber: parsed.invoiceNumber,
-                         date: parsed.date,
-                         total: parsed.total,
-                         tax: parsed.tax,
-                         subtotal: parsed.subtotal,
-                         sourceType: file.sourceType,
-                         lineItems: {
-                             create: parsed.lineItems.map(item => ({
-                                 description: item.description,
-                                 quantity: item.quantity,
-                                 unitPrice: item.unitPrice,
-                                 lineTotal: item.lineTotal,
-                                 productCode: item.productCode,
-                                 accountCode: MANUAL_COGS_ACCOUNT_CODE
-                             }))
-                         }
+                 // Create Invoice if not exists
+                 if (!file.invoice) {
+                     try {
+                        await prisma.invoice.create({
+                            data: {
+                                organisationId: file.organisationId,
+                                locationId: file.locationId,
+                                invoiceFileId: file.id,
+                                supplierId: resolution?.supplier.id,
+                                invoiceNumber: parsed.invoiceNumber,
+                                date: parsed.date,
+                                total: parsed.total,
+                                tax: parsed.tax,
+                                subtotal: parsed.subtotal,
+                                sourceType: file.sourceType,
+                                lineItems: {
+                                    create: parsed.lineItems.map(item => ({
+                                        description: item.description,
+                                        quantity: item.quantity,
+                                        unitPrice: item.unitPrice,
+                                        lineTotal: item.lineTotal,
+                                        productCode: item.productCode,
+                                        accountCode: MANUAL_COGS_ACCOUNT_CODE
+                                    }))
+                                }
+                            }
+                        });
+                     } catch (e: any) {
+                         // Ignore P2002 (Unique constraint) as it means it was created concurrently
+                         if (e.code !== 'P2002') throw e;
+                         console.log(`[InvoicePipeline] Invoice already exists for file ${file.id}, skipping creation.`);
                      }
-                 });
+                 }
 
                  // Determine Review Status
                  let reviewStatus = ReviewStatus.NEEDS_REVIEW;
@@ -552,6 +565,26 @@ export const invoicePipelineService = {
                  where: { id: invoiceFileId },
                  data: { deletedAt: new Date() }
              });
+          }
+
+          // Soft delete XeroInvoice if linked
+          if (invoice.sourceType === InvoiceSourceType.XERO && invoice.sourceReference) {
+              // sourceReference is typically the Xero InvoiceID (GUID)
+              // We need to find the matching XeroInvoice record
+              const xeroInvoice = await tx.xeroInvoice.findFirst({
+                  where: {
+                      xeroInvoiceId: invoice.sourceReference,
+                      organisationId: organisationId
+                  }
+              });
+
+              if (xeroInvoice) {
+                  console.log(`[InvoicePipeline] Soft deleting linked XeroInvoice ${xeroInvoice.id}`);
+                  await tx.xeroInvoice.update({
+                      where: { id: xeroInvoice.id },
+                      data: { deletedAt: new Date() }
+                  });
+              }
           }
       });
 

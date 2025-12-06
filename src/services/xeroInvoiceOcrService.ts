@@ -139,6 +139,7 @@ export const xeroInvoiceOcrService = {
             // 5. Iterate & Filter
             
             // Check for existing file to prevent duplicates
+            // We query WITHOUT deletedAt filter to find tombstones
             const existingFile = await prisma.invoiceFile.findFirst({
                 where: {
                     sourceType: InvoiceSourceType.XERO,

@@ -389,6 +389,22 @@ export class XeroSyncService {
         // Prisma schema uses Strings for these fields currently. 
         // We should ensure we are passing strings.
         
+        // 1. Check for Soft Delete (Tombstone)
+        const existingXeroInvoice = await tx.xeroInvoice.findUnique({
+            where: { xeroInvoiceId: invoice.invoiceID }
+        });
+
+        if (existingXeroInvoice && existingXeroInvoice.deletedAt) {
+            console.log(`[XeroSync] Skipping Xero invoice ${invoice.invoiceNumber} (${invoice.invoiceID}): locally deleted (tombstone).`);
+            return; // Skip processing this invoice
+        }
+
+        // 2. Upsert Invoice Header
+        // Fix for type mismatch: explicitly cast or handle enums properly if needed. 
+        // The errors indicate that the Xero types (TypeEnum, StatusEnum, etc.) might not exactly match strings in Prisma update.
+        // Prisma schema uses Strings for these fields currently. 
+        // We should ensure we are passing strings.
+        
         const xeroInvoice = await tx.xeroInvoice.upsert({
             where: { xeroInvoiceId: invoice.invoiceID },
             update: {
