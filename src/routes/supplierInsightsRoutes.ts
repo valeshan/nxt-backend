@@ -201,6 +201,9 @@ export default async function supplierInsightsRoutes(fastify: FastifyInstance) {
   }, async (request, reply) => {
     const { organisationId, locationId, tokenType } = request.authContext;
     const { productId } = request.params;
+    
+    // Decode the productId to handle cases where it's URI encoded (e.g. manual%3A...)
+    const decodedProductId = decodeURIComponent(productId);
 
     if (!organisationId) {
         return reply.status(400).send({ error: { code: 'MISSING_ORG_ID', message: 'Organisation ID is required' } } as any);
@@ -211,12 +214,13 @@ export default async function supplierInsightsRoutes(fastify: FastifyInstance) {
     }
 
     try {
-        const detail = await supplierInsightsService.getProductDetail(organisationId, productId, locationId);
+        const detail = await supplierInsightsService.getProductDetail(organisationId, decodedProductId, locationId);
         if (!detail) {
             return reply.status(404).send({ error: { code: 'NOT_FOUND', message: 'Product not found' } });
         }
         return detail;
     } catch (e) {
+        console.error('[SupplierInsights] Error fetching product detail:', e);
         return reply.status(400).send({ error: { code: 'INVALID_ID', message: 'Invalid Product ID' } });
     }
   });
