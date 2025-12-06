@@ -477,7 +477,10 @@ export const invoicePipelineService = {
       let [items, count] = await Promise.all([
           prisma.invoiceFile.findMany({
               where: { locationId, deletedAt: null },
-              include: { invoice: { include: { supplier: true } } },
+              include: { 
+                  invoice: { include: { supplier: true, lineItems: true } },
+                  ocrResult: true
+              },
               orderBy: { createdAt: 'desc' },
               take: limit,
               skip
@@ -525,6 +528,13 @@ export const invoicePipelineService = {
               // Fallback to returning original items if update fails
           }
       }
+
+      // Ensure all items have presigned URLs (enrichStatus)
+      // pollProcessing returns enriched items, but the initial DB fetch does not.
+      items = await Promise.all(items.map(async (item) => {
+          if ((item as any).presignedUrl) return item; // Already enriched
+          return this.enrichStatus(item);
+      }));
 
       return {
           items,
