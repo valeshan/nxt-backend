@@ -1104,7 +1104,14 @@ export const supplierInsightsService = {
                         ...(params.accountCodes.includes(MANUAL_COGS_ACCOUNT_CODE) ? [{ accountCode: null }] : [])
                     ]
                   } 
-                : {})
+                : {}),
+             ...(params.search ? {
+                OR: [
+                    { productCode: { contains: params.search, mode: 'insensitive' } },
+                    { description: { contains: params.search, mode: 'insensitive' } },
+                    { invoice: { supplier: { name: { contains: params.search, mode: 'insensitive' } } } }
+                ]
+             } : {})
         } as any,
         _sum: { lineTotal: true }
     });
