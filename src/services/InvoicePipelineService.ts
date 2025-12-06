@@ -25,7 +25,7 @@ export const invoicePipelineService = {
               processingStatus: ProcessingStatus.OCR_PROCESSING, 
               ocrJobId: { not: null },
               deletedAt: null
-          },
+          } as any,
           take: 50 // Batch size limit
       });
 
@@ -146,7 +146,7 @@ export const invoicePipelineService = {
 
   async pollProcessing(invoiceFileId: string) {
     const file = await prisma.invoiceFile.findFirst({
-        where: { id: invoiceFileId, deletedAt: null },
+        where: { id: invoiceFileId, deletedAt: null } as any,
         include: { 
             invoice: { include: { lineItems: true, supplier: true } }, 
             ocrResult: true 
@@ -190,7 +190,12 @@ export const invoicePipelineService = {
                  });
 
                  // Create Invoice if not exists
-                 if (!file.invoice) {
+                 const currentFile = await prisma.invoiceFile.findUnique({
+                     where: { id: file.id },
+                     include: { invoice: true }
+                 });
+                 
+                 if (!currentFile?.invoice) {
                      try {
                         await prisma.invoice.create({
                             data: {
@@ -368,7 +373,7 @@ export const invoicePipelineService = {
                       quantity: qty,
                       lineTotal: total,
                       unitPrice: unitPrice,
-                      productCode: item.productCode,
+                      productCode: item.productCode?.trim() || null,
                       accountCode: MANUAL_COGS_ACCOUNT_CODE
                   };
               });
@@ -459,7 +464,7 @@ export const invoicePipelineService = {
       const skip = (page - 1) * limit;
       let [items, count] = await Promise.all([
           prisma.invoiceFile.findMany({
-              where: { locationId, deletedAt: null },
+              where: { locationId, deletedAt: null } as any,
               include: { 
                   invoice: { include: { supplier: true, lineItems: true } },
                   ocrResult: true
@@ -468,7 +473,7 @@ export const invoicePipelineService = {
               take: limit,
               skip
           }),
-          prisma.invoiceFile.count({ where: { locationId, deletedAt: null } })
+          prisma.invoiceFile.count({ where: { locationId, deletedAt: null } as any })
       ]);
       
       // Check for items that need status updates (OCR_PROCESSING)
@@ -532,7 +537,7 @@ export const invoicePipelineService = {
 
       // 1. Fetch Invoice to get File ID and verify ownership
       const invoice = await prisma.invoice.findFirst({
-          where: { id: invoiceId, organisationId, deletedAt: null },
+          where: { id: invoiceId, organisationId, deletedAt: null } as any,
           include: { invoiceFile: true }
       });
 
@@ -548,15 +553,15 @@ export const invoicePipelineService = {
       await prisma.$transaction(async (tx) => {
           // Soft delete Invoice
           await tx.invoice.update({
-              where: { id: invoiceId },
-              data: { deletedAt: new Date() }
+              where: { id: invoiceId } as any,
+              data: { deletedAt: new Date() } as any
           });
 
           // Soft delete InvoiceFile if present
           if (invoiceFileId) {
              await tx.invoiceFile.update({
-                 where: { id: invoiceFileId },
-                 data: { deletedAt: new Date() }
+                 where: { id: invoiceFileId } as any,
+                 data: { deletedAt: new Date() } as any
              });
           }
 
@@ -574,8 +579,8 @@ export const invoicePipelineService = {
               if (xeroInvoice) {
                   console.log(`[InvoicePipeline] Soft deleting linked XeroInvoice ${xeroInvoice.id}`);
                   await tx.xeroInvoice.update({
-                      where: { id: xeroInvoice.id },
-                      data: { deletedAt: new Date() }
+                      where: { id: xeroInvoice.id } as any,
+                      data: { deletedAt: new Date() } as any
                   });
               }
           }

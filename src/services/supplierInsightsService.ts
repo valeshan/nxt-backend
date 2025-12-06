@@ -145,7 +145,7 @@ async function getSupersededXeroIds(
                 ...(endDate ? { lte: endDate } : {})
             }
         } : {})
-    };
+    } as any;
 
     const invoices = await prisma.invoice.findMany({
         where,
@@ -188,7 +188,7 @@ async function computeWeightedAveragePrices(
                     status: { in: ['AUTHORISED', 'PAID'] },
                     date: { gte: startDate, lte: endDate },
                     deletedAt: null
-                },
+                } as any,
                 ...(accountCodes && accountCodes.length > 0 ? { accountCode: { in: accountCodes } } : {})
             },
             select: {
@@ -203,7 +203,7 @@ async function computeWeightedAveragePrices(
         // Aggregation buckets: productId -> monthKey -> { totalAmount, totalQty }
         const buckets = new Map<string, Map<string, { totalAmount: number, totalQty: number }>>();
 
-        for (const item of lineItems) {
+        for (const item of lineItems as any[]) {
             if (!item.productId || !item.invoice.date) continue;
 
             const amount = Number(item.lineAmount || 0);
@@ -271,7 +271,7 @@ async function computeWeightedAveragePrices(
                     date: { gte: startDate, lte: endDate },
                     isVerified: true,
                     deletedAt: null
-                },
+                } as any,
                 // Optimization: only fetch verified items
             },
             select: {
@@ -296,7 +296,7 @@ async function computeWeightedAveragePrices(
             const normalizedKey = productKey.toLowerCase().trim();
 
             // Filter matching lines
-            const matchingLines = manualLineItems.filter(item => {
+            const matchingLines = manualLineItems.filter((item: any) => {
                 if (item.invoice.supplierId !== supplierId) return false;
                 
                 const itemCode = item.productCode?.toLowerCase().trim();
@@ -314,7 +314,7 @@ async function computeWeightedAveragePrices(
             }
             const prodMap = manualBuckets.get(manualId)!;
 
-            for (const item of matchingLines) {
+            for (const item of matchingLines as any[]) {
                 if (!item.invoice.date) continue;
                 const amount = Number(item.lineTotal || 0);
                 const qty = Number(item.quantity || 0);
@@ -381,7 +381,7 @@ function getManualLineItemWhere(
         // If accountCodes is undefined, we want all.
         // If this helper is called, we assume we want manual data.
         // We'll leave it optional here to catch items with null accountCode
-    };
+    } as any;
 }
 
 
@@ -406,7 +406,7 @@ export const supplierInsightsService = {
             xeroInvoiceId: { notIn: supersededIds }
         },
         ...(accountCodes && accountCodes.length > 0 ? { accountCode: { in: accountCodes } } : {})
-    });
+    } as any);
 
     const safeSum = (agg: any) => agg?._sum?.lineAmount?.toNumber() || 0;
     const safeSumManual = (agg: any) => agg?._sum?.lineTotal?.toNumber() || 0;
@@ -452,7 +452,7 @@ export const supplierInsightsService = {
             xeroInvoiceId: { notIn: trendSupersededIds }
         },
         ...(accountCodes && accountCodes.length > 0 ? { accountCode: { in: accountCodes } } : {})
-    });
+    } as any);
 
     const [last6mAgg, last6mManualAgg, prev6mAgg, prev6mManualAgg] = await Promise.all([
       prisma.xeroInvoiceLineItem.aggregate({
@@ -500,7 +500,7 @@ export const supplierInsightsService = {
             xeroInvoiceId: { notIn: seriesSupersededIds }
         },
         ...(accountCodes && accountCodes.length > 0 ? { accountCode: { in: accountCodes } } : {})
-    });
+    } as any);
 
     // Build all month queries in parallel
     const monthQueries: Promise<{ monthLabel: string; xeroTotal: number; manualTotal: number }>[] = [];
@@ -591,7 +591,7 @@ export const supplierInsightsService = {
           status: { in: ['AUTHORISED', 'PAID'] },
           deletedAt: null,
           xeroInvoiceId: { notIn: priceSupersededIds }
-        },
+        } as any,
         quantity: { gt: 0 },
         ...(accountCodes && accountCodes.length > 0 ? { accountCode: { in: accountCodes } } : {})
       },
@@ -611,7 +611,7 @@ export const supplierInsightsService = {
     // Normalize and bucket by month & key
     const monthKeyData: Record<string, Record<string, { totalLineAmount: number; totalQuantity: number }>> = {};
 
-    for (const item of allLineItems) {
+    for (const item of allLineItems as any[]) {
         const desc = (item.description || '').trim().toLowerCase();
         if (!desc) continue;
         
@@ -738,7 +738,7 @@ export const supplierInsightsService = {
           xeroInvoiceId: { notIn: supersededIds }
         },
         ...(accountCodes && accountCodes.length > 0 ? { accountCode: { in: accountCodes } } : {})
-      },
+      } as any,
       include: {
         product: true,
         invoice: {
@@ -762,12 +762,12 @@ export const supplierInsightsService = {
     const results: PriceChangeItem[] = [];
     
     for (const [productId, lines] of productGroups.entries()) {
-      const latest = lines[0];
+      const latest = lines[0] as any; // Casting to access relation fields properly
       const latestPrice = Number(latest.unitAmount || 0);
       if (latestPrice === 0) continue;
       
       let prevPrice = 0;
-      const olderLines = lines.slice(1);
+      const olderLines = lines.slice(1) as any[];
       
       // Look for price change in loaded buffer
       let changeIndex = -1;
@@ -821,7 +821,7 @@ export const supplierInsightsService = {
         where: {
           invoice: whereInvoiceBase,
           ...(accountCodes && accountCodes.length > 0 ? { accountCode: { in: accountCodes } } : {})
-        },
+        } as any,
         select: {
           lineAmount: true,
           invoice: {
@@ -852,7 +852,7 @@ export const supplierInsightsService = {
     const categoryMap = new Map<string, { total: number }>();
 
     // Process Xero line items
-    for (const item of xeroLineItems) {
+    for (const item of xeroLineItems as any[]) {
         const amount = Number(item.lineAmount || 0);
         if (amount <= 0) continue;
 
@@ -876,7 +876,7 @@ export const supplierInsightsService = {
     }
 
     // Process Manual line items
-    for (const item of manualLineItems) {
+    for (const item of manualLineItems as any[]) {
         const amount = Number(item.lineTotal || 0);
         if (amount <= 0) continue;
 
@@ -939,7 +939,7 @@ export const supplierInsightsService = {
                 },
                 quantity: { not: 0 },
                 ...(accountCodes && accountCodes.length > 0 ? { accountCode: { in: accountCodes } } : {})
-            },
+            } as any,
             _sum: { lineAmount: true, quantity: true }
         });
         
@@ -1007,7 +1007,7 @@ export const supplierInsightsService = {
                              deletedAt: null,
                              xeroInvoiceId: { notIn: supersededIds } 
                          } 
-                     },
+                     } as any,
                      include: { invoice: { include: { supplier: true } } },
                      orderBy: { invoice: { date: 'desc' } }
                  });
@@ -1077,7 +1077,7 @@ export const supplierInsightsService = {
                 xeroInvoiceId: { notIn: supersededIds }
             },
             ...(params.accountCodes && params.accountCodes.length > 0 ? { accountCode: { in: params.accountCodes } } : {})
-        },
+        } as any,
         _sum: { lineAmount: true }
     });
 
@@ -1104,7 +1104,7 @@ export const supplierInsightsService = {
                     ]
                   } 
                 : {})
-        },
+        } as any,
         _sum: { lineTotal: true }
     });
 
@@ -1249,7 +1249,7 @@ export const supplierInsightsService = {
                     deletedAt: null,
                     xeroInvoiceId: { notIn: supersededIds }
                 }
-            },
+            } as any,
             distinct: ['productId'],
             orderBy: {
                 invoice: { date: 'desc' }
@@ -1372,7 +1372,7 @@ export const supplierInsightsService = {
                     ]
                 }
             ]
-        },
+        } as any,
         select: {
             lineTotal: true,
             quantity: true,
@@ -1588,7 +1588,7 @@ export const supplierInsightsService = {
                 status: { in: ['AUTHORISED', 'PAID'] },
                 xeroInvoiceId: { notIn: supersededIds }
             }
-        },
+        } as any,
         _sum: { lineAmount: true, quantity: true }
     });
 
@@ -1613,7 +1613,7 @@ export const supplierInsightsService = {
                 status: { in: ['AUTHORISED', 'PAID'] },
                 xeroInvoiceId: { notIn: supersededIds }
             }
-        },
+        } as any,
         _sum: { lineAmount: true }
     });
     const prev6mSpend = await prisma.xeroInvoiceLineItem.aggregate({
@@ -1625,7 +1625,7 @@ export const supplierInsightsService = {
                 status: { in: ['AUTHORISED', 'PAID'] },
                 xeroInvoiceId: { notIn: supersededIds }
             }
-        },
+        } as any,
         _sum: { lineAmount: true }
     });
 
@@ -1707,7 +1707,7 @@ export const supplierInsightsService = {
             where: {
                 productId: product.id,
                 invoice: { ...whereInvoiceBase, deletedAt: null }
-            },
+            } as any,
             include: {
                 invoice: {
                     select: {
@@ -1736,7 +1736,7 @@ export const supplierInsightsService = {
                 deletedAt: null,
                 xeroInvoiceId: { notIn: supersededIds }
             } 
-        },
+        } as any,
         _count: { accountCode: true },
         orderBy: { _count: { accountCode: 'desc' } },
         take: 1
@@ -1783,7 +1783,7 @@ export const supplierInsightsService = {
                   xeroInvoiceId: { notIn: supersededIds }
               },
               accountCode: { not: null }
-          },
+          } as any,
       });
 
       // 2. Check if manual invoices exist for this org/location
@@ -1791,7 +1791,7 @@ export const supplierInsightsService = {
           where: {
               invoice: whereInvoice,
               accountCode: MANUAL_COGS_ACCOUNT_CODE
-          },
+          } as any,
           take: 1
       }) > 0;
 
@@ -1834,7 +1834,7 @@ export const supplierInsightsService = {
           result.push({
               code: MANUAL_COGS_ACCOUNT_CODE,
               name: MANUAL_COGS_ACCOUNT_CODE,
-              isCogs: cogsSet.has(MANUAL_COGS_ACCOUNT_CODE)
+              isCogs: true
           });
       }
       
@@ -1914,7 +1914,7 @@ export const supplierInsightsService = {
                         }
                     }
                 }
-            }
+            } as any
         });
     }
 
@@ -1928,7 +1928,7 @@ export const supplierInsightsService = {
                     isVerified: true,
                     deletedAt: null
                 }
-            }
+            } as any
         });
     }
 

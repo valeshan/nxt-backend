@@ -448,7 +448,7 @@ export class SupplierController {
         prisma.$queryRaw<Array<{ supplierId: string, normalisedKey: string }>>`
             SELECT DISTINCT
                 i."supplierId",
-                COALESCE(li."productCode", LOWER(TRIM(li."description"))) as "normalisedKey"
+                COALESCE(NULLIF(li."productCode", ''), LOWER(TRIM(li."description"))) as "normalisedKey"
             FROM "InvoiceLineItem" li
             JOIN "Invoice" i ON li."invoiceId" = i.id
             WHERE i."supplierId" IN (${Prisma.join(supplierIds)})
@@ -735,7 +735,7 @@ export class SupplierController {
             SUM("lineTotal") as "totalSpend",
             SUM("quantity") as "totalQuantity",
             AVG("unitPrice") as "averageCost",
-            COALESCE("productCode", LOWER(TRIM("description"))) as "key"
+            COALESCE(NULLIF("productCode", ''), LOWER(TRIM("description"))) as "key"
         FROM "InvoiceLineItem" li
         JOIN "Invoice" i ON li."invoiceId" = i.id
         WHERE i."supplierId" = ${id}
@@ -743,7 +743,7 @@ export class SupplierController {
         AND i."organisationId" = ${orgId}
         AND i."deletedAt" IS NULL
         ${locationFilter}
-        GROUP BY COALESCE("productCode", LOWER(TRIM("description")))
+        GROUP BY COALESCE(NULLIF("productCode", ''), LOWER(TRIM("description")))
         ORDER BY "totalSpend" DESC
         LIMIT 100
     `;
