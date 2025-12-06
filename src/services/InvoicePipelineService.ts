@@ -284,7 +284,7 @@ export const invoicePipelineService = {
       total?: number; 
       createAlias?: boolean;
       aliasName?: string;
-      selectedLineItemIds?: string[];
+      selectedLineItemIds?: string[]; // Kept for backward compatibility but ignored in new logic if items are provided
       date?: string | Date;
       items?: Array<{
           id: string;
@@ -295,12 +295,6 @@ export const invoicePipelineService = {
       }>;
   }) {
       console.log('[InvoicePipeline] verifyInvoice start', { invoiceId, ...data });
-
-      const selectedIds = new Set(data.selectedLineItemIds ?? []);
-
-      if (data.selectedLineItemIds && selectedIds.size === 0) {
-         throw new Error("At least one line item must be selected");
-      }
 
       if (!data.supplierId && !data.supplierName) {
           throw new Error("Supplier is required (either supplierId or supplierName)");
@@ -317,194 +311,148 @@ export const invoicePipelineService = {
         return null;
       }
 
-      // 1b. Validate Line Item Ownership
-      if (data.selectedLineItemIds) {
-          const count = await prisma.invoiceLineItem.count({
-              where: {
-                  id: { in: Array.from(selectedIds) },
-                  invoiceId: invoiceId
-              }
-          });
+      // Run everything in a transaction to ensure atomicity
+      return await prisma.$transaction(async (tx) => {
+          let targetSupplierId = data.supplierId;
 
-          if (count !== selectedIds.size) {
-              throw new Error("Invalid line items: Some items do not belong to this invoice");
-          }
-      }
-
-      // 1c. Update Line Item Details (if provided)
-      if (data.items && data.items.length > 0) {
-          console.log(`[InvoicePipeline] Updating ${data.items.length} line items with user edits...`);
-          for (const item of data.items) {
-              // Only update if the item is in the selected list (optional optimization, but good practice)
-              // or if we just want to save edits regardless of selection (though unselected ones get deleted later).
-              // Updating only if it exists and belongs to invoice.
+          // 2. Resolve or Create Supplier if needed
+          if (!targetSupplierId && data.supplierName) {
+              const normalizedName = data.supplierName.toLowerCase().trim();
               
-              const unitPrice = (item.lineTotal !== undefined && item.quantity) 
-                  ? item.lineTotal / item.quantity 
-                  : undefined;
-
-              await prisma.invoiceLineItem.updateMany({
-                  where: { 
-                      id: item.id, 
-                      invoiceId: invoiceId 
-                  },
-                  data: {
-                      description: item.description,
-                      quantity: item.quantity,
-                      lineTotal: item.lineTotal,
-                      unitPrice: unitPrice,
-                      productCode: item.productCode
-                  }
-              });
-          }
-      }
-
-      let targetSupplierId = data.supplierId;
-
-      // 2. Resolve or Create Supplier if needed
-      if (!targetSupplierId && data.supplierName) {
-          const normalizedName = data.supplierName.toLowerCase().trim();
-          
-          // Check if exists
-          const existingSupplier = await prisma.supplier.findFirst({
-              where: {
-                  organisationId: invoice.organisationId,
-                  normalizedName
-              }
-          });
-
-          if (existingSupplier) {
-              targetSupplierId = existingSupplier.id;
-          } else {
-              // Create new supplier
-              const newSupplier = await prisma.supplier.create({
-                  data: {
+              // Check if exists
+              const existingSupplier = await tx.supplier.findFirst({
+                  where: {
                       organisationId: invoice.organisationId,
-                      name: data.supplierName.trim(),
-                      normalizedName,
-                      sourceType: SupplierSourceType.MANUAL,
-                      status: SupplierStatus.ACTIVE
+                      normalizedName
                   }
               });
-              targetSupplierId = newSupplier.id;
-              console.log(`[InvoicePipeline] Created new supplier: ${newSupplier.name} (${newSupplier.id})`);
-          }
-      }
 
-      // 3. Delete Unselected Line Items
-      if (data.selectedLineItemIds) {
-          const selectedIdsArray = Array.from(selectedIds);
-          console.log(`[InvoicePipeline] Deleting unselected items for invoice ${invoiceId}. Keeping: ${selectedIdsArray.length} items.`);
-          console.log(`[InvoicePipeline] Kept IDs:`, selectedIdsArray);
-          
-          const deleteResult = await prisma.invoiceLineItem.deleteMany({
-              where: {
-                  invoiceId: invoiceId,
-                  id: { notIn: selectedIdsArray }
+              if (existingSupplier) {
+                  targetSupplierId = existingSupplier.id;
+              } else {
+                  // Create new supplier
+                  const newSupplier = await tx.supplier.create({
+                      data: {
+                          organisationId: invoice.organisationId,
+                          name: data.supplierName.trim(),
+                          normalizedName,
+                          sourceType: SupplierSourceType.MANUAL,
+                          status: SupplierStatus.ACTIVE
+                      }
+                  });
+                  targetSupplierId = newSupplier.id;
+                  console.log(`[InvoicePipeline] Created new supplier: ${newSupplier.name} (${newSupplier.id})`);
               }
-          });
-          console.log(`[InvoicePipeline] Deleted ${deleteResult.count} unselected items.`);
-          
-          // Verification Check
-          const remainingCount = await prisma.invoiceLineItem.count({
+          }
+
+          // 3. Delete All Existing Line Items
+          // We replace them entirely with the verified list to ensure source of truth
+          console.log(`[InvoicePipeline] Clearing existing line items for invoice ${invoiceId}...`);
+          await tx.invoiceLineItem.deleteMany({
               where: { invoiceId: invoiceId }
           });
-          console.log(`[InvoicePipeline] Verification: Invoice now has ${remainingCount} items (Expected: ${selectedIdsArray.length})`);
-          
-          if (remainingCount !== selectedIdsArray.length) {
-              console.warn(`[InvoicePipeline] WARNING: Mismatch in line item count after deletion!`);
-          }
-      }
 
-      // 3b. Enforce Manual COGS Account Code on remaining items
-      // This guarantees that verified items always have the correct account code, even if OCR missed it.
-      await prisma.invoiceLineItem.updateMany({
-          where: { invoiceId: invoiceId },
-          data: { accountCode: MANUAL_COGS_ACCOUNT_CODE }
-      });
-
-      // 4. Update Invoice
-      const updatedInvoice = await prisma.invoice.update({
-          where: { id: invoiceId },
-          data: {
-              supplierId: targetSupplierId,
-              total: data.total,
-              isVerified: true,
-              date: data.date ? new Date(data.date) : undefined
-          },
-          include: { supplier: true, lineItems: true }
-      });
-
-      // 4b. Upsert Products for Verified Line Items
-      // Now that the invoice is verified, we treat these items as "Truth" and ensure they exist in our Product catalog
-      if (updatedInvoice.lineItems.length > 0) {
-          for (const item of updatedInvoice.lineItems) {
-              // Generate product key (using item code or description)
-              const productKey = getProductKeyFromLineItem(item.productCode, item.description);
+          // 4. Create New Line Items (Normalized)
+          if (data.items && data.items.length > 0) {
+              console.log(`[InvoicePipeline] Creating ${data.items.length} verified line items...`);
               
-              if (productKey !== 'unknown') {
-                  // Upsert Product
-                  await prisma.product.upsert({
-                      where: {
-                          organisationId_locationId_productKey: {
+              const newItems = data.items.map(item => {
+                  // Data Normalization & Divide-by-Zero Guard
+                  const qty = Number(item.quantity) || 1; // Default to 1 if 0/missing
+                  const total = Number(item.lineTotal) || 0;
+                  const unitPrice = qty > 0 ? total / qty : 0;
+
+                  return {
+                      invoiceId: invoiceId,
+                      description: item.description ?? '',
+                      quantity: qty,
+                      lineTotal: total,
+                      unitPrice: unitPrice,
+                      productCode: item.productCode,
+                      accountCode: MANUAL_COGS_ACCOUNT_CODE
+                  };
+              });
+
+              await tx.invoiceLineItem.createMany({
+                  data: newItems
+              });
+          }
+
+          // 5. Update Invoice Header
+          const updatedInvoice = await tx.invoice.update({
+              where: { id: invoiceId },
+              data: {
+                  supplierId: targetSupplierId,
+                  total: data.total,
+                  isVerified: true,
+                  date: data.date ? new Date(data.date) : undefined
+              },
+              include: { supplier: true, lineItems: true }
+          });
+
+          // 6. Update InvoiceFile Status
+          if (invoice.invoiceFileId) {
+              await tx.invoiceFile.update({
+                  where: { id: invoice.invoiceFileId },
+                  data: { reviewStatus: ReviewStatus.VERIFIED }
+              });
+          }
+
+          // 7. Upsert Products for Verified Line Items
+          if (updatedInvoice.lineItems.length > 0) {
+              for (const item of updatedInvoice.lineItems) {
+                  const productKey = getProductKeyFromLineItem(item.productCode, item.description);
+                  
+                  if (productKey !== 'unknown') {
+                      await tx.product.upsert({
+                          where: {
+                              organisationId_locationId_productKey: {
+                                  organisationId: updatedInvoice.organisationId,
+                                  locationId: updatedInvoice.locationId,
+                                  productKey
+                              }
+                          },
+                          update: {
+                              supplierId: targetSupplierId
+                          },
+                          create: {
                               organisationId: updatedInvoice.organisationId,
                               locationId: updatedInvoice.locationId,
-                              productKey
+                              productKey,
+                              name: (item.productCode || item.description).trim(),
+                              supplierId: targetSupplierId
+                          }
+                      });
+                  }
+              }
+          }
+
+          // 8. Create Alias if requested
+          if (data.createAlias && targetSupplierId) {
+              const aliasName = data.aliasName || data.supplierName;
+              if (aliasName) {
+                  const normalized = aliasName.toLowerCase().trim();
+                  await tx.supplierAlias.upsert({
+                      where: {
+                          organisationId_normalisedAliasName: {
+                              organisationId: invoice.organisationId,
+                              normalisedAliasName: normalized
                           }
                       },
-                      update: {
-                          // Optionally update name or supplier if we want the latest invoice to be the source of truth
-                          // For now, let's just ensure it exists.
-                          // If we want to link supplier:
-                          supplierId: targetSupplierId
-                      },
+                      update: { supplierId: targetSupplierId },
                       create: {
-                          organisationId: updatedInvoice.organisationId,
-                          locationId: updatedInvoice.locationId,
-                          productKey,
-                          name: (item.productCode || item.description).trim(),
-                          supplierId: targetSupplierId
+                          organisationId: invoice.organisationId,
+                          supplierId: targetSupplierId,
+                          aliasName: aliasName,
+                          normalisedAliasName: normalized
                       }
                   });
               }
           }
-      }
 
-      // 4c. Update InvoiceFile
-      if (invoice.invoiceFileId) {
-          await prisma.invoiceFile.update({
-              where: { id: invoice.invoiceFileId },
-              data: { reviewStatus: ReviewStatus.VERIFIED }
-          });
-      }
-
-      // 5. Create Alias if requested
-      if (data.createAlias) {
-          const aliasName = data.aliasName || data.supplierName; // Fallback to supplier name if alias name empty
-          
-          if (aliasName && targetSupplierId) {
-            const normalized = aliasName.toLowerCase().trim();
-            // Use upsert to avoid P2002 if alias exists
-            await prisma.supplierAlias.upsert({
-                where: {
-                    organisationId_normalisedAliasName: {
-                        organisationId: invoice.organisationId,
-                        normalisedAliasName: normalized
-                    }
-                },
-                update: { supplierId: targetSupplierId },
-                create: {
-                    organisationId: invoice.organisationId,
-                    supplierId: targetSupplierId,
-                    aliasName: aliasName,
-                    normalisedAliasName: normalized
-                }
-            });
-          }
-      }
-
-      console.log('[InvoicePipeline] verifyInvoice success', { invoiceId, supplierId: targetSupplierId });
-      return updatedInvoice;
+          console.log('[InvoicePipeline] verifyInvoice success', { invoiceId, supplierId: targetSupplierId });
+          return updatedInvoice;
+      });
   },
   
   async listInvoices(locationId: string, page = 1, limit = 20) {
