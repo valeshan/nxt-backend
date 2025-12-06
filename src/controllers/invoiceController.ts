@@ -71,10 +71,14 @@ export const invoiceController = {
   async verify(req: FastifyRequest, reply: FastifyReply) {
       const { id } = req.params as { id: string };
       // Extract all relevant fields from body
-      const { supplierId, supplierName, total, createAlias, aliasName, selectedLineItemIds, date } = req.body as any;
+      const { supplierId, supplierName, total, createAlias, aliasName, selectedLineItemIds, date, items } = req.body as any;
       
       if (selectedLineItemIds !== undefined && !Array.isArray(selectedLineItemIds)) {
           return reply.status(400).send({ error: 'selectedLineItemIds must be an array of strings' });
+      }
+
+      if (items !== undefined && !Array.isArray(items)) {
+          return reply.status(400).send({ error: 'items must be an array of objects' });
       }
 
       req.log.info({ 
@@ -92,7 +96,8 @@ export const invoiceController = {
               createAlias,
               aliasName,
               selectedLineItemIds,
-              date
+              date,
+              items
           });
           
           if (!result) {

@@ -286,6 +286,13 @@ export const invoicePipelineService = {
       aliasName?: string;
       selectedLineItemIds?: string[];
       date?: string | Date;
+      items?: Array<{
+          id: string;
+          description?: string;
+          quantity?: number;
+          lineTotal?: number;
+          productCode?: string;
+      }>;
   }) {
       console.log('[InvoicePipeline] verifyInvoice start', { invoiceId, ...data });
 
@@ -321,6 +328,34 @@ export const invoicePipelineService = {
 
           if (count !== selectedIds.size) {
               throw new Error("Invalid line items: Some items do not belong to this invoice");
+          }
+      }
+
+      // 1c. Update Line Item Details (if provided)
+      if (data.items && data.items.length > 0) {
+          console.log(`[InvoicePipeline] Updating ${data.items.length} line items with user edits...`);
+          for (const item of data.items) {
+              // Only update if the item is in the selected list (optional optimization, but good practice)
+              // or if we just want to save edits regardless of selection (though unselected ones get deleted later).
+              // Updating only if it exists and belongs to invoice.
+              
+              const unitPrice = (item.lineTotal !== undefined && item.quantity) 
+                  ? item.lineTotal / item.quantity 
+                  : undefined;
+
+              await prisma.invoiceLineItem.updateMany({
+                  where: { 
+                      id: item.id, 
+                      invoiceId: invoiceId 
+                  },
+                  data: {
+                      description: item.description,
+                      quantity: item.quantity,
+                      lineTotal: item.lineTotal,
+                      unitPrice: unitPrice,
+                      productCode: item.productCode
+                  }
+              });
           }
       }
 
