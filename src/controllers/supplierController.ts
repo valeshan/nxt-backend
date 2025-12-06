@@ -138,7 +138,7 @@ export class SupplierController {
         console.log(`[SupplierController] listSuppliers: Pre-fetching IDs for loc=${locationId} org=${orgId}`);
         const [manualIds, xeroIds] = await Promise.all([
             prisma.invoice.findMany({
-                where: { organisationId: orgId, locationId, isVerified: true },
+                where: { organisationId: orgId, locationId, isVerified: true, deletedAt: null },
                 select: { supplierId: true },
                 distinct: ['supplierId']
             }).then(rows => {
@@ -146,7 +146,7 @@ export class SupplierController {
                 return rows.map(r => r.supplierId).filter(Boolean) as string[];
             }),
             prisma.xeroInvoice.findMany({
-                where: { organisationId: orgId, locationId, status: { in: ['AUTHORISED', 'PAID'] } },
+                where: { organisationId: orgId, locationId, status: { in: ['AUTHORISED', 'PAID'] }, deletedAt: null },
                 select: { supplierId: true },
                 distinct: ['supplierId']
             }).then(rows => {
@@ -193,12 +193,44 @@ export class SupplierController {
 
     // ...
     
+    // Fetch superseded IDs to exclude from Xero queries
+    // This ensures verified invoices (via Invoice) take precedence over raw Xero invoices (via XeroInvoice)
+    // Since we're doing lifetime aggregation in some parts, we should fetch all superseded IDs for this org/loc
+    // We can't easily date-scope this call because listSuppliers aggregates over 12m, 6m, current period, etc.
+    // Fetching all superseded IDs for the org/loc is safer.
+    // However, we must NOT import the helper here directly if it's not exported, or if it's private in service.
+    // supplierInsightsService.ts has it as a private helper?
+    // I need to check if I exported getSupersededXeroIds in supplierInsightsService.ts.
+    // Looking at my previous edit, I added it as a standalone function at the top of the file, NOT exported.
+    // I should have exported it or added it to the service object.
+    // Let's fix that first.
+    
+    // Wait, I can't edit supplierInsightsService.ts again in this turn easily without context switch.
+    // But I can just replicate the query here or ask the service to do it.
+    // But wait, `supplierInsightsService` object is exported. I can add a public method there.
+    // Or I can just use `prisma.invoice.findMany` here directly. It's a controller, it has access to prisma.
+    // Replicating the logic is fine for now to avoid breaking changes/imports issues.
+    
+    const supersededXeroIds = await prisma.invoice.findMany({
+        where: {
+            organisationId: orgId,
+            ...(locationId ? { locationId } : {}),
+            sourceType: 'XERO',
+            isVerified: true,
+            deletedAt: null,
+            sourceReference: { not: null }
+        },
+        select: { sourceReference: true }
+    }).then(rows => rows.map(r => r.sourceReference).filter((ref): ref is string => !!ref));
+
     // Metrics Where Clause Base
     const metricsWhereBase = {
         // supplierId: { in: supplierIds }, -> Added inside groupBys
         date: {}, // -> Added inside groupBys
         status: { in: ['AUTHORISED', 'PAID'] },
         organisationId: orgId,
+        deletedAt: null,
+        xeroInvoiceId: { notIn: supersededXeroIds },
         ...(locationId ? { locationId } : {}),
         ...(normalizedAccountCodes && normalizedAccountCodes.length > 0 ? {
             lineItems: {
@@ -315,6 +347,7 @@ export class SupplierController {
                 organisationId: orgId,
                 ...(locationId ? { locationId } : {}),
                 date: { gte: startOfCurrentPeriod, lte: endOfCurrentPeriod },
+                deletedAt: null,
                 ...getManualInvoiceFilter()
             },
             _sum: { total: true },
@@ -327,6 +360,7 @@ export class SupplierController {
                 organisationId: orgId,
                 ...(locationId ? { locationId } : {}),
                 date: { gte: startOfPriorPeriod, lte: endOfPriorPeriod },
+                deletedAt: null,
                 ...getManualInvoiceFilter()
             },
             _sum: { total: true },
@@ -339,6 +373,7 @@ export class SupplierController {
                 organisationId: orgId,
                 ...(locationId ? { locationId } : {}),
                 date: { gte: twelveMonthsAgoMetric },
+                deletedAt: null,
                 ...getManualInvoiceFilter()
             },
             _sum: { total: true },
@@ -352,6 +387,7 @@ export class SupplierController {
                 organisationId: orgId,
                 ...(locationId ? { locationId } : {}),
                 date: { gte: sixMonthsAgo },
+                deletedAt: null,
                 ...getManualInvoiceFilter()
             },
             _count: { id: true }
@@ -367,6 +403,8 @@ export class SupplierController {
             AND i."organisationId" = ${orgId}
             AND i."status" IN ('AUTHORISED', 'PAID')
             AND i."date" >= ${twelveMonthsAgoMetric}
+            AND i."deletedAt" IS NULL
+            ${supersededXeroIds.length > 0 ? Prisma.sql`AND i."xeroInvoiceId" NOT IN (${Prisma.join(supersededXeroIds)})` : Prisma.empty}
             ${locationId ? Prisma.sql`AND i."locationId" = ${locationId}` : Prisma.empty}
             ${normalizedAccountCodes && normalizedAccountCodes.length > 0 
                 ? Prisma.sql`AND li."accountCode" IN (${Prisma.join(normalizedAccountCodes)})` 
@@ -383,6 +421,7 @@ export class SupplierController {
             AND i."organisationId" = ${orgId}
             AND i."isVerified" = true
             AND i."date" >= ${twelveMonthsAgoMetric}
+            AND i."deletedAt" IS NULL
             ${locationId ? Prisma.sql`AND i."locationId" = ${locationId}` : Prisma.empty}
             ${manualItemAccountFilter}
         `
@@ -535,6 +574,18 @@ export class SupplierController {
     const now = new Date();
     const twelveMonthsAgo = new Date(now.getFullYear() - 1, now.getMonth(), now.getDate());
     
+    const supersededXeroIds = await prisma.invoice.findMany({
+        where: {
+            organisationId: orgId,
+            ...(locationId ? { locationId } : {}),
+            sourceType: 'XERO',
+            isVerified: true,
+            deletedAt: null,
+            sourceReference: { not: null }
+        },
+        select: { sourceReference: true }
+    }).then(rows => rows.map(r => r.sourceReference).filter((ref): ref is string => !!ref));
+
     // Aggregate Invoices (Xero + Manual)
     const [xeroInvoices, manualInvoices] = await Promise.all([
       prisma.xeroInvoice.findMany({
@@ -543,6 +594,8 @@ export class SupplierController {
               date: { gte: twelveMonthsAgo },
               status: { in: ['AUTHORISED', 'PAID'] },
               organisationId: orgId,
+              deletedAt: null,
+              xeroInvoiceId: { notIn: supersededXeroIds },
               ...(locationId ? { locationId } : {})
           },
           select: {
@@ -556,6 +609,7 @@ export class SupplierController {
               date: { gte: twelveMonthsAgo },
               isVerified: true,
               organisationId: orgId,
+              deletedAt: null,
               ...(locationId ? { locationId } : {})
           },
           select: {
@@ -602,6 +656,22 @@ export class SupplierController {
         ? Prisma.sql`AND i."locationId" = ${locationId}` 
         : Prisma.empty;
 
+    const supersededXeroIds = await prisma.invoice.findMany({
+        where: {
+            organisationId: orgId,
+            ...(locationId ? { locationId } : {}),
+            sourceType: 'XERO',
+            isVerified: true,
+            deletedAt: null,
+            sourceReference: { not: null }
+        },
+        select: { sourceReference: true }
+    }).then(rows => rows.map(r => r.sourceReference).filter((ref): ref is string => !!ref));
+
+    const supersededFilter = supersededXeroIds.length > 0
+        ? Prisma.sql`AND i."xeroInvoiceId" NOT IN (${Prisma.join(supersededXeroIds)})`
+        : Prisma.empty;
+
     // Query 1: Xero Products
     const xeroProducts: any[] = await prisma.$queryRaw`
         SELECT 
@@ -616,7 +686,9 @@ export class SupplierController {
         WHERE i."supplierId" = ${id}
         AND i."status" IN ('AUTHORISED', 'PAID')
         AND i."organisationId" = ${orgId}
+        AND i."deletedAt" IS NULL
         ${locationFilter}
+        ${supersededFilter}
         GROUP BY COALESCE("itemCode", LOWER(TRIM("description")))
         ORDER BY "totalSpend" DESC
         LIMIT 100
@@ -635,6 +707,7 @@ export class SupplierController {
         WHERE i."supplierId" = ${id}
         AND i."isVerified" = true
         AND i."organisationId" = ${orgId}
+        AND i."deletedAt" IS NULL
         ${locationFilter}
         GROUP BY COALESCE("productCode", LOWER(TRIM("description")))
         ORDER BY "totalSpend" DESC
@@ -692,12 +765,26 @@ export class SupplierController {
 
     const decodedProductId = decodeURIComponent(productId);
 
+    const supersededXeroIds = await prisma.invoice.findMany({
+        where: {
+            organisationId: orgId,
+            ...(locationId ? { locationId } : {}),
+            sourceType: 'XERO',
+            isVerified: true,
+            deletedAt: null,
+            sourceReference: { not: null }
+        },
+        select: { sourceReference: true }
+    }).then(rows => rows.map(r => r.sourceReference).filter((ref): ref is string => !!ref));
+
     const lineItems = await prisma.xeroInvoiceLineItem.findMany({
         where: {
             invoice: {
                 supplierId: id,
                 status: { in: ['AUTHORISED', 'PAID'] },
                 organisationId: orgId,
+                deletedAt: null,
+                xeroInvoiceId: { notIn: supersededXeroIds },
                 ...(locationId ? { locationId } : {})
             },
             OR: [
