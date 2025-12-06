@@ -357,6 +357,7 @@ export class SupplierController {
                 ...metricsWhereBase,
                 supplierId: { in: supplierIds },
                 date: { gte: twelveMonthsAgoMetric },
+                deletedAt: null
             },
             _sum: { total: true },
             _count: { id: true }
@@ -367,6 +368,7 @@ export class SupplierController {
                 ...metricsWhereBase,
                 supplierId: { in: supplierIds },
                 date: { gte: sixMonthsAgo },
+                deletedAt: null
             },
             _count: { id: true }
         }),
