@@ -15,7 +15,52 @@ export class InvoiceFileNotFoundError extends Error {
   }
 }
 
+import { pusherService } from './pusherService';
+
 export const invoicePipelineService = {
+  async processPendingOcrJobs() {
+      // 1. Find all files that are currently processing
+      const processingFiles = await prisma.invoiceFile.findMany({
+          where: { 
+              processingStatus: ProcessingStatus.OCR_PROCESSING, 
+              ocrJobId: { not: null },
+              deletedAt: null
+          },
+          take: 50 // Batch size limit
+      });
+
+      if (processingFiles.length === 0) return;
+
+      console.log(`[InvoicePipeline] Checking ${processingFiles.length} pending OCR jobs...`);
+
+      // 2. Check each one
+      for (const file of processingFiles) {
+          try {
+              // Keep a copy of the original status
+              const originalStatus = file.processingStatus;
+              
+              // Call pollProcessing to get the latest status (it updates the DB)
+              const updated = await this.pollProcessing(file.id);
+              
+              // 3. If status changed (e.g., to OCR_COMPLETE or OCR_FAILED), trigger Pusher
+              if (updated.processingStatus !== originalStatus) {
+                  console.log(`[InvoicePipeline] Status changed for ${file.id}: ${originalStatus} -> ${updated.processingStatus}`);
+                  
+                  const channel = pusherService.getOrgChannel(updated.organisationId);
+                  
+                  await pusherService.triggerEvent(channel, 'invoice-status-updated', {
+                      invoiceFileId: updated.id,
+                      status: updated.processingStatus,
+                      invoice: updated.invoice ?? null
+                  });
+              }
+          } catch (err) {
+              console.error(`[InvoicePipeline] Error processing pending OCR job for file ${file.id}:`, err);
+              // Continue to next file
+          }
+      }
+  },
+
   async submitForProcessing(
     fileStream: any, 
     metadata: { 
@@ -100,8 +145,8 @@ export const invoicePipelineService = {
   },
 
   async pollProcessing(invoiceFileId: string) {
-    const file = await prisma.invoiceFile.findUnique({
-        where: { id: invoiceFileId },
+    const file = await prisma.invoiceFile.findFirst({
+        where: { id: invoiceFileId, deletedAt: null },
         include: { 
             invoice: { include: { lineItems: true, supplier: true } }, 
             ocrResult: true 
@@ -418,13 +463,13 @@ export const invoicePipelineService = {
       const skip = (page - 1) * limit;
       let [items, count] = await Promise.all([
           prisma.invoiceFile.findMany({
-              where: { locationId },
+              where: { locationId, deletedAt: null },
               include: { invoice: { include: { supplier: true } } },
               orderBy: { createdAt: 'desc' },
               take: limit,
               skip
           }),
-          prisma.invoiceFile.count({ where: { locationId } })
+          prisma.invoiceFile.count({ where: { locationId, deletedAt: null } })
       ]);
       
       // Check for items that need status updates (OCR_PROCESSING)
@@ -481,7 +526,7 @@ export const invoicePipelineService = {
 
       // 1. Fetch Invoice to get File ID and verify ownership
       const invoice = await prisma.invoice.findFirst({
-          where: { id: invoiceId, organisationId },
+          where: { id: invoiceId, organisationId, deletedAt: null },
           include: { invoiceFile: true }
       });
 
@@ -493,34 +538,24 @@ export const invoicePipelineService = {
 
       console.log(`[InvoicePipeline] Deleting invoice ${invoiceId}. Linked File: ${invoiceFileId || 'None'}`);
 
-      // 2. Perform Transactional Deletion
-      // We delete in order: LineItems -> OcrResult (if via File) -> Invoice -> InvoiceFile
-      // Actually, OcrResult is linked to InvoiceFile usually.
-      
+      // 2. Perform Soft Deletion Transaction
       await prisma.$transaction(async (tx) => {
-          // A. Delete Line Items
-          await tx.invoiceLineItem.deleteMany({
-              where: { invoiceId: invoiceId }
-          });
-          
-          // B. Delete Invoice Record
-          await tx.invoice.delete({
-              where: { id: invoiceId }
+          // Soft delete Invoice
+          await tx.invoice.update({
+              where: { id: invoiceId },
+              data: { deletedAt: new Date() }
           });
 
-          // C. Delete Invoice OCR Result and Parent File if present
+          // Soft delete InvoiceFile if present
           if (invoiceFileId) {
-             await tx.invoiceOcrResult.deleteMany({
-                 where: { invoiceFileId }
-             });
-
-             await tx.invoiceFile.delete({
-                 where: { id: invoiceFileId }
+             await tx.invoiceFile.update({
+                 where: { id: invoiceFileId },
+                 data: { deletedAt: new Date() }
              });
           }
       });
 
-      console.log(`[InvoicePipeline] Successfully deleted invoice ${invoiceId} and associated records.`);
+      console.log(`[InvoicePipeline] Successfully soft-deleted invoice ${invoiceId} and associated file.`);
       return true;
   }
 };

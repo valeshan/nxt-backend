@@ -233,7 +233,8 @@ async function computeWeightedAveragePrices(
                     ...(locationId ? { locationId } : {}),
                     supplierId: { in: Array.from(supplierIds) },
                     date: { gte: startDate, lte: endDate },
-                    isVerified: true
+                    isVerified: true,
+                    deletedAt: null
                 },
                 // Optimization: only fetch verified items
             },
@@ -337,6 +338,7 @@ function getManualLineItemWhere(
             ...(locationId ? { locationId } : {}),
             date: { gte: startDate, ...(endDate ? { lte: endDate } : {}) },
             isVerified: true,
+            deletedAt: null,
         },
         // Relaxed: Don't force MANUAL_COGS_ACCOUNT_CODE if looking for "all"
         // But shouldIncludeManualData checks if MANUAL_COGS_ACCOUNT_CODE is in list.
@@ -986,7 +988,8 @@ export const supplierInsightsService = {
             invoice: {
                 ...whereInvoiceBase,
                 date: { gte: last12m.start, lte: new Date() },
-                isVerified: true
+                isVerified: true,
+                deletedAt: null
             },
             // Account Code filtering for manual items: 
             // If specific codes requested, filter by them.
@@ -1253,7 +1256,8 @@ export const supplierInsightsService = {
         where: {
             invoice: {
                 ...whereInvoiceBase,
-                date: { gte: windowStart, lte: now }
+                date: { gte: windowStart, lte: now },
+                deletedAt: null
             },
             OR: [
                 { productCode: { equals: normalizedKey, mode: 'insensitive' } },
@@ -1778,7 +1782,8 @@ export const supplierInsightsService = {
                 some: {
                     organisationId,
                     ...(locationId ? { locationId } : {}),
-                    isVerified: true
+                    isVerified: true,
+                    deletedAt: null
                 }
             }
         });

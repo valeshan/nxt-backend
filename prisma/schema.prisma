@@ -408,6 +408,7 @@ model InvoiceFile {
 
   ocrResult         InvoiceOcrResult?
   invoice           Invoice?
+  deletedAt         DateTime?
 }
 
 model InvoiceOcrResult {
@@ -443,6 +444,7 @@ model Invoice {
   lineItems       InvoiceLineItem[]
   organisation    Organisation      @relation(fields: [organisationId], references: [id])
   location        Location          @relation(fields: [locationId], references: [id])
+  deletedAt       DateTime?
 }
 
 model InvoiceLineItem {

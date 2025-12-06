@@ -148,8 +148,12 @@ export const xeroInvoiceOcrService = {
             });
 
             if (existingFile) {
-                console.log(`[XeroOCR] Skipping ${invoice.invoiceNumber}: Already processed (FileID: ${existingFile.id})`);
-                continue; // Already processed
+                if (existingFile.deletedAt) {
+                    console.log(`[XeroOCR] Skipping ${invoice.invoiceNumber}: Explicitly deleted (Soft Delete).`);
+                } else {
+                    console.log(`[XeroOCR] Skipping ${invoice.invoiceNumber}: Already processed (FileID: ${existingFile.id})`);
+                }
+                continue; // Already processed or deleted
             }
 
             // Check attachments
