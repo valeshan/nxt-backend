@@ -100,7 +100,7 @@ export class SupplierController {
     const now = new Date();
     const twelveMonthsAgo = new Date(now.getFullYear() - 1, now.getMonth(), now.getDate());
 
-    let activityFilter = {};
+    let activityFilter: Prisma.SupplierWhereInput = {};
     if (activityStatus === 'current') {
         activityFilter = {
             OR: [
@@ -110,7 +110,8 @@ export class SupplierController {
                             organisationId: orgId,
                             ...(locationId ? { locationId } : {}),
                             date: { gte: twelveMonthsAgo },
-                            status: { in: ['AUTHORISED', 'PAID'] }
+                            status: { in: ['AUTHORISED', 'PAID'] },
+                            deletedAt: null
                         }
                     }
                 },
@@ -120,13 +121,41 @@ export class SupplierController {
                             organisationId: orgId,
                             ...(locationId ? { locationId } : {}),
                             date: { gte: twelveMonthsAgo },
-                            isVerified: true
+                            isVerified: true,
+                            deletedAt: null
                         }
                     }
                 }
             ]
         };
     }
+
+    // Active Invoices Filter: Only show suppliers with at least one non-deleted invoice
+    // This prevents suppliers with only deleted invoices from appearing in the list.
+    const activeInvoicesFilter: Prisma.SupplierWhereInput = {
+        OR: [
+            {
+                invoices: {
+                    some: {
+                        organisationId: orgId,
+                        deletedAt: null,
+                        status: { in: ['AUTHORISED', 'PAID'] },
+                        ...(locationId ? { locationId } : {})
+                    }
+                }
+            },
+            {
+                ocrInvoices: {
+                    some: {
+                        organisationId: orgId,
+                        deletedAt: null,
+                        isVerified: true,
+                        ...(locationId ? { locationId } : {})
+                    }
+                }
+            }
+        ]
+    };
 
     // Account Filter Logic (from service)
     const accountFilter = supplierInsightsService.getSupplierFilterWhereClause(orgId, locationId, normalizedAccountCodes);
@@ -164,8 +193,11 @@ export class SupplierController {
       ...(search ? { name: { contains: search, mode: 'insensitive' } } : {}),
       // Use explicitly fetched IDs if location filtering is active
       ...(locationSupplierIds !== null ? { id: { in: locationSupplierIds } } : {}),
-      ...activityFilter,
-      ...accountFilter // Merge account filter logic
+      ...accountFilter, // Merge account filter logic
+      AND: [
+          activeInvoicesFilter,
+          ...(Object.keys(activityFilter).length > 0 ? [activityFilter] : [])
+      ]
     };
     
     // ... existing fetching logic
