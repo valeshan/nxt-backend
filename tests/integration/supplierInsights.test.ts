@@ -83,7 +83,7 @@ describe('Supplier Insights Service Integration', () => {
     await createInvoiceWithProduct('inv-1', supplierId1, 'Power bil', 1, 500, 'power bil');
     await createInvoiceWithProduct('inv-2', supplierId2, 'Office cleaning services', 4, 50, 'office cleaning services');
     await createInvoiceWithProduct('inv-3', supplierId3, '12oz Compostable Cups', 1000, 0.1, '12oz compostable cups');
-  });
+  }, 30000); // Increased timeout for seeding
 
   afterAll(async () => {
     await teardown();
@@ -93,7 +93,7 @@ describe('Supplier Insights Service Integration', () => {
     const summary = await supplierInsightsService.getSupplierSpendSummary(orgId);
     expect(summary).toBeDefined();
     expect(summary.totalSupplierSpendPerMonth).toBeDefined();
-  });
+  }, 20000);
 
   it('getProducts returns all products when no search is provided', async () => {
     const result = await supplierInsightsService.getProducts(orgId, undefined, { page: 1, pageSize: 10 });

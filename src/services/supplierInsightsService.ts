@@ -213,6 +213,7 @@ async function computeWeightedAveragePrices(
 
             const date = item.invoice.date;
             const monthKey = `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}`;
+            // console.log(`[Debug] Processing item: ${item.productId} Date: ${date.toISOString()} Key: ${monthKey} Amt: ${amount} Qty: ${qty}`);
 
             if (!buckets.has(item.productId)) {
                 buckets.set(item.productId, new Map());
@@ -1667,7 +1668,7 @@ export const supplierInsightsService = {
     let productPriceTrendPercent = 0;
     let canCalculateProductPriceTrend = false;
 
-    if (productPrices && productPrices.size >= 2) {
+    if (productPrices && productPrices.size >= 3) {
          const sortedMonths = Array.from(productPrices.keys()).sort();
          const latestMonth = sortedMonths[sortedMonths.length - 1];
          const latestPrice = productPrices.get(latestMonth)!;

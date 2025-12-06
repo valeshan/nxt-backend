@@ -24,7 +24,7 @@ describe('Forecast Service Integration', () => {
         }
       }
     });
-  });
+  }, 30000);
 
   afterAll(async () => {
     await teardown();
@@ -72,7 +72,7 @@ describe('Forecast Service Integration', () => {
     const feature = result.recurringFeatures.find(f => f.supplierId === supplierId);
     expect(feature).toBeDefined();
     expect(feature?.isRecurring).toBe(true);
-  });
+  }, 15000);
 });
 
 

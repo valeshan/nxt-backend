@@ -457,7 +457,7 @@ export const invoicePipelineService = {
 
           console.log('[InvoicePipeline] verifyInvoice success', { invoiceId, supplierId: targetSupplierId });
           return updatedInvoice;
-      });
+      }, { timeout: 10000 });
   },
   
   async listInvoices(locationId: string, page = 1, limit = 20) {

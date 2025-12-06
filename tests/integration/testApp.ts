@@ -13,18 +13,29 @@ export async function resetDb() {
   await prisma.userSettings.deleteMany();
   
   await prisma.xeroInvoiceLineItem.deleteMany();
+  await prisma.invoiceLineItem.deleteMany();
   await prisma.xeroInvoice.deleteMany();
+  await prisma.invoiceOcrResult.deleteMany();
+  await prisma.invoice.deleteMany();
+  await prisma.invoiceFile.deleteMany();
   
   // Products must be deleted after line items but before locations/suppliers
   await prisma.product.deleteMany();
 
   await prisma.xeroLocationLink.deleteMany();
+  // Delete sync runs before connections
+  await prisma.xeroSyncRun.deleteMany();
   await prisma.xeroConnection.deleteMany();
   
-  await prisma.userOrganisation.deleteMany();
+  await prisma.locationAccountConfig.deleteMany();
+  await prisma.supplierAlias.deleteMany();
   await prisma.location.deleteMany();
   await prisma.supplierSourceLink.deleteMany();
   await prisma.supplier.deleteMany();
+  
+  // Delete UserOrganisation immediately before Organisation to minimize race windows
+  await prisma.userOrganisation.deleteMany();
+  
   await prisma.organisation.deleteMany();
   
   // User must be last if referenced by others (which it is by UserSettings, UserOrganisation)
@@ -32,5 +43,8 @@ export async function resetDb() {
 }
 
 export async function teardown() {
-  await prisma.$disconnect();
+  // Do not disconnect when using the global singleton in tests.
+  // Vitest reuses the process/environment, and disconnecting breaks subsequent tests.
+  // The connections will be closed when the process exits.
+  // await prisma.$disconnect();
 }

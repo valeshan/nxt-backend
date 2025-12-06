@@ -1,0 +1,194 @@
+import { describe, it, expect, beforeAll, afterAll, beforeEach } from 'vitest';
+import { buildTestApp, resetDb, teardown } from './testApp';
+import { FastifyInstance } from 'fastify';
+import prisma from '../../src/infrastructure/prismaClient';
+import { ProcessingStatus, InvoiceSourceType } from '@prisma/client';
+
+describe('Manual Invoice Verification Integration', () => {
+  let app: FastifyInstance;
+  let authToken: string;
+  let orgId: string;
+  let locId: string;
+  let invoiceId: string;
+  let invoiceFileId: string;
+
+  beforeAll(async () => {
+    app = await buildTestApp();
+  });
+
+  afterAll(async () => {
+    await teardown();
+  });
+
+  beforeEach(async () => {
+    await resetDb();
+
+    // 1. Setup User & Org
+    const registerRes = await app.inject({
+      method: 'POST',
+      url: '/auth/register',
+      payload: {
+        email: 'verify-test@example.com',
+        password: 'password123',
+        confirmPassword: 'password123',
+        firstName: 'Test',
+        lastName: 'User',
+        acceptedTerms: true,
+        acceptedPrivacy: true
+      }
+    });
+    const loginRes = await app.inject({
+      method: 'POST',
+      url: '/auth/login',
+      payload: { email: 'verify-test@example.com', password: 'password123' }
+    });
+    const loginToken = loginRes.json().access_token;
+
+    const onboardRes = await app.inject({
+      method: 'POST',
+      url: '/organisations/onboard/manual',
+      headers: { Authorization: `Bearer ${loginToken}` },
+      payload: { venueName: 'Test Venue' }
+    });
+    orgId = onboardRes.json().organisationId;
+    locId = onboardRes.json().locationId;
+
+    const selectOrgRes = await app.inject({
+      method: 'POST',
+      url: '/auth/select-organisation',
+      headers: { Authorization: `Bearer ${loginToken}` },
+      payload: { organisationId: orgId }
+    });
+    authToken = selectOrgRes.json().access_token;
+
+    // 2. Create Mock Invoice File & Invoice
+    const file = await prisma.invoiceFile.create({
+      data: {
+        organisationId: orgId,
+        locationId: locId,
+        sourceType: InvoiceSourceType.UPLOAD,
+        storageKey: 'mock-key',
+        fileName: 'test.pdf',
+        mimeType: 'application/pdf',
+        processingStatus: ProcessingStatus.OCR_COMPLETE,
+        ocrResult: {
+            create: {
+                rawResultJson: {},
+                parsedJson: {}
+            }
+        }
+      }
+    });
+    invoiceFileId = file.id;
+
+    const invoice = await prisma.invoice.create({
+        data: {
+            organisationId: orgId,
+            locationId: locId,
+            invoiceFileId: file.id,
+            invoiceNumber: 'INV-001',
+            sourceType: InvoiceSourceType.UPLOAD,
+            isVerified: false,
+            lineItems: {
+                create: [
+                    { description: 'OCR Item 1', quantity: 10, unitPrice: 10, lineTotal: 100 }
+                ]
+            }
+        }
+    });
+    invoiceId = invoice.id;
+  }, 30000); // Increased timeout
+
+  it('should persist verified items and delete old OCR items', async () => {
+    // Verify with NEW values
+    const payload = {
+        supplierName: 'New Supplier',
+        total: 50,
+        date: new Date().toISOString(),
+        items: [
+            { id: 'temp-1', description: 'Verified Item 1', quantity: 5, lineTotal: 50, productCode: 'PROD-A' }
+        ]
+    };
+
+    const res = await app.inject({
+        method: 'PATCH',
+        url: `/invoices/${invoiceId}/verify`,
+        headers: { Authorization: `Bearer ${authToken}` },
+        payload
+    });
+
+    expect(res.statusCode).toBe(200);
+
+    // Check Database
+    const dbLines = await prisma.invoiceLineItem.findMany({
+        where: { invoiceId }
+    });
+
+    // If schema validation stripped items, this will be 0
+    expect(dbLines.length).toBe(1);
+    expect(dbLines[0].description).toBe('Verified Item 1');
+    expect(dbLines[0].quantity?.toNumber()).toBe(5);
+    expect(dbLines[0].lineTotal?.toNumber()).toBe(50);
+    expect(dbLines[0].accountCode).toBe('Cost of Goods Sold (Manual)');
+  }, 30000);
+
+  it('should handle empty product codes by normalizing them to null', async () => {
+    const payload = {
+        supplierName: 'Supplier B',
+        total: 100,
+        items: [
+            { id: 'temp-2', description: 'Item No Code', quantity: 1, lineTotal: 100, productCode: '' }
+        ]
+    };
+
+    const res = await app.inject({
+        method: 'PATCH',
+        url: `/invoices/${invoiceId}/verify`,
+        headers: { Authorization: `Bearer ${authToken}` },
+        payload
+    });
+
+    expect(res.statusCode).toBe(200);
+
+    const dbLines = await prisma.invoiceLineItem.findMany({ where: { invoiceId } });
+    expect(dbLines.length).toBe(1);
+    expect(dbLines[0].productCode).toBeNull();
+  }, 30000);
+
+  it('should display verified products in supplier products endpoint', async () => {
+    // 1. Verify Invoice
+    await app.inject({
+        method: 'PATCH',
+        url: `/invoices/${invoiceId}/verify`,
+        headers: { Authorization: `Bearer ${authToken}` },
+        payload: {
+            supplierName: 'Visible Supplier',
+            total: 200,
+            items: [
+                { id: 'temp-3', description: 'Visible Product', quantity: 2, lineTotal: 200, productCode: 'VIS-1' }
+            ]
+        }
+    });
+
+    // Get Supplier ID
+    const invoice = await prisma.invoice.findUnique({ where: { id: invoiceId } });
+    const supplierId = invoice?.supplierId;
+    expect(supplierId).toBeDefined();
+
+    // 2. Fetch Supplier Products (Simulate Dashboard Drilldown)
+    const res = await app.inject({
+        method: 'GET',
+        url: `/suppliers/${supplierId}/products`,
+        headers: { Authorization: `Bearer ${authToken}` }
+    });
+
+    expect(res.statusCode).toBe(200);
+    const products = res.json();
+    
+    expect(products.length).toBeGreaterThan(0);
+    const product = products.find((p: any) => p.name === 'Visible Product');
+    expect(product).toBeDefined();
+    expect(product.totalSpend).toBe(200);
+    expect(product.totalQuantity).toBe(2);
+  }, 30000);
+});

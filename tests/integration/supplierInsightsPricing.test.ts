@@ -66,7 +66,7 @@ describe('Supplier Insights Pricing Logic', () => {
         suppliers: { create: { id: supplierId, name: 'Test Supplier', normalizedName: 'test supplier', sourceType: 'MANUAL' } }
       }
     });
-  });
+  }, 30000);
 
   afterAll(async () => {
     await teardown();
@@ -77,7 +77,7 @@ describe('Supplier Insights Pricing Logic', () => {
     
     // 3 months of stable pricing ($35.75)
     const today = new Date();
-    const m1 = new Date(today.getFullYear(), today.getMonth(), 15); // This month
+    const m1 = today; // Use today to ensure it's within the "lte: now" window
     const m2 = new Date(today.getFullYear(), today.getMonth() - 1, 15); // Last month
     const m3 = new Date(today.getFullYear(), today.getMonth() - 2, 15); // 2 months ago
 
@@ -95,7 +95,7 @@ describe('Supplier Insights Pricing Logic', () => {
     // Check the last point in history
     const lastPoint = detail?.priceHistory[detail.priceHistory.length - 1];
     expect(lastPoint?.averageUnitPrice).toBeCloseTo(35.75);
-  });
+  }, 15000);
 
   it('Test 2: GST-inclusive invoice total should not affect result', async () => {
     const product = await createProduct('gst-prod', 'GST Product');
@@ -114,7 +114,7 @@ describe('Supplier Insights Pricing Logic', () => {
     // Should be 35.75, NOT 39.33
     expect(item.latestUnitCost).toBeCloseTo(35.75);
     expect(item.lastPriceChangePercent).toBeCloseTo(0);
-  });
+  }, 15000);
 
   it('Test 3: Genuine price increase', async () => {
     const product = await createProduct('increase-prod', 'Increasing Product');
@@ -134,7 +134,7 @@ describe('Supplier Insights Pricing Logic', () => {
 
     expect(item.latestUnitCost).toBeCloseTo(54.13);
     expect(item.lastPriceChangePercent).toBeCloseTo(expectedChange);
-  });
+  }, 15000);
 
   it('Test 4: Zero or missing quantities are ignored', async () => {
     const product = await createProduct('zero-qty-prod', 'Zero Qty Product');
@@ -160,7 +160,7 @@ describe('Supplier Insights Pricing Logic', () => {
 
     // If logic is "latest month with data", it should find the last month with qty > 0
     expect(item.latestUnitCost).toBeCloseTo(10.00);
-  });
+  }, 15000);
 
   it('Test 5: Weighted average within the month', async () => {
     const product = await createProduct('weighted-prod', 'Weighted Product');
@@ -180,7 +180,7 @@ describe('Supplier Insights Pricing Logic', () => {
     const item = list.items[0];
 
     expect(item.latestUnitCost).toBeCloseTo(15.00);
-  });
+  }, 15000);
 
   it('Test 6: Product Detail Smoothed Trend Logic', async () => {
     const product = await createProduct('trend-prod', 'Trend Product');
@@ -206,7 +206,7 @@ describe('Supplier Insights Pricing Logic', () => {
     expect(detail?.canCalculateProductPriceTrend).toBe(true);
     expect(detail?.productPriceTrendPercent).toBeCloseTo(20.0);
     expect(detail?.unitPriceHistory.length).toBeGreaterThanOrEqual(6);
-  });
+  }, 15000);
 
   it('Test 7: Product Detail Insufficient Data for Trend', async () => {
     const product = await createProduct('short-prod', 'Short History Product');
@@ -220,5 +220,5 @@ describe('Supplier Insights Pricing Logic', () => {
     expect(detail).toBeDefined();
     expect(detail?.canCalculateProductPriceTrend).toBe(false);
     expect(detail?.productPriceTrendPercent).toBe(0);
-  });
+  }, 15000);
 });

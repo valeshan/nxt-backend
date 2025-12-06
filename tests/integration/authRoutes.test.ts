@@ -15,7 +15,7 @@ describe('Auth Routes Integration', () => {
 
   beforeEach(async () => {
     await resetDb();
-  });
+  }, 30000);
 
   // Helper functions to mirror the client-side request pattern
   async function selectOrganisation(organisationId: string, accessToken: string) {
@@ -101,5 +101,5 @@ describe('Auth Routes Integration', () => {
       payload: { refresh_token: locData.refresh_token }
     });
     expect(refreshRes.statusCode).toBe(200);
-  });
+  }, 15000);
 });

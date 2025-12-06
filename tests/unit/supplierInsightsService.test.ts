@@ -19,8 +19,8 @@ vi.mock('../../src/infrastructure/prismaClient', () => {
     xeroInvoice: {
       aggregate: mockAggregate,
       groupBy: mockGroupBy,
-      findMany: mockFindMany, // Added
-      findFirst: mockFindFirst, // Added
+      findMany: mockFindMany,
+      findFirst: mockFindFirst,
     },
     xeroInvoiceLineItem: {
       findMany: mockFindMany,
@@ -28,12 +28,29 @@ vi.mock('../../src/infrastructure/prismaClient', () => {
       aggregate: mockAggregate,
       findFirst: mockFindFirst,
     },
+    invoice: {
+      findMany: mockFindMany,
+      findFirst: mockFindFirst,
+      aggregate: mockAggregate, // Added for getSupplierSpendSummary
+    },
+    invoiceLineItem: {
+      findMany: mockFindMany,
+      groupBy: mockGroupBy,
+      aggregate: mockAggregate, // Added for getSupplierSpendSummary
+      count: vi.fn().mockResolvedValue(0), // Added for getAccounts
+    },
     supplier: {
       findMany: mockFindMany,
+      findUnique: mockFindUnique, // Added for getManualProductDetail
     },
     product: {
-        findUnique: mockFindUnique,
-    }
+      findUnique: mockFindUnique,
+      findMany: mockFindMany, // Added for getProducts
+    },
+    locationAccountConfig: {
+      findMany: mockFindMany,
+    },
+    $transaction: vi.fn((callback) => callback(mockClient)), // Simple mock for transaction
   };
   return {
     __esModule: true,
@@ -55,7 +72,8 @@ describe('supplierInsightsService', () => {
   describe('getSupplierSpendSummary', () => {
     it('should calculate totalSupplierSpendPerMonth correctly', async () => {
       // Mock aggregations using implementation to be robust against call order
-      const aggregateMock = vi.mocked(prisma.xeroInvoice.aggregate);
+      // We need to mock xeroInvoiceLineItem.aggregate now. And invoiceLineItem.aggregate will share the mock.
+      const aggregateMock = vi.mocked(prisma.xeroInvoiceLineItem.aggregate);
       aggregateMock.mockReset();
 
       aggregateMock.mockImplementation(async (args: any) => {
@@ -66,9 +84,19 @@ describe('supplierInsightsService', () => {
           // Monthly: 1 month window
           
           const where = args.where || {};
-          const dateGte = where.date?.gte;
+          // Check for top-level date (xeroInvoice) or nested invoice.date (xeroInvoiceLineItem)
+          const dateGte = where.date?.gte || where.invoice?.date?.gte;
           
-          if (!dateGte) return { _sum: { total: { toNumber: () => 1000 } } } as any;
+          // Mock return structure with all fields needed by both Xero (lineAmount) and Manual (lineTotal)
+          const baseReturn = { 
+              _sum: { 
+                  total: { toNumber: () => 1000 }, 
+                  lineAmount: { toNumber: () => 1000 },
+                  lineTotal: { toNumber: () => 1000 }
+              } 
+          } as any;
+
+          if (!dateGte) return baseReturn;
           
           const now = new Date();
           const diffTime = Math.abs(now.getTime() - new Date(dateGte).getTime());
@@ -76,37 +104,63 @@ describe('supplierInsightsService', () => {
           
           if (diffDays <= 95 && diffDays >= 85) {
                // Recent 90 days
-               return { _sum: { total: { toNumber: () => 3000 } } } as any;
+               return { 
+                   _sum: { 
+                       total: { toNumber: () => 3000 }, 
+                       lineAmount: { toNumber: () => 3000 },
+                       lineTotal: { toNumber: () => 3000 }
+                   } 
+               } as any;
           }
           
           // Last 6m vs Prev 6m
-          // Last 6m starts ~6 months ago (approx 180 days)
-          // Prev 6m starts ~12 months ago (approx 365 days)
-          
           if (diffDays >= 140 && diffDays <= 220) {
               // Last 6m
-              return { _sum: { total: { toNumber: () => 6000 } } } as any;
+              return { 
+                  _sum: { 
+                      total: { toNumber: () => 6000 }, 
+                      lineAmount: { toNumber: () => 6000 },
+                      lineTotal: { toNumber: () => 6000 }
+                   } 
+              } as any;
           }
           
           if (diffDays >= 320) {
               // Prev 6m
-              return { _sum: { total: { toNumber: () => 5000 } } } as any;
+              return { 
+                  _sum: { 
+                      total: { toNumber: () => 5000 }, 
+                      lineAmount: { toNumber: () => 5000 },
+                      lineTotal: { toNumber: () => 5000 }
+                   } 
+              } as any;
           }
           
-          // Default (Series months)
-          return { _sum: { total: { toNumber: () => 1000 } } } as any;
+          return baseReturn;
       });
+
+      // Mock aggregations for grouping by date (used in graph data)
+      const groupByMock = vi.mocked(prisma.xeroInvoice.groupBy);
+      groupByMock.mockResolvedValue([
+          { date: new Date(), _sum: { total: { toNumber: () => 1000 } } }
+      ] as any);
 
       // Mock prices calls (findMany)
       vi.mocked(prisma.xeroInvoiceLineItem.findMany).mockResolvedValue([]); // Default empty
       
       // Mock xeroInvoice.findMany for forecastService dependency
       vi.mocked(prisma.xeroInvoice.findMany).mockResolvedValue([]);
+      
+      // Mock invoice.findMany for getSupersededXeroIds
+      vi.mocked(prisma.invoice.findMany).mockResolvedValue([]);
+      
+      // Do NOT mock invoiceLineItem.aggregate separately as it shares the spy with xeroInvoiceLineItem
+      // vi.mocked(prisma.invoiceLineItem.aggregate).mockResolvedValue({ _sum: { lineTotal: { toNumber: () => 0 } } } as any);
 
       const result = await supplierInsightsService.getSupplierSpendSummary(orgId);
       
-      expect(result.totalSupplierSpendPerMonth).toBe(1000); // 3000 / 3
-      expect(result.totalSpendTrendLast6mPercent).toBe(20); // (6000-5000)/5000 * 100
+      expect(result.totalSupplierSpendPerMonth).toBe(2000); // (3000 Xero + 3000 Manual) / 3 = 2000
+      expect(result.totalSpendTrendLast6mPercent).toBe(20); // (12000 - 10000) / 10000 * 100 = 20%
     });
 
     it('should use correct date ranges for Last 6 months', async () => {
@@ -114,36 +168,46 @@ describe('supplierInsightsService', () => {
         vi.useFakeTimers();
         vi.setSystemTime(now);
         
-        const aggregateMock = vi.mocked(prisma.xeroInvoice.aggregate);
+        const aggregateMock = vi.mocked(prisma.xeroInvoiceLineItem.aggregate);
         aggregateMock.mockReset();
-        aggregateMock.mockResolvedValue({ _sum: { total: { toNumber: () => 0 } } } as any);
+        aggregateMock.mockResolvedValue({ _sum: { total: { toNumber: () => 0 }, lineAmount: { toNumber: () => 0 } } } as any);
         
         vi.mocked(prisma.xeroInvoiceLineItem.findMany).mockResolvedValue([]);
         vi.mocked(prisma.xeroInvoice.findMany).mockResolvedValue([]);
+        vi.mocked(prisma.invoice.findMany).mockResolvedValue([]); 
+        
+        // Remove separate mock for invoiceLineItem.aggregate as it shares the spy
+        // vi.mocked(prisma.invoiceLineItem.aggregate).mockResolvedValue({ _sum: { lineTotal: { toNumber: () => 0 } } } as any); 
         
         await supplierInsightsService.getSupplierSpendSummary(orgId);
         
         const calls = aggregateMock.mock.calls;
         
         // We expect calls: 
-        // 1. recentSpendAgg
-        // 2. last6mSpend
-        // 3. prev6mSpend
-        // 4..9. Series months
+        // 1. recentSpendAgg (Xero)
+        // 2. recentManualSpendAgg (Manual) - sharing spy
+        // 3. last6mSpend (Xero)
+        // 4. last6mManual (Manual)
+        // 5. prev6mSpend (Xero)
+        // 6. prev6mManual (Manual)
+        // ...
         
-        // Check 2nd call (Last 6m)
-        const last6mCall = calls[1][0];
+        // Find Xero calls by checking if `xeroInvoiceId` is present in `where.invoice`
+        const xeroCalls = calls.filter((c: any) => c[0].where?.invoice?.xeroInvoiceId !== undefined);
+        
+        // Check 2nd Xero call (Last 6m)
+        const last6mCall = xeroCalls[1][0];
         const where: any = last6mCall.where;
         
-        const startDate = where.date.gte as Date;
+        const startDate = where.invoice?.date?.gte as Date;
         expect(startDate.getFullYear()).toBe(2025);
         expect(startDate.getMonth()).toBe(4); // May
         expect(startDate.getDate()).toBe(1);
         
-        // Check 3rd call (Prev 6m)
-        const prev6mCall = calls[2][0];
+        // Check 3rd Xero call (Prev 6m)
+        const prev6mCall = xeroCalls[2][0];
         const prevWhere: any = prev6mCall.where;
-        const prevStartDate = prevWhere.date.gte as Date;
+        const prevStartDate = prevWhere.invoice?.date?.gte as Date;
         
         expect(prevStartDate.getFullYear()).toBe(2024);
         expect(prevStartDate.getMonth()).toBe(10); // Nov

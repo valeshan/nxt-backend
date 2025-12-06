@@ -35,6 +35,13 @@ export default async function invoiceRoutes(fastify: FastifyInstance) {
               aliasName: z.string().optional(),
               selectedLineItemIds: z.array(z.string()).optional(),
               date: z.string().optional(),
+              items: z.array(z.object({
+                  id: z.string(),
+                  description: z.string().optional(),
+                  quantity: z.number().optional(),
+                  lineTotal: z.number().optional(),
+                  productCode: z.string().optional()
+              })).optional()
           })
       }
   }, invoiceController.verify);

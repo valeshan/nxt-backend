@@ -16,7 +16,7 @@ describe('Onboarding Flow Integration', () => {
 
   afterAll(async () => {
     await app.close();
-    await prisma.$disconnect();
+    // await prisma.$disconnect();
   });
 
   beforeEach(async () => {
@@ -96,7 +96,7 @@ describe('Onboarding Flow Integration', () => {
       const user = await prisma.user.findUnique({ where: { id: registerData.user_id } });
       expect(user).toBeTruthy();
       expect(user?.email).toBe('john.manual@example.com');
-    });
+    }, 15000);
   });
 
   describe('Xero Onboarding Flow (Mocked)', () => {

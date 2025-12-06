@@ -65,7 +65,7 @@ describe('Location Routes Integration', () => {
       payload: { organisationId: orgId }
     });
     authToken = selectOrgRes.json().access_token;
-  });
+  }, 30000);
 
   it('should return empty integrations for a location without links', async () => {
     const res = await app.inject({

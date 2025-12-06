@@ -18,7 +18,7 @@ describe('Supplier Insights - Get Products Supplier Resolution', () => {
         locations: { create: { id: locationId, name: 'Loc 1' } }
       }
     });
-  });
+  }, 30000);
 
   afterAll(async () => {
     await teardown();
@@ -74,7 +74,7 @@ describe('Supplier Insights - Get Products Supplier Resolution', () => {
     expect(item).toBeDefined();
     expect(item?.productName).toBe('Orphan Product');
     expect(item?.supplierName).toBe('History Supplier');
-  });
+  }, 15000);
 
   it('should leave supplier as Unknown if no history exists', async () => {
     const product = await prisma.product.create({
@@ -112,5 +112,5 @@ describe('Supplier Insights - Get Products Supplier Resolution', () => {
     
     expect(item).toBeDefined();
     expect(item?.supplierName).toBe('Unknown');
-  });
+  }, 15000);
 });

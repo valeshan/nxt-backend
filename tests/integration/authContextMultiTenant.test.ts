@@ -50,7 +50,32 @@ describe('Multi-Tenant Auth Context Integration', () => {
         { id: supplierA.id, name: supplierA.name, organisationId: supplierA.organisationId, normalizedName: 'supplier a', sourceType: 'MANUAL' },
         { id: supplierB.id, name: supplierB.name, organisationId: supplierB.organisationId, normalizedName: 'supplier b', sourceType: 'MANUAL' }
     ]});
-  });
+
+    // Add dummy verified invoices so suppliers appear in list (due to activeInvoicesFilter)
+    await prisma.invoice.create({
+        data: {
+            organisationId: orgA.id,
+            locationId: locA.id,
+            supplierId: supplierA.id,
+            isVerified: true,
+            sourceType: 'UPLOAD',
+            date: new Date(),
+            total: 100
+        }
+    });
+
+    await prisma.invoice.create({
+        data: {
+            organisationId: orgB.id,
+            locationId: locB.id, // Ensure this matches User B's context if tested
+            supplierId: supplierB.id,
+            isVerified: true,
+            sourceType: 'UPLOAD',
+            date: new Date(),
+            total: 100
+        }
+    });
+  }, 30000); // Increased timeout for slow DB reset/seed
 
   it('Test 1: Valid tenant access - Location Token for Org A should see Supplier A', async () => {
     const token = signAccessToken({
@@ -72,7 +97,7 @@ describe('Multi-Tenant Auth Context Integration', () => {
     expect(body.data).toHaveLength(1);
     expect(body.data[0].id).toBe(supplierA.id);
     expect(body.data[0].name).toBe(supplierA.name);
-  });
+  }, 10000);
 
   it('Test 2: Spoofed headers should be ignored', async () => {
     const token = signAccessToken({

@@ -279,7 +279,7 @@ export const authService = {
         accessToken,
         refreshToken,
       };
-    });
+    }, { timeout: 10000 });
 
     console.log('[AuthService] Transaction completed successfully');
 
