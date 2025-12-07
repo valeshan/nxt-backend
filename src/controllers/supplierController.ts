@@ -189,7 +189,7 @@ export class SupplierController {
 
     const where: Prisma.SupplierWhereInput = {
       organisationId: orgId,
-      status: { not: 'ARCHIVED' },
+      status: 'ACTIVE',
       ...(search ? { name: { contains: search, mode: 'insensitive' } } : {}),
       // Use explicitly fetched IDs if location filtering is active
       ...(locationSupplierIds !== null ? { id: { in: locationSupplierIds } } : {}),

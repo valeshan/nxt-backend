@@ -50,6 +50,7 @@ export interface ProductListItem {
   latestUnitCost: number;
   lastPriceChangePercent: number;
   spend12m: number;
+  itemCode?: string;
 }
 
 export interface ProductDetail {
@@ -57,6 +58,7 @@ export interface ProductDetail {
   productName: string;
   supplierName: string;
   categoryName: string;
+  itemCode?: string;
   stats12m: {
     totalSpend12m: number;
     averageMonthlySpend: number;
@@ -1060,7 +1062,7 @@ export const supplierInsightsService = {
     // A. Xero Products
     const xeroProducts = await prisma.product.findMany({
         where: whereClause,
-        select: { id: true, name: true, supplierId: true, supplier: { select: { name: true } } }
+        select: { id: true, name: true, productKey: true, supplierId: true, supplier: { select: { name: true } } }
     });
     
     const productIds = xeroProducts.map(p => p.id);
@@ -1411,7 +1413,94 @@ export const supplierInsightsService = {
     });
 
     if (filteredItems.length === 0) {
-        return null;
+        // Fallback: Check if product exists historically (outside 12m window)
+        // We just need one item to confirm existence and get metadata
+        const fallbackItems = await prisma.invoiceLineItem.findMany({
+            where: {
+                invoice: {
+                    organisationId,
+                    supplierId,
+                    ...(locationId ? { locationId } : {}),
+                    isVerified: true,
+                    deletedAt: null,
+                    date: { lte: now } // Any date up to now
+                },
+                 OR: [
+                    { productCode: { equals: normalizedKey, mode: 'insensitive' } },
+                    {
+                        AND: [
+                            { productCode: null },
+                            { description: { contains: productKey, mode: 'insensitive' } }
+                        ]
+                    }
+                ]
+            } as any,
+            orderBy: { invoice: { date: 'desc' } },
+            take: 50, // Fetch a few to filter in JS
+            select: {
+                lineTotal: true,
+                quantity: true,
+                unitPrice: true,
+                description: true,
+                productCode: true,
+                accountCode: true,
+                invoice: {
+                    select: {
+                        date: true
+                    }
+                }
+            }
+        });
+
+        const validFallback = fallbackItems.find(item => {
+             const itemProductCode = item.productCode?.toLowerCase().trim();
+             const itemDescription = item.description?.toLowerCase().trim() || '';
+             
+             if (itemProductCode) {
+                 return itemProductCode === normalizedKey;
+             } else {
+                 return itemDescription === normalizedKey;
+             }
+        });
+
+        if (!validFallback) {
+             return null;
+        }
+
+        // Found valid item, but no history in last 12m. Return empty stats.
+        const emptyHistory = Array(12).fill(null).map((_, i) => {
+             const d = new Date();
+             d.setMonth(d.getMonth() - (11 - i));
+             return {
+                 monthLabel: getMonthLabel(d),
+                 averageUnitPrice: null
+             };
+        });
+        
+        // Resolve Category
+        let fallbackCategoryName = 'Uncategorized';
+        if (validFallback.accountCode) {
+            fallbackCategoryName = getCategoryName(validFallback.accountCode);
+        }
+
+        return {
+            productId: productId,
+            productName: validFallback.description || productKey,
+            supplierName: supplier.name,
+            categoryName: fallbackCategoryName,
+            itemCode: productKey,
+            stats12m: {
+                totalSpend12m: 0,
+                averageMonthlySpend: 0,
+                quantityPurchased12m: 0,
+                spendTrend12mPercent: 0
+            },
+            priceHistory: emptyHistory,
+            unitPriceHistory: emptyHistory,
+            productPriceTrendPercent: 0,
+            canCalculateProductPriceTrend: false,
+            latestUnitCost: Number(validFallback.unitPrice || 0)
+        };
     }
 
     // Calculate totals
@@ -1547,6 +1636,7 @@ export const supplierInsightsService = {
         productName: productName,
         supplierName: supplier.name,
         categoryName,
+        itemCode: productKey,
         stats12m: {
             totalSpend12m,
             averageMonthlySpend,
@@ -1758,6 +1848,7 @@ export const supplierInsightsService = {
         productName: product.name,
         supplierName: supplierName,
         categoryName,
+        itemCode: product.productKey || undefined,
         stats12m: {
             totalSpend12m,
             averageMonthlySpend,

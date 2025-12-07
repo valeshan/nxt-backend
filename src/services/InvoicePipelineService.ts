@@ -171,9 +171,45 @@ export const invoicePipelineService = {
                  // ... (Processing Logic) ...
                  // Parse
                  const parsed = ocrService.parseTextractOutput(result);
+
+                 // Default to OCR date (parsed.date is likely a Date object or ISO string suitable for Prisma)
+                 let invoiceDate = parsed.date;
+                 let xeroSupplierId: string | undefined;
+
+                 // Check for Xero Date Override
+                 if (file.sourceType === InvoiceSourceType.XERO && file.sourceReference) {
+                     try {
+                         const xeroInvoice = await prisma.xeroInvoice.findFirst({
+                             where: {
+                                 xeroInvoiceId: file.sourceReference,
+                                 organisationId: file.organisationId
+                             },
+                             include: { supplier: true }
+                         });
+                         
+                         if (xeroInvoice) {
+                             if (xeroInvoice.date) {
+                                 console.log(`[InvoicePipeline] Overriding OCR date (${invoiceDate}) with Xero date (${xeroInvoice.date}) for file ${file.id}`);
+                                 invoiceDate = xeroInvoice.date;
+                             }
+                             if (xeroInvoice.supplier) {
+                                  console.log(`[InvoicePipeline] Overriding OCR supplier (${parsed.supplierName}) with Xero supplier (${xeroInvoice.supplier.name}) for file ${file.id}`);
+                                  parsed.supplierName = xeroInvoice.supplier.name;
+                                  xeroSupplierId = xeroInvoice.supplier.id;
+                             }
+                         }
+                     } catch (err) {
+                         console.warn(`[InvoicePipeline] Failed to look up Xero invoice for overrides on file ${file.id}`, err);
+                     }
+                 }
                  
                  // Resolve Supplier
-                 const resolution = await supplierResolutionService.resolveSupplier(parsed.supplierName || '', file.organisationId);
+                 let resolution;
+                 if (xeroSupplierId) {
+                      resolution = { supplier: { id: xeroSupplierId } };
+                 } else {
+                      resolution = await supplierResolutionService.resolveSupplier(parsed.supplierName || '', file.organisationId);
+                 }
                  
                  // Create or Update OcrResult
                  await prisma.invoiceOcrResult.upsert({
@@ -204,7 +240,7 @@ export const invoicePipelineService = {
                                 invoiceFileId: file.id,
                                 supplierId: resolution?.supplier.id,
                                 invoiceNumber: parsed.invoiceNumber,
-                                date: parsed.date,
+                                date: invoiceDate,
                                 total: parsed.total,
                                 tax: parsed.tax,
                                 subtotal: parsed.subtotal,
@@ -334,6 +370,13 @@ export const invoicePipelineService = {
 
               if (existingSupplier) {
                   targetSupplierId = existingSupplier.id;
+                  // Ensure supplier is active if it was pending review
+                  if (existingSupplier.status === SupplierStatus.PENDING_REVIEW) {
+                      await tx.supplier.update({
+                          where: { id: existingSupplier.id },
+                          data: { status: SupplierStatus.ACTIVE }
+                      });
+                  }
               } else {
                   // Create new supplier
                   const newSupplier = await tx.supplier.create({
