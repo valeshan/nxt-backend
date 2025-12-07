@@ -124,9 +124,37 @@ export const invoiceController = {
   async list(req: FastifyRequest, reply: FastifyReply) {
       const { locationId } = req.params as { locationId: string };
       const { page, limit } = req.query as { page?: number, limit?: number };
+      const auth = req.authContext;
       
-      const result = await invoicePipelineService.listInvoices(locationId, page, limit);
-      return result;
+      try {
+          const result = await invoicePipelineService.listInvoices(locationId, page, limit);
+          return result;
+      } catch (error: any) {
+          req.log.error({
+              msg: 'List invoices failed',
+              locationId,
+              organisationId: auth?.organisationId,
+              error: error.message,
+              code: error.code,
+              stack: error.stack
+          });
+
+          // Check for Prisma/Database connectivity errors
+          // P1001: Can't reach database server
+          // P1017: Server has closed the connection
+          if (error.code === 'P1001' || error.code === 'P1017') {
+              return reply.status(503).send({ 
+                  error: 'Database unavailable',
+                  message: 'The system is currently experiencing high load or connectivity issues. Please try again in a few moments.',
+                  code: error.code
+              });
+          }
+
+          return reply.status(500).send({ 
+              error: 'Internal Server Error',
+              message: 'Failed to retrieve invoices'
+          });
+      }
   },
 
   async delete(req: FastifyRequest, reply: FastifyReply) {

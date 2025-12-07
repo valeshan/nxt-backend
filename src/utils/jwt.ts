@@ -14,8 +14,8 @@ export interface TokenPayload {
   exp?: number;
 }
 
-// Access Token: 15 minutes - Authorization & frequent rotation
-export const ACCESS_TOKEN_TTL_SECONDS = 900;
+// Access Token: 90 minutes - Authorization & frequent rotation
+export const ACCESS_TOKEN_TTL_SECONDS = 5400;
 
 // Refresh Token: 30 days - Maximum session inactivity window
 export const REFRESH_TOKEN_TTL_SECONDS = 60 * 60 * 24 * 30;

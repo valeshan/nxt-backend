@@ -80,7 +80,24 @@ export const authController = {
 
   async refreshTokens(request: FastifyRequest<{ Body: z.infer<typeof RefreshTokenRequest> }>, reply: FastifyReply) {
     const { refresh_token } = request.body;
-    const result = await authService.refreshTokens(refresh_token);
-    return reply.send(result);
+    try {
+      const result = await authService.refreshTokens(refresh_token);
+      return reply.send(result);
+    } catch (error: any) {
+      // Handle Database Instability
+      if (error.code === 'P1001' || error.code === 'P1017') {
+        request.log.error({
+          msg: 'Database unavailable during token refresh',
+          error: error.message,
+          code: error.code
+        });
+        return reply.status(503).send({ 
+          error: 'Database unavailable',
+          message: 'Service temporarily unavailable during refresh.',
+          code: error.code
+        });
+      }
+      throw error;
+    }
   }
 };
