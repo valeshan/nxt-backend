@@ -11,8 +11,8 @@ const start = async () => {
   const app = buildApp();
 
   try {
-    // Run startup cleanup
-    await cleanupStuckSyncs();
+    // Run startup cleanup (Force reset all IN_PROGRESS)
+    await cleanupStuckSyncs({ startup: true });
     
     // Initialize Cron Jobs
     initCronJobs();

@@ -2,20 +2,26 @@ import prisma from '../infrastructure/prismaClient';
 import { config } from '../config/env';
 import { XeroSyncStatus } from '@prisma/client';
 
-export async function cleanupStuckSyncs() {
+export async function cleanupStuckSyncs(options: { startup?: boolean } = {}) {
   const timeoutMinutes = config.XERO_SYNC_TIMEOUT_MINUTES;
   const cutoff = new Date(Date.now() - timeoutMinutes * 60 * 1000);
 
-  console.log(`[Cleanup] Checking for stuck syncs older than ${cutoff.toISOString()} (timeout: ${timeoutMinutes}m)`);
+  console.log(`[Cleanup] Checking for stuck syncs. Startup: ${!!options.startup}. Cutoff: ${cutoff.toISOString()} (timeout: ${timeoutMinutes}m)`);
 
   try {
+    const whereClause: any = {
+      status: XeroSyncStatus.IN_PROGRESS,
+    };
+
+    // Only apply time filter if NOT startup
+    if (!options.startup) {
+      whereClause.updatedAt = {
+        lt: cutoff,
+      };
+    }
+
     const stuckSyncs = await prisma.xeroSyncRun.findMany({
-      where: {
-        status: XeroSyncStatus.IN_PROGRESS,
-        updatedAt: {
-          lt: cutoff,
-        },
-      },
+      where: whereClause,
       select: {
         id: true,
       },
