@@ -1842,7 +1842,7 @@ export const supplierInsightsService = {
           result.push({
               code: MANUAL_COGS_ACCOUNT_CODE,
               name: MANUAL_COGS_ACCOUNT_CODE,
-              isCogs: true
+              isCogs: cogsSet.has(MANUAL_COGS_ACCOUNT_CODE)
           });
       }
       
