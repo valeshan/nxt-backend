@@ -160,42 +160,48 @@ export class SupplierController {
     // Account Filter Logic (from service)
     const accountFilter = supplierInsightsService.getSupplierFilterWhereClause(orgId, locationId, normalizedAccountCodes);
 
-    // 1. Pre-fetch Supplier IDs for the given location (if locationId is present)
-    let locationSupplierIds: string[] | null = null;
-
-    if (locationId && activityStatus !== 'current') {
-        console.log(`[SupplierController] listSuppliers: Pre-fetching IDs for loc=${locationId} org=${orgId}`);
-        const [manualIds, xeroIds] = await Promise.all([
-            prisma.invoice.findMany({
-                where: { organisationId: orgId, locationId, isVerified: true, deletedAt: null },
-                select: { supplierId: true },
-                distinct: ['supplierId']
-            }).then(rows => {
-                console.log(`[SupplierController] Found ${rows.length} manual supplier IDs`);
-                return rows.map(r => r.supplierId).filter(Boolean) as string[];
-            }),
-            prisma.xeroInvoice.findMany({
-                where: { organisationId: orgId, locationId, status: { in: ['AUTHORISED', 'PAID'] }, deletedAt: null },
-                select: { supplierId: true },
-                distinct: ['supplierId']
-            }).then(rows => {
-                console.log(`[SupplierController] Found ${rows.length} Xero supplier IDs`);
-                return rows.map(r => r.supplierId).filter(Boolean) as string[];
-            })
-        ]);
-        locationSupplierIds = Array.from(new Set([...manualIds, ...xeroIds]));
-        console.log(`[SupplierController] Total unique location supplier IDs: ${locationSupplierIds.length}`);
-    }
+    // 1. Pre-fetch Valid Supplier IDs (Whitelist)
+    // This ensures we ONLY list suppliers that have at least one verified/authorized invoice.
+    // This effectively acts as a strict "activeInvoicesFilter" but applied via ID list.
+    console.log(`[SupplierController] listSuppliers: Pre-fetching Valid IDs for org=${orgId} loc=${locationId || 'all'}`);
+    const [manualIds, xeroIds] = await Promise.all([
+        prisma.invoice.findMany({
+            where: { 
+                organisationId: orgId, 
+                isVerified: true, 
+                deletedAt: null,
+                ...(locationId ? { locationId } : {}) 
+            },
+            select: { supplierId: true },
+            distinct: ['supplierId']
+        }).then(rows => {
+            console.log(`[SupplierController] Found ${rows.length} valid manual supplier IDs`);
+            return rows.map(r => r.supplierId).filter(Boolean) as string[];
+        }),
+        prisma.xeroInvoice.findMany({
+            where: { 
+                organisationId: orgId, 
+                status: { in: ['AUTHORISED', 'PAID'] }, 
+                deletedAt: null,
+                ...(locationId ? { locationId } : {}) 
+            },
+            select: { supplierId: true },
+            distinct: ['supplierId']
+        }).then(rows => {
+            console.log(`[SupplierController] Found ${rows.length} valid Xero supplier IDs`);
+            return rows.map(r => r.supplierId).filter(Boolean) as string[];
+        })
+    ]);
+    const validSupplierIds = Array.from(new Set([...manualIds, ...xeroIds]));
+    console.log(`[SupplierController] Total unique valid supplier IDs: ${validSupplierIds.length}`);
 
     const where: Prisma.SupplierWhereInput = {
       organisationId: orgId,
       status: SupplierStatus.ACTIVE,
+      id: { in: validSupplierIds },
       ...(search ? { name: { contains: search, mode: 'insensitive' } } : {}),
-      // Use explicitly fetched IDs if location filtering is active
-      ...(locationSupplierIds !== null ? { id: { in: locationSupplierIds } } : {}),
       ...accountFilter, // Merge account filter logic
       AND: [
-          activeInvoicesFilter,
           ...(Object.keys(activityFilter).length > 0 ? [activityFilter] : [])
       ]
     };
@@ -204,7 +210,7 @@ export class SupplierController {
         organisationId: orgId,
         locationId,
         status: SupplierStatus.ACTIVE,
-        activeInvoicesFilter,
+        validSupplierIdsCount: validSupplierIds.length,
         queryWhere: where
     }, null, 2));
     
