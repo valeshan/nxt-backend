@@ -1,7 +1,7 @@
 import { FastifyRequest, FastifyReply } from 'fastify';
 import prisma from '../infrastructure/prismaClient';
 import { normalizeSupplierName } from '../utils/normalizeSupplierName';
-import { Prisma } from '@prisma/client';
+import { Prisma, SupplierStatus } from '@prisma/client';
 import { supplierInsightsService } from '../services/supplierInsightsService';
 import { MANUAL_COGS_ACCOUNT_CODE } from '../config/constants';
 
@@ -189,7 +189,7 @@ export class SupplierController {
 
     const where: Prisma.SupplierWhereInput = {
       organisationId: orgId,
-      status: 'ACTIVE',
+      status: SupplierStatus.ACTIVE,
       ...(search ? { name: { contains: search, mode: 'insensitive' } } : {}),
       // Use explicitly fetched IDs if location filtering is active
       ...(locationSupplierIds !== null ? { id: { in: locationSupplierIds } } : {}),
@@ -199,6 +199,14 @@ export class SupplierController {
           ...(Object.keys(activityFilter).length > 0 ? [activityFilter] : [])
       ]
     };
+
+    console.log('[SupplierController] listSuppliers where:', JSON.stringify({
+        organisationId: orgId,
+        locationId,
+        status: SupplierStatus.ACTIVE,
+        activeInvoicesFilter,
+        queryWhere: where
+    }, null, 2));
     
     // ... existing fetching logic
     const [suppliers, total] = await Promise.all([
@@ -215,6 +223,7 @@ export class SupplierController {
     ]);
     
     console.log(`[SupplierController] Final supplier count: ${suppliers.length}, Total: ${total}`);
+    console.log('[SupplierController] listSuppliers result count:', suppliers.length);
 
     if (suppliers.length === 0) {
       return reply.send({
