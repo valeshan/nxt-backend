@@ -129,7 +129,9 @@ export default async function supplierInsightsRoutes(fastify: FastifyInstance) {
                   supplierName: z.string(),
                   latestUnitCost: z.number(),
                   lastPriceChangePercent: z.number(),
-                  spend12m: z.number()
+                  spend12m: z.number(),
+                  itemCode: z.string().nullable().optional(),
+                  description: z.string().nullable().optional()
               })),
               pagination: z.object({
                   page: z.number(),

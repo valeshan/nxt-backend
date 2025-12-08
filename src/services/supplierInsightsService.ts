@@ -50,7 +50,8 @@ export interface ProductListItem {
   latestUnitCost: number;
   lastPriceChangePercent: number;
   spend12m: number;
-  itemCode?: string;
+  itemCode?: string | null;
+  description?: string | null;
 }
 
 export interface ProductDetail {
@@ -1293,6 +1294,97 @@ export const supplierInsightsService = {
     // 2. Hydrate Price Data Efficiently (Bulk)
     const pageProductIds = paginatedItems.map(p => p.productId);
     const priceLookbackDate = subMonths(new Date(), 12); 
+
+    // Extract Xero Product IDs and Manual Keys
+    const xeroProductIds = pageProductIds.filter(id => !id.startsWith('manual:'));
+    const manualProductIds = pageProductIds.filter(id => id.startsWith('manual:'));
+
+    // 2a. Fetch Latest Xero Details (Description, ItemCode)
+    let latestXeroByProductId = new Map<string, { description: string | null; itemCode: string | null }>();
+    if (xeroProductIds.length > 0) {
+        const xeroDetails = await prisma.xeroInvoiceLineItem.findMany({
+            where: {
+                productId: { in: xeroProductIds },
+                invoice: {
+                    organisationId,
+                    ...(locationId ? { locationId } : {}),
+                    deletedAt: null
+                } as any
+            },
+            orderBy: {
+                invoice: { date: 'desc' }
+            },
+            select: {
+                productId: true,
+                description: true,
+                itemCode: true
+            }
+        });
+
+        for (const detail of xeroDetails) {
+            if (detail.productId && !latestXeroByProductId.has(detail.productId)) {
+                latestXeroByProductId.set(detail.productId, {
+                    description: detail.description,
+                    itemCode: detail.itemCode
+                });
+            }
+        }
+    }
+
+    // 2b. Fetch Latest Manual Details
+    let latestManualByKey = new Map<string, { description: string | null; itemCode: string | null }>();
+    if (manualProductIds.length > 0) {
+        // We need to match by productCode or description using the same logic as aggregation
+        // manual:supplierId:base64(key)
+        const manualQueries = manualProductIds.map(async (manualId) => {
+             const parts = manualId.split(':');
+             if (parts.length !== 3) return null;
+             const supplierId = parts[1];
+             let productKey = '';
+             try {
+                productKey = Buffer.from(parts[2], 'base64').toString('utf-8');
+             } catch (e) { return null; }
+             const normalizedKey = productKey.toLowerCase().trim();
+
+             const latestLine = await prisma.invoiceLineItem.findFirst({
+                 where: {
+                     invoice: {
+                         organisationId,
+                         supplierId,
+                         ...(locationId ? { locationId } : {}),
+                         isVerified: true,
+                         deletedAt: null
+                     } as any,
+                     OR: [
+                        { productCode: { equals: normalizedKey, mode: 'insensitive' } },
+                        {
+                            AND: [
+                                { productCode: null },
+                                { description: { contains: productKey, mode: 'insensitive' } }
+                            ]
+                        }
+                    ]
+                 },
+                 orderBy: { invoice: { date: 'desc' } },
+                 select: {
+                     description: true,
+                     productCode: true
+                 }
+             });
+             
+             if (latestLine) {
+                 return { manualId, description: latestLine.description, itemCode: latestLine.productCode };
+             }
+             return null;
+        });
+        
+        const manualResults = await Promise.all(manualQueries);
+        for (const res of manualResults) {
+            if (res) {
+                latestManualByKey.set(res.manualId, { description: res.description, itemCode: res.itemCode });
+            }
+        }
+    }
     
     const priceMap = await computeWeightedAveragePrices(organisationId, pageProductIds, priceLookbackDate, new Date(), locationId, params.accountCodes);
 
@@ -1315,7 +1407,33 @@ export const supplierInsightsService = {
             }
         }
 
-        return { ...item, latestUnitCost, lastPriceChangePercent };
+        // Hydrate description and itemCode
+        let description: string | null = null;
+        let itemCode: string | null = null;
+
+        if (item.productId.startsWith('manual:')) {
+            const details = latestManualByKey.get(item.productId);
+            if (details) {
+                description = details.description;
+                itemCode = details.itemCode;
+            } else {
+                description = item.productName; // Fallback
+            }
+        } else {
+            const details = latestXeroByProductId.get(item.productId);
+            if (details) {
+                description = details.description;
+                itemCode = details.itemCode;
+            }
+        }
+
+        return { 
+            ...item, 
+            latestUnitCost, 
+            lastPriceChangePercent,
+            description: description || item.productName, // Ensure we always have something
+            itemCode: itemCode || null
+        };
     });
     
     return {
