@@ -123,13 +123,14 @@ export const invoiceController = {
 
   async list(req: FastifyRequest, reply: FastifyReply) {
       const { locationId } = req.params as { locationId: string };
-      const { page, limit, search, sourceType, startDate, endDate } = req.query as { 
+      const { page, limit, search, sourceType, startDate, endDate, status } = req.query as { 
           page?: number, 
           limit?: number,
           search?: string,
           sourceType?: string,
           startDate?: string,
-          endDate?: string
+          endDate?: string,
+          status?: 'ALL' | 'REVIEWED' | 'PENDING' | 'DELETED'
       };
       const auth = req.authContext;
       
@@ -138,7 +139,8 @@ export const invoiceController = {
               search,
               sourceType,
               startDate,
-              endDate
+              endDate,
+              status
           });
           return result;
       } catch (error: any) {
@@ -240,6 +242,56 @@ export const invoiceController = {
               error: e.message
           });
           return reply.status(500).send({ error: 'Failed to process bulk approve' });
+      }
+  },
+
+  async restore(req: FastifyRequest, reply: FastifyReply) {
+      const { id } = req.params as { id: string };
+      const auth = req.authContext;
+
+      if (!auth || !auth.organisationId) {
+          return reply.status(401).send({ error: 'Unauthorized' });
+      }
+
+      try {
+          await invoicePipelineService.restoreInvoice(id, auth.organisationId);
+          return reply.status(200).send({ success: true });
+      } catch (e: any) {
+          req.log.error({
+              msg: 'Restore invoice failed',
+              invoiceId: id,
+              error: e.message
+          });
+
+          if (e.message === 'Invoice not found or not deleted') {
+              return reply.status(404).send({ error: e.message });
+          }
+          
+          return reply.status(500).send({ error: 'Failed to restore invoice' });
+      }
+  },
+
+  async bulkRestore(req: FastifyRequest, reply: FastifyReply) {
+      const { ids } = req.body as { ids: string[] };
+      const auth = req.authContext;
+
+      if (!auth || !auth.organisationId) {
+          return reply.status(401).send({ error: 'Unauthorized' });
+      }
+
+      if (!Array.isArray(ids) || ids.length === 0) {
+          return reply.status(400).send({ error: 'ids must be a non-empty array of strings' });
+      }
+
+      try {
+          const result = await invoicePipelineService.bulkRestoreInvoices(ids, auth.organisationId);
+          return reply.status(200).send(result);
+      } catch (e: any) {
+          req.log.error({
+              msg: 'Bulk restore failed',
+              error: e.message
+          });
+          return reply.status(500).send({ error: 'Failed to process bulk restore' });
       }
   }
 };

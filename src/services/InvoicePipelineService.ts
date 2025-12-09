@@ -521,11 +521,26 @@ export const invoicePipelineService = {
           sourceType?: string; // 'ALL' | 'XERO' | 'MANUAL'
           startDate?: string;
           endDate?: string;
+          status?: 'ALL' | 'REVIEWED' | 'PENDING' | 'DELETED';
       }
   ) {
       const skip = (page - 1) * limit;
       
-      const where: any = { locationId, deletedAt: null };
+      const where: any = { locationId };
+
+      // Apply Status Filter (Handles deletedAt and reviewStatus)
+      if (filters?.status === 'DELETED') {
+          where.deletedAt = { not: null };
+      } else {
+          where.deletedAt = null; // Default: Exclude deleted
+          
+          if (filters?.status === 'REVIEWED') {
+              where.reviewStatus = 'VERIFIED';
+          } else if (filters?.status === 'PENDING') {
+              where.reviewStatus = { not: 'VERIFIED' };
+          }
+          // 'ALL' keeps deletedAt = null and no extra reviewStatus constraint
+      }
 
       // Apply Source Filter
       if (filters?.sourceType && filters.sourceType !== 'ALL') {
@@ -828,6 +843,128 @@ export const invoicePipelineService = {
           success: validFiles.map(f => f.id),
           failed: invalidFiles.map(f => ({ id: f.id, error: "No invoice found for file" }))
       };
+  },
+
+  async restoreInvoice(invoiceId: string, organisationId: string) {
+      console.log(`[InvoicePipeline] Request to restore invoice ${invoiceId} for org ${organisationId}`);
+
+      // 1. Fetch Invoice (including deleted)
+      const invoice = await prisma.invoice.findFirst({
+          where: { id: invoiceId, organisationId, deletedAt: { not: null } } as any,
+          include: { invoiceFile: true }
+      });
+
+      if (!invoice) {
+          throw new Error('Invoice not found or not deleted');
+      }
+
+      const invoiceFileId = invoice.invoiceFileId;
+      console.log(`[InvoicePipeline] Restoring invoice ${invoiceId}. Linked File: ${invoiceFileId || 'None'}`);
+
+      // 2. Perform Restore Transaction
+      await prisma.$transaction(async (tx) => {
+          // Restore Invoice
+          await tx.invoice.update({
+              where: { id: invoiceId },
+              data: { deletedAt: null }
+          });
+
+          // Restore InvoiceFile if present
+          if (invoiceFileId) {
+             await tx.invoiceFile.update({
+                 where: { id: invoiceFileId },
+                 data: { deletedAt: null }
+             });
+          }
+
+          // Restore XeroInvoice if linked
+          if (invoice.sourceType === InvoiceSourceType.XERO && invoice.sourceReference) {
+              const xeroInvoice = await tx.xeroInvoice.findFirst({
+                  where: {
+                      xeroInvoiceId: invoice.sourceReference,
+                      organisationId: organisationId,
+                      deletedAt: { not: null } // Only find deleted ones
+                  }
+              });
+
+              if (xeroInvoice) {
+                  console.log(`[InvoicePipeline] Restoring linked XeroInvoice ${xeroInvoice.id}`);
+                  await tx.xeroInvoice.update({
+                      where: { id: xeroInvoice.id },
+                      data: { deletedAt: null }
+                  });
+              }
+          }
+      });
+
+      console.log(`[InvoicePipeline] Successfully restored invoice ${invoiceId}.`);
+      return true;
+  },
+
+  async bulkRestoreInvoices(ids: string[], organisationId: string) {
+      console.log(`[InvoicePipeline] Request to bulk restore ${ids.length} items for org ${organisationId}`);
+
+      // 1. Fetch InvoiceFiles (primary entity in list) that are deleted
+      const files = await prisma.invoiceFile.findMany({
+          where: { 
+              id: { in: ids }, 
+              organisationId, 
+              deletedAt: { not: null } 
+          } as any,
+          include: { invoice: true }
+      });
+
+      if (files.length === 0) {
+          return { restoredCount: 0, message: "No matching deleted files found to restore" };
+      }
+
+      const foundFileIds = files.map(f => f.id);
+      
+      // Collect associated Invoice IDs
+      const invoiceIds = files
+          .map(f => f.invoice?.id)
+          .filter((id): id is string => id !== undefined && id !== null);
+
+      console.log(`[InvoicePipeline] Found ${files.length} files and ${invoiceIds.length} associated invoices to restore.`);
+
+      // 2. Perform Restore Transaction
+      await prisma.$transaction(async (tx) => {
+          // Restore InvoiceFiles
+          await tx.invoiceFile.updateMany({
+              where: { id: { in: foundFileIds } } as any,
+              data: { deletedAt: null } as any
+          });
+
+          // Restore Invoices
+          if (invoiceIds.length > 0) {
+              await tx.invoice.updateMany({
+                  where: { id: { in: invoiceIds } } as any,
+                  data: { deletedAt: null } as any
+              });
+
+              // Handle XeroInvoices linked to these invoices
+              const invoicesWithXero = files
+                  .map(f => f.invoice)
+                  .filter(inv => inv && inv.sourceType === InvoiceSourceType.XERO && inv.sourceReference);
+              
+              if (invoicesWithXero.length > 0) {
+                  const xeroReferences = invoicesWithXero.map(inv => inv!.sourceReference as string);
+                  
+                   await tx.xeroInvoice.updateMany({
+                      where: {
+                          xeroInvoiceId: { in: xeroReferences },
+                          organisationId: organisationId,
+                          deletedAt: { not: null }
+                      } as any,
+                      data: { deletedAt: null } as any
+                  });
+                  console.log(`[InvoicePipeline] Restored up to ${invoicesWithXero.length} linked XeroInvoices`);
+              }
+          }
+      });
+
+      console.log(`[InvoicePipeline] Successfully restored ${files.length} files.`);
+      return { restoredCount: files.length, restoredIds: foundFileIds };
   }
 };
 

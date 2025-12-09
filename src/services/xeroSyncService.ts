@@ -162,7 +162,7 @@ export class XeroSyncService {
 
         let page = 1;
         let hasMore = true;
-        let maxModifiedDate = lastModified;
+        let maxModifiedDate: Date | undefined = undefined;
         let totalRowsProcessed = 0;
 
         // 6. Sync Loop

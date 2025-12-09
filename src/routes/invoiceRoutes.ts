@@ -56,7 +56,8 @@ export default async function invoiceRoutes(fastify: FastifyInstance) {
               search: z.string().optional(),
               sourceType: z.string().optional(),
               startDate: z.string().optional(),
-              endDate: z.string().optional()
+              endDate: z.string().optional(),
+              status: z.enum(['ALL', 'REVIEWED', 'PENDING', 'DELETED']).optional()
           })
       }
   }, invoiceController.list);
@@ -85,5 +86,21 @@ export default async function invoiceRoutes(fastify: FastifyInstance) {
           })
       }
   }, invoiceController.bulkApprove);
+
+  // POST /invoices/:id/restore
+  app.post('/:id/restore', {
+      schema: {
+          params: z.object({ id: z.string() })
+      }
+  }, invoiceController.restore);
+
+  // POST /invoices/bulk-restore
+  app.post('/bulk-restore', {
+      schema: {
+          body: z.object({
+              ids: z.array(z.string())
+          })
+      }
+  }, invoiceController.bulkRestore);
 }
 
