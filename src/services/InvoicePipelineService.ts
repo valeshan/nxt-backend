@@ -779,6 +779,55 @@ export const invoicePipelineService = {
 
       console.log(`[InvoicePipeline] Successfully soft-deleted ${files.length} files.`);
       return { deletedCount: files.length, deletedIds: foundFileIds };
+  },
+
+  async bulkApproveInvoices(ids: string[], organisationId: string) {
+      console.log(`[InvoicePipeline] Request to bulk approve ${ids.length} items for org ${organisationId}`);
+
+      // 1. Fetch InvoiceFiles with Invoices
+      const files = await prisma.invoiceFile.findMany({
+          where: { 
+              id: { in: ids }, 
+              organisationId, 
+              deletedAt: null 
+          } as any,
+          include: { invoice: true }
+      });
+
+      // 2. Filter Valid (Must have an invoice to approve)
+      const validFiles = files.filter(f => f.invoice);
+      const invalidFiles = files.filter(f => !f.invoice);
+
+      if (validFiles.length === 0) {
+          return { success: [], failed: invalidFiles.map(f => ({ id: f.id, error: "No invoice found for file" })) };
+      }
+
+      const validFileIds = validFiles.map(f => f.id);
+      const validInvoiceIds = validFiles.map(f => f.invoice!.id);
+
+      console.log(`[InvoicePipeline] Bulk approving ${validFiles.length} files. Skipped ${invalidFiles.length} invalid.`);
+
+      // 3. Perform Transaction
+      await prisma.$transaction(async (tx) => {
+          // Update Invoices -> isVerified = true
+          await tx.invoice.updateMany({
+              where: { id: { in: validInvoiceIds } } as any,
+              data: { isVerified: true } as any
+          });
+
+          // Update InvoiceFiles -> reviewStatus = VERIFIED
+          await tx.invoiceFile.updateMany({
+              where: { id: { in: validFileIds } } as any,
+              data: { reviewStatus: ReviewStatus.VERIFIED } as any
+          });
+      });
+
+      console.log(`[InvoicePipeline] Successfully bulk approved ${validFiles.length} invoices.`);
+
+      return {
+          success: validFiles.map(f => f.id),
+          failed: invalidFiles.map(f => ({ id: f.id, error: "No invoice found for file" }))
+      };
   }
 };
 
