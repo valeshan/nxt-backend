@@ -123,11 +123,23 @@ export const invoiceController = {
 
   async list(req: FastifyRequest, reply: FastifyReply) {
       const { locationId } = req.params as { locationId: string };
-      const { page, limit } = req.query as { page?: number, limit?: number };
+      const { page, limit, search, sourceType, startDate, endDate } = req.query as { 
+          page?: number, 
+          limit?: number,
+          search?: string,
+          sourceType?: string,
+          startDate?: string,
+          endDate?: string
+      };
       const auth = req.authContext;
       
       try {
-          const result = await invoicePipelineService.listInvoices(locationId, page, limit);
+          const result = await invoicePipelineService.listInvoices(locationId, page, limit, {
+              search,
+              sourceType,
+              startDate,
+              endDate
+          });
           return result;
       } catch (error: any) {
           req.log.error({
@@ -180,6 +192,54 @@ export const invoiceController = {
           }
           
           return reply.status(500).send({ error: 'Failed to delete invoice' });
+      }
+  },
+
+  async bulkDelete(req: FastifyRequest, reply: FastifyReply) {
+      const { ids } = req.body as { ids: string[] };
+      const auth = req.authContext;
+
+      if (!auth || !auth.organisationId) {
+          return reply.status(401).send({ error: 'Unauthorized' });
+      }
+
+      if (!Array.isArray(ids) || ids.length === 0) {
+          return reply.status(400).send({ error: 'ids must be a non-empty array of strings' });
+      }
+
+      try {
+          const result = await invoicePipelineService.bulkDeleteInvoices(ids, auth.organisationId);
+          return reply.status(200).send(result);
+      } catch (e: any) {
+          req.log.error({
+              msg: 'Bulk delete failed',
+              error: e.message
+          });
+          return reply.status(500).send({ error: 'Failed to process bulk delete' });
+      }
+  },
+
+  async bulkApprove(req: FastifyRequest, reply: FastifyReply) {
+      const { ids } = req.body as { ids: string[] };
+      const auth = req.authContext;
+
+      if (!auth || !auth.organisationId) {
+          return reply.status(401).send({ error: 'Unauthorized' });
+      }
+
+      if (!Array.isArray(ids) || ids.length === 0) {
+          return reply.status(400).send({ error: 'ids must be a non-empty array of strings' });
+      }
+
+      try {
+          const result = await invoicePipelineService.bulkApproveInvoices(ids, auth.organisationId);
+          return reply.status(200).send(result);
+      } catch (e: any) {
+          req.log.error({
+              msg: 'Bulk approve failed',
+              error: e.message
+          });
+          return reply.status(500).send({ error: 'Failed to process bulk approve' });
       }
   }
 };

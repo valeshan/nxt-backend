@@ -52,7 +52,11 @@ export default async function invoiceRoutes(fastify: FastifyInstance) {
           params: z.object({ locationId: z.string() }),
           querystring: z.object({
               page: z.coerce.number().default(1),
-              limit: z.coerce.number().default(20)
+              limit: z.coerce.number().default(20),
+              search: z.string().optional(),
+              sourceType: z.string().optional(),
+              startDate: z.string().optional(),
+              endDate: z.string().optional()
           })
       }
   }, invoiceController.list);
@@ -63,5 +67,23 @@ export default async function invoiceRoutes(fastify: FastifyInstance) {
           params: z.object({ id: z.string() })
       }
   }, invoiceController.delete);
+
+  // POST /invoices/bulk-delete
+  app.post('/bulk-delete', {
+      schema: {
+          body: z.object({
+              ids: z.array(z.string())
+          })
+      }
+  }, invoiceController.bulkDelete);
+
+  // POST /invoices/bulk-approve
+  app.post('/bulk-approve', {
+      schema: {
+          body: z.object({
+              ids: z.array(z.string())
+          })
+      }
+  }, invoiceController.bulkApprove);
 }
 

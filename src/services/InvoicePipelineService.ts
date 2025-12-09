@@ -15,6 +15,15 @@ export class InvoiceFileNotFoundError extends Error {
   }
 }
 
+export class BulkActionError extends Error {
+    results: any;
+    constructor(message: string, results: any) {
+        super(message);
+        this.name = 'BulkActionError';
+        this.results = results;
+    }
+}
+
 import { pusherService } from './pusherService';
 
 export const invoicePipelineService = {
@@ -503,11 +512,84 @@ export const invoicePipelineService = {
       }, { timeout: 10000 });
   },
   
-  async listInvoices(locationId: string, page = 1, limit = 20) {
+  async listInvoices(
+      locationId: string, 
+      page = 1, 
+      limit = 20, 
+      filters?: {
+          search?: string;
+          sourceType?: string; // 'ALL' | 'XERO' | 'MANUAL'
+          startDate?: string;
+          endDate?: string;
+      }
+  ) {
       const skip = (page - 1) * limit;
+      
+      const where: any = { locationId, deletedAt: null };
+
+      // Apply Source Filter
+      if (filters?.sourceType && filters.sourceType !== 'ALL') {
+          if (filters.sourceType === 'XERO') {
+              where.sourceType = InvoiceSourceType.XERO;
+          } else if (filters.sourceType === 'MANUAL') {
+              // Manual includes UPLOAD and EMAIL usually, or explicitly MANUAL
+              where.sourceType = { in: [InvoiceSourceType.UPLOAD, InvoiceSourceType.EMAIL] };
+          }
+      }
+
+      // Apply Date Range Filter
+      if (filters?.startDate || filters?.endDate) {
+          const dateFilter: any = {};
+          if (filters.startDate) dateFilter.gte = new Date(filters.startDate);
+          if (filters.endDate) dateFilter.lte = new Date(filters.endDate);
+
+          // Filter by Invoice Date OR Upload Date to match user intuition
+          where.OR = [
+              { invoice: { date: dateFilter } },
+              { createdAt: dateFilter }
+          ];
+      }
+
+      // Apply Search
+      if (filters?.search) {
+          const search = filters.search.trim();
+          const searchOR: any[] = [
+              { fileName: { contains: search, mode: 'insensitive' } },
+              { 
+                  invoice: {
+                      OR: [
+                          { invoiceNumber: { contains: search, mode: 'insensitive' } },
+                          { supplier: { name: { contains: search, mode: 'insensitive' } } },
+                          { 
+                              lineItems: {
+                                  some: {
+                                      OR: [
+                                          { description: { contains: search, mode: 'insensitive' } },
+                                          { productCode: { contains: search, mode: 'insensitive' } }
+                                      ]
+                                  }
+                              }
+                          }
+                      ]
+                  }
+              }
+          ];
+
+          // Combine with Date Range OR if present
+          if (where.OR) {
+              where.AND = [
+                  { OR: where.OR },
+                  { OR: searchOR }
+              ];
+              delete where.OR;
+          } else {
+              where.OR = searchOR;
+          }
+      }
+
       let [items, count] = await Promise.all([
           prisma.invoiceFile.findMany({
-              where: { locationId, deletedAt: null } as any,
+              where,
               include: { 
                   invoice: { include: { supplier: true, lineItems: true } },
                   ocrResult: true
@@ -516,7 +598,7 @@ export const invoicePipelineService = {
               take: limit,
               skip
           }),
-          prisma.invoiceFile.count({ where: { locationId, deletedAt: null } as any })
+          prisma.invoiceFile.count({ where })
       ]);
       
       // Check for items that need status updates (OCR_PROCESSING)
@@ -631,6 +713,72 @@ export const invoicePipelineService = {
 
       console.log(`[InvoicePipeline] Successfully soft-deleted invoice ${invoiceId} and associated file.`);
       return true;
+  },
+
+  async bulkDeleteInvoices(ids: string[], organisationId: string) {
+      console.log(`[InvoicePipeline] Request to bulk delete ${ids.length} items for org ${organisationId}`);
+
+      // 1. Fetch InvoiceFiles (primary entity in list)
+      const files = await prisma.invoiceFile.findMany({
+          where: { 
+              id: { in: ids }, 
+              organisationId, 
+              deletedAt: null 
+          } as any,
+          include: { invoice: true }
+      });
+
+      if (files.length === 0) {
+          return { deletedCount: 0, message: "No matching files found to delete" };
+      }
+
+      const foundFileIds = files.map(f => f.id);
+      
+      // Collect associated Invoice IDs
+      const invoiceIds = files
+          .map(f => f.invoice?.id)
+          .filter((id): id is string => id !== undefined && id !== null);
+
+      console.log(`[InvoicePipeline] Found ${files.length} files and ${invoiceIds.length} associated invoices to delete.`);
+
+      // 2. Perform Soft Deletion Transaction
+      await prisma.$transaction(async (tx) => {
+          // Soft delete InvoiceFiles
+          await tx.invoiceFile.updateMany({
+              where: { id: { in: foundFileIds } } as any,
+              data: { deletedAt: new Date() } as any
+          });
+
+          // Soft delete Invoices
+          if (invoiceIds.length > 0) {
+              await tx.invoice.updateMany({
+                  where: { id: { in: invoiceIds } } as any,
+                  data: { deletedAt: new Date() } as any
+              });
+
+              // Handle XeroInvoices linked to these invoices
+              // We need to fetch them first to get sourceReference
+              const invoicesWithXero = files
+                  .map(f => f.invoice)
+                  .filter(inv => inv && inv.sourceType === InvoiceSourceType.XERO && inv.sourceReference);
+              
+              if (invoicesWithXero.length > 0) {
+                  const xeroReferences = invoicesWithXero.map(inv => inv!.sourceReference as string);
+                  
+                   await tx.xeroInvoice.updateMany({
+                      where: {
+                          xeroInvoiceId: { in: xeroReferences },
+                          organisationId: organisationId
+                      } as any,
+                      data: { deletedAt: new Date() } as any
+                  });
+                  console.log(`[InvoicePipeline] Soft deleted up to ${invoicesWithXero.length} linked XeroInvoices`);
+              }
+          }
+      });
+
+      console.log(`[InvoicePipeline] Successfully soft-deleted ${files.length} files.`);
+      return { deletedCount: files.length, deletedIds: foundFileIds };
   }
 };
 
