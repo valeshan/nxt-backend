@@ -278,6 +278,11 @@ async function computeWeightedAveragePrices(
                     supplierId: { in: Array.from(supplierIds) },
                     date: { gte: startDate, lte: endDate },
                     isVerified: true,
+                    invoiceFileId: { not: null },
+                    invoiceFile: {
+                        reviewStatus: 'VERIFIED',
+                        deletedAt: null
+                    },
                     deletedAt: null
                 } as any,
                 // Optimization: only fetch verified items
@@ -382,6 +387,7 @@ function getManualLineItemWhere(
             ...(locationId ? { locationId } : {}),
             date: { gte: startDate, ...(endDate ? { lte: endDate } : {}) },
             isVerified: true,
+            invoiceFileId: { not: null }, // Explicitly require invoiceFileId
             invoiceFile: {
                 reviewStatus: 'VERIFIED',
                 deletedAt: null
@@ -828,7 +834,7 @@ export const supplierInsightsService = {
     };
 
     // Fetch Xero and Manual line items in parallel
-    const [xeroLineItems, manualLineItems] = await Promise.all([
+    const [xeroLineItems, manualLineItemsRaw] = await Promise.all([
       prisma.xeroInvoiceLineItem.findMany({
         where: {
           invoice: whereInvoiceBase,
@@ -845,20 +851,42 @@ export const supplierInsightsService = {
           accountCode: true
         }
       }),
-      shouldIncludeManualData(accountCodes) ? prisma.invoiceLineItem.findMany({
-        where: getManualLineItemWhere(organisationId, locationId, last6m.start, new Date()),
-        select: {
-          lineTotal: true,
-          invoice: {
-            select: {
-              supplierId: true,
-              supplier: { select: { name: true } }
-            }
-          },
-          accountCode: true
-        }
-      }) : Promise.resolve([])
+      shouldIncludeManualData(accountCodes) ? prisma.$queryRaw<Array<{
+        lineTotal: number | null;
+        supplierId: string | null;
+        supplierName: string | null;
+        accountCode: string | null;
+      }>>`
+        SELECT 
+          li."lineTotal",
+          i."supplierId",
+          s."name" as "supplierName",
+          li."accountCode"
+        FROM "InvoiceLineItem" li
+        JOIN "Invoice" i ON li."invoiceId" = i.id
+        JOIN "InvoiceFile" f ON i."invoiceFileId" = f.id
+        LEFT JOIN "Supplier" s ON i."supplierId" = s.id
+        WHERE i."organisationId" = ${organisationId}
+        AND i."isVerified" = true
+        AND i."invoiceFileId" IS NOT NULL
+        AND f."reviewStatus" = 'VERIFIED'
+        AND f."deletedAt" IS NULL
+        AND i."deletedAt" IS NULL
+        AND i."date" >= ${last6m.start}
+        AND i."date" <= ${new Date()}
+        ${locationId ? Prisma.sql`AND i."locationId" = ${locationId}` : Prisma.empty}
+      ` : Promise.resolve([])
     ]);
+
+    // Transform raw SQL results to match expected format
+    const manualLineItems = manualLineItemsRaw.map((item: any) => ({
+      lineTotal: item.lineTotal,
+      invoice: {
+        supplierId: item.supplierId,
+        supplier: item.supplierName ? { name: item.supplierName } : null
+      },
+      accountCode: item.accountCode
+    }));
 
     const supplierMap = new Map<string, { name: string, total: number }>();
     const categoryMap = new Map<string, { total: number }>();
@@ -910,11 +938,14 @@ export const supplierInsightsService = {
         categoryMap.get(accountCode)!.total += amount;
     }
 
-    const bySupplier = Array.from(supplierMap.entries()).map(([id, data]) => ({
-        supplierId: id,
-        supplierName: data.name,
-        totalSpend12m: data.total
-    })).sort((a, b) => b.totalSpend12m - a.totalSpend12m);
+    const bySupplier = Array.from(supplierMap.entries())
+        .filter(([id, data]) => data.total > 0) // Filter out suppliers with zero spend
+        .map(([id, data]) => ({
+            supplierId: id,
+            supplierName: data.name,
+            totalSpend12m: data.total
+        }))
+        .sort((a, b) => b.totalSpend12m - a.totalSpend12m);
 
     const byCategory = Array.from(categoryMap.entries()).map(([code, data]) => ({
         categoryId: code,
@@ -1102,6 +1133,7 @@ export const supplierInsightsService = {
                 ...whereInvoiceBase,
                 date: { gte: last12m.start, lte: new Date() },
                 isVerified: true,
+                invoiceFileId: { not: null },
                 invoiceFile: {
                     reviewStatus: 'VERIFIED',
                     deletedAt: null
@@ -1365,6 +1397,11 @@ export const supplierInsightsService = {
                          supplierId,
                          ...(locationId ? { locationId } : {}),
                          isVerified: true,
+                         invoiceFileId: { not: null },
+                         invoiceFile: {
+                             reviewStatus: 'VERIFIED',
+                             deletedAt: null
+                         },
                          deletedAt: null
                      } as any,
                      OR: [
@@ -1489,6 +1526,11 @@ export const supplierInsightsService = {
         supplierId,
         ...(locationId ? { locationId } : {}),
         isVerified: true,
+        invoiceFileId: { not: null },
+        invoiceFile: {
+            reviewStatus: 'VERIFIED',
+            deletedAt: null
+        },
     };
 
     // Build where clause for line items matching the product key
@@ -1552,6 +1594,11 @@ export const supplierInsightsService = {
                     supplierId,
                     ...(locationId ? { locationId } : {}),
                     isVerified: true,
+                    invoiceFileId: { not: null },
+                    invoiceFile: {
+                        reviewStatus: 'VERIFIED',
+                        deletedAt: null
+                    },
                     deletedAt: null,
                     date: { lte: now } // Any date up to now
                 },
