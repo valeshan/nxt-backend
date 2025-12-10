@@ -2,6 +2,10 @@ import Fastify, { FastifyInstance } from 'fastify';
 import cors from '@fastify/cors';
 import multipart from '@fastify/multipart';
 import cookie from '@fastify/cookie';
+import helmet from '@fastify/helmet';
+import rateLimit from '@fastify/rate-limit';
+import compress from '@fastify/compress';
+import Redis from 'ioredis';
 import fastifyRawBody from 'fastify-raw-body';
 import { serializerCompiler, validatorCompiler, ZodTypeProvider } from 'fastify-type-provider-zod';
 import * as Sentry from '@sentry/node';
@@ -18,8 +22,43 @@ import { config } from './config/env';
 
 export function buildApp(): FastifyInstance {
   const app = Fastify({
-    logger: true,
+    logger: {
+      level: config.LOG_LEVEL,
+      transport:
+        config.NODE_ENV === 'development'
+          ? {
+              target: 'pino-pretty',
+              options: {
+                translateTime: 'HH:MM:ss Z',
+                ignore: 'pid,hostname',
+              },
+            }
+          : undefined,
+      redact: ['req.headers.authorization', 'req.headers.cookie', 'body.password', 'body.token', 'body.accessToken', 'body.refreshToken'],
+    },
   });
+
+  // Security Headers
+  app.register(helmet, {
+    contentSecurityPolicy: config.NODE_ENV === 'production', // Enable CSP in production
+    crossOriginResourcePolicy: { policy: 'cross-origin' }, // Allow resources to be requested from different origins (e.g. frontend)
+  });
+
+  // Rate Limiting
+  const rateLimitConfig: any = {
+    max: 100,
+    timeWindow: '1 minute',
+  };
+
+  if (config.REDIS_URL) {
+    const client = new Redis(config.REDIS_URL);
+    rateLimitConfig.redis = client;
+  }
+
+  app.register(rateLimit, rateLimitConfig);
+
+  // Compression
+  app.register(compress, { global: true });
 
   // Register raw body support (global: false so it only applies where requested)
   app.register(fastifyRawBody, {

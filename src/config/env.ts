@@ -28,6 +28,10 @@ const envSchema = z.object({
   
   // Feature Flags
   ENABLE_XERO_OCR: z.string().optional().default('false'),
+
+  // Infrastructure
+  REDIS_URL: z.string().optional(),
+  LOG_LEVEL: z.enum(['debug', 'info', 'warn', 'error']).default('info'),
 });
 
 const parsed = envSchema.safeParse(process.env);

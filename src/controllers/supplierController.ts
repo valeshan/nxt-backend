@@ -170,6 +170,12 @@ export class SupplierController {
                 organisationId: orgId, 
                 isVerified: true, 
                 deletedAt: null,
+                // Strict check: Invoice must be linked to a VERIFIED file
+                // This ensures we don't accidentally include suppliers from 'Pending' invoices that were flagged verified
+                invoiceFile: {
+                    reviewStatus: 'VERIFIED',
+                    deletedAt: null
+                },
                 ...(locationId ? { locationId } : {}) 
             },
             select: { supplierId: true },
@@ -393,6 +399,7 @@ export class SupplierController {
             where: {
                 supplierId: { in: supplierIds },
                 isVerified: true,
+                invoiceFile: { reviewStatus: 'VERIFIED', deletedAt: null },
                 organisationId: orgId,
                 ...(locationId ? { locationId } : {}),
                 date: { gte: startOfCurrentPeriod, lte: endOfCurrentPeriod },
@@ -406,6 +413,7 @@ export class SupplierController {
             where: {
                 supplierId: { in: supplierIds },
                 isVerified: true,
+                invoiceFile: { reviewStatus: 'VERIFIED', deletedAt: null },
                 organisationId: orgId,
                 ...(locationId ? { locationId } : {}),
                 date: { gte: startOfPriorPeriod, lte: endOfPriorPeriod },
@@ -419,6 +427,7 @@ export class SupplierController {
             where: {
                 supplierId: { in: supplierIds },
                 isVerified: true,
+                invoiceFile: { reviewStatus: 'VERIFIED', deletedAt: null },
                 organisationId: orgId,
                 ...(locationId ? { locationId } : {}),
                 date: { gte: twelveMonthsAgoMetric },
@@ -433,6 +442,7 @@ export class SupplierController {
             where: {
                 supplierId: { in: supplierIds },
                 isVerified: true,
+                invoiceFile: { reviewStatus: 'VERIFIED', deletedAt: null },
                 organisationId: orgId,
                 ...(locationId ? { locationId } : {}),
                 date: { gte: sixMonthsAgo },
@@ -466,9 +476,12 @@ export class SupplierController {
                 COALESCE(NULLIF(li."productCode", ''), LOWER(TRIM(li."description"))) as "normalisedKey"
             FROM "InvoiceLineItem" li
             JOIN "Invoice" i ON li."invoiceId" = i.id
+            JOIN "InvoiceFile" f ON i."invoiceFileId" = f.id
             WHERE i."supplierId" IN (${Prisma.join(supplierIds)})
             AND i."organisationId" = ${orgId}
             AND i."isVerified" = true
+            AND f."reviewStatus" = 'VERIFIED'
+            AND f."deletedAt" IS NULL
             AND i."date" >= ${twelveMonthsAgoMetric}
             AND i."deletedAt" IS NULL
             ${locationId ? Prisma.sql`AND i."locationId" = ${locationId}` : Prisma.empty}
@@ -753,8 +766,11 @@ export class SupplierController {
             COALESCE(NULLIF("productCode", ''), LOWER(TRIM("description"))) as "key"
         FROM "InvoiceLineItem" li
         JOIN "Invoice" i ON li."invoiceId" = i.id
+        JOIN "InvoiceFile" f ON i."invoiceFileId" = f.id
         WHERE i."supplierId" = ${id}
         AND i."isVerified" = true
+        AND f."reviewStatus" = 'VERIFIED'
+        AND f."deletedAt" IS NULL
         AND i."organisationId" = ${orgId}
         AND i."deletedAt" IS NULL
         ${locationFilter}
