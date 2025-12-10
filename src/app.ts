@@ -45,17 +45,19 @@ export function buildApp(): FastifyInstance {
   });
 
   // Rate Limiting
-  const rateLimitConfig: any = {
-    max: 100,
-    timeWindow: '1 minute',
-  };
+  if (config.ENABLE_RATE_LIMIT === 'true') {
+    const rateLimitConfig: any = {
+      max: 100,
+      timeWindow: '1 minute',
+    };
 
-  if (config.REDIS_URL) {
-    const client = new Redis(config.REDIS_URL);
-    rateLimitConfig.redis = client;
+    if (config.REDIS_URL) {
+      const client = new Redis(config.REDIS_URL);
+      rateLimitConfig.redis = client;
+    }
+
+    app.register(rateLimit, rateLimitConfig);
   }
-
-  app.register(rateLimit, rateLimitConfig);
 
   // Compression
   app.register(compress, { global: true });

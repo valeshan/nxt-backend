@@ -1,4 +1,11 @@
 import z from 'zod';
+import dotenv from 'dotenv';
+
+if (process.env.NODE_ENV === 'development') {
+  dotenv.config({ path: '.env.local' });
+} else {
+  dotenv.config();
+}
 
 const envSchema = z.object({
   DATABASE_URL: z.string().min(1),
@@ -32,6 +39,7 @@ const envSchema = z.object({
   // Infrastructure
   REDIS_URL: z.string().optional(),
   LOG_LEVEL: z.enum(['debug', 'info', 'warn', 'error']).default('info'),
+  ENABLE_RATE_LIMIT: z.string().optional().default('true'),
 });
 
 const parsed = envSchema.safeParse(process.env);
