@@ -128,4 +128,75 @@ describe('Supplier Insights Service Integration', () => {
         expect(result.items[0].supplierName).toBe('EcoPack Warehousing');
     });
   });
+
+  describe('Filtering unverified invoices', () => {
+    const unverifiedSupplierId = 'supplier-unverified';
+    
+    beforeAll(async () => {
+      // Create a supplier
+      await prisma.supplier.create({
+        data: {
+          id: unverifiedSupplierId,
+          organisationId: orgId,
+          name: 'Unverified Supplier',
+          normalizedName: 'unverified supplier',
+          sourceType: 'MANUAL',
+          status: 'ACTIVE'
+        }
+      });
+
+      // Create an invoice that is verified in DB but file is NOT verified
+      // This simulates the bug condition
+      const file = await prisma.invoiceFile.create({
+        data: {
+            organisationId: orgId,
+            locationId: locationId,
+            sourceType: 'UPLOAD',
+            fileName: 'test.pdf',
+            mimeType: 'application/pdf',
+            storageKey: 'key',
+            processingStatus: 'OCR_COMPLETE',
+            reviewStatus: 'NEEDS_REVIEW' // Crucial: NOT 'VERIFIED'
+        }
+      });
+
+      await prisma.invoice.create({
+          data: {
+              organisationId: orgId,
+              locationId: locationId,
+              invoiceFileId: file.id,
+              supplierId: unverifiedSupplierId,
+              sourceType: 'UPLOAD',
+              isVerified: true, // Crucial: Marked verified (e.g. by legacy bug or sync issue)
+              date: new Date(),
+              total: 1000,
+              lineItems: {
+                  create: {
+                      description: 'Unverified Item',
+                      quantity: 1,
+                      lineTotal: 1000,
+                      accountCode: 'MANUAL_COGS'
+                  }
+              }
+          }
+      });
+    });
+
+    it('excludes spend from invoices where file reviewStatus is not VERIFIED', async () => {
+        const breakdown = await supplierInsightsService.getSpendBreakdown(orgId);
+        
+        const supplierEntry = breakdown.bySupplier.find(s => s.supplierId === unverifiedSupplierId);
+        // Should be undefined or 0 spend
+        if (supplierEntry) {
+            expect(supplierEntry.totalSpend12m).toBe(0);
+        } else {
+            expect(supplierEntry).toBeUndefined();
+        }
+    });
+
+    it('excludes products from invoices where file reviewStatus is not VERIFIED', async () => {
+        const products = await supplierInsightsService.getProducts(orgId, undefined, { search: 'Unverified' });
+        expect(products.items.length).toBe(0);
+    });
+  });
 });

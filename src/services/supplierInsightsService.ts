@@ -140,6 +140,10 @@ async function getSupersededXeroIds(
         ...(locationId ? { locationId } : {}),
         sourceType: 'XERO',
         isVerified: true,
+        invoiceFile: {
+            reviewStatus: 'VERIFIED',
+            deletedAt: null
+        },
         deletedAt: null,
         sourceReference: { not: null },
         ...(startDate || endDate ? {
@@ -378,6 +382,10 @@ function getManualLineItemWhere(
             ...(locationId ? { locationId } : {}),
             date: { gte: startDate, ...(endDate ? { lte: endDate } : {}) },
             isVerified: true,
+            invoiceFile: {
+                reviewStatus: 'VERIFIED',
+                deletedAt: null
+            },
             deletedAt: null,
         },
         // Relaxed: Don't force MANUAL_COGS_ACCOUNT_CODE if looking for "all"
@@ -1094,6 +1102,10 @@ export const supplierInsightsService = {
                 ...whereInvoiceBase,
                 date: { gte: last12m.start, lte: new Date() },
                 isVerified: true,
+                invoiceFile: {
+                    reviewStatus: 'VERIFIED',
+                    deletedAt: null
+                },
                 deletedAt: null
             },
             // Account Code filtering for manual items: 

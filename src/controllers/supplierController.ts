@@ -596,6 +596,10 @@ export class SupplierController {
               supplierId: id,
               date: { gte: twelveMonthsAgo },
               isVerified: true,
+              invoiceFile: {
+                  reviewStatus: 'VERIFIED',
+                  deletedAt: null
+              },
               organisationId: orgId,
               deletedAt: null,
               ...(locationId ? { locationId } : {})
