@@ -138,7 +138,6 @@ async function getSupersededXeroIds(
     const where: Prisma.InvoiceWhereInput = {
         organisationId,
         ...(locationId ? { locationId } : {}),
-        sourceType: 'XERO',
         isVerified: true,
         invoiceFile: {
             reviewStatus: 'VERIFIED',
