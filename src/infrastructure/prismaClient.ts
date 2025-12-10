@@ -3,19 +3,30 @@ import { config } from '../config/env';
 
 // Prevent multiple instances of Prisma Client in development
 declare global {
+  // eslint-disable-next-line no-var
   var prisma: PrismaClient | undefined;
 }
 
-const prismaOptions = {
-  log: config.NODE_ENV === 'development' ? ['query', 'error', 'warn'] : ['error'],
-  // Connection pooling is configured via the connection string (e.g. ?connection_limit=10)
-  // We use a single instance to avoid DB exhaustion under concurrent load.
-};
+const prisma =
+  // @ts-ignore
+  global.prisma ||
+  new PrismaClient({
+    log: [
+      { emit: 'event', level: 'query' }, // 🔥 always emit query events
+      'error',
+      'warn',
+    ],
+  });
 
-// @ts-ignore
-const prisma = global.prisma || new PrismaClient(prismaOptions);
+// 🔍 Always log timing for now
+prisma.$on('query', (e) => {
+  console.log(
+    `[PRISMA] ${e.duration} ms\n${e.query}\nparams: ${e.params}\n`
+  );
+});
 
 if (config.NODE_ENV !== 'production') {
+  // @ts-ignore
   global.prisma = prisma;
 }
 
