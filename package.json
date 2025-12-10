@@ -5,7 +5,7 @@
   "main": "dist/src/server.js",
   "scripts": {
     "dev": "tsx watch src/server.ts",
-    "build": "tsc -p tsconfig.build.json",
+    "build": "npx prisma generate && tsc -p tsconfig.build.json",
     "start": "node dist/src/server.js",
     "test": "vitest run",
     "prisma:migrate": "prisma migrate dev",
