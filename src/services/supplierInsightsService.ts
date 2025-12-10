@@ -834,23 +834,34 @@ export const supplierInsightsService = {
     };
 
     // Fetch Xero and Manual line items in parallel
-    const [xeroLineItems, manualLineItemsRaw] = await Promise.all([
-      prisma.xeroInvoiceLineItem.findMany({
-        where: {
-          invoice: whereInvoiceBase,
-          ...(accountCodes && accountCodes.length > 0 ? { accountCode: { in: accountCodes } } : {})
-        } as any,
-        select: {
-          lineAmount: true,
-          invoice: {
-            select: {
-              supplierId: true,
-              supplier: { select: { name: true } }
-            }
-          },
-          accountCode: true
-        }
-      }),
+    const [xeroLineItemsRaw, manualLineItemsRaw] = await Promise.all([
+      prisma.$queryRaw<Array<{
+        lineAmount: number | null;
+        supplierId: string | null;
+        supplierName: string | null;
+        accountCode: string | null;
+      }>>`
+        SELECT
+          xli."lineAmount",
+          xi."supplierId",
+          s."name" as "supplierName",
+          xli."accountCode"
+        FROM "XeroInvoiceLineItem" xli
+        JOIN "XeroInvoice" xi ON xli."invoiceId" = xi.id
+        LEFT JOIN "Supplier" s ON xi."supplierId" = s.id
+        LEFT JOIN "InvoiceFile" f ON f."sourceReference" = xi."xeroInvoiceId"
+          AND f."sourceType" = 'XERO'
+          AND f."deletedAt" IS NULL
+        WHERE xi."organisationId" = ${organisationId}
+        AND xi."status" IN ('AUTHORISED', 'PAID')
+        AND xi."deletedAt" IS NULL
+        AND xi."date" >= ${last6m.start}
+        AND xi."date" <= ${new Date()}
+        AND (${supersededIds.length > 0 ? Prisma.sql`xi."xeroInvoiceId" NOT IN (${Prisma.join(supersededIds)})` : Prisma.sql`TRUE`})
+        AND (f.id IS NULL OR f."reviewStatus" = 'VERIFIED')
+        ${locationId ? Prisma.sql`AND xi."locationId" = ${locationId}` : Prisma.empty}
+        ${accountCodes && accountCodes.length > 0 ? Prisma.sql`AND xli."accountCode" IN (${Prisma.join(accountCodes)})` : Prisma.empty}
+      `,
       shouldIncludeManualData(accountCodes) ? prisma.$queryRaw<Array<{
         lineTotal: number | null;
         supplierId: string | null;
@@ -879,6 +890,15 @@ export const supplierInsightsService = {
     ]);
 
     // Transform raw SQL results to match expected format
+    const xeroLineItems = xeroLineItemsRaw.map((item: any) => ({
+      lineAmount: item.lineAmount,
+      invoice: {
+        supplierId: item.supplierId,
+        supplier: item.supplierName ? { name: item.supplierName } : null
+      },
+      accountCode: item.accountCode
+    }));
+
     const manualLineItems = manualLineItemsRaw.map((item: any) => ({
       lineTotal: item.lineTotal,
       invoice: {
