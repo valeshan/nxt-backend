@@ -1,4 +1,4 @@
-import { PrismaClient } from '@prisma/client';
+import { PrismaClient, Prisma } from '@prisma/client';
 import { config } from '../config/env';
 
 // Prevent multiple instances of Prisma Client in development
@@ -19,7 +19,7 @@ const prisma =
   });
 
 // 🔍 Always log timing for now
-prisma.$on('query', (e) => {
+(prisma as any).$on('query', (e: Prisma.QueryEvent) => {
   console.log(
     `[PRISMA] ${e.duration} ms\n${e.query}\nparams: ${e.params}\n`
   );
