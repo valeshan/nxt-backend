@@ -5,6 +5,9 @@ generator client {
 datasource db {
   provider = "postgresql"
   url      = env("DATABASE_URL")
+  // Safety: required only for dev / reset / db push.
+  // DO NOT set SHADOW_DATABASE_URL in production.
+  shadowDatabaseUrl = env("SHADOW_DATABASE_URL")
 }
 
 model User {

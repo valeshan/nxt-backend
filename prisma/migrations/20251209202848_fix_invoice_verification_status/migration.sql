@@ -17,3 +17,4 @@ WHERE i."invoiceFileId" = f.id
   AND i."isVerified" = false
   AND i."deletedAt" IS NULL
   AND f."deletedAt" IS NULL;
+

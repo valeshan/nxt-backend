@@ -12,3 +12,4 @@ WHERE "deletedAt" IS NULL;
 CREATE INDEX "idx_invoicefile_processing_ocr_not_deleted"
 ON "InvoiceFile" ("processingStatus", "ocrJobId")
 WHERE "deletedAt" IS NULL;
+
