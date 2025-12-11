@@ -144,7 +144,7 @@ async function getSupersededXeroIds(
             deletedAt: null
         },
         deletedAt: null,
-        sourceReference: { not: null },
+        // Removed sourceReference: { not: null } to include manual uploads in the search
         ...(startDate || endDate ? {
             date: {
                 ...(startDate ? { gte: startDate } : {}),
@@ -153,14 +153,53 @@ async function getSupersededXeroIds(
         } : {})
     } as any;
 
+    // Fetch all verified invoices
     const invoices = await prisma.invoice.findMany({
         where,
-        select: { sourceReference: true }
+        select: { 
+            sourceReference: true,
+            invoiceNumber: true,
+            supplierId: true 
+        }
     });
 
-    return invoices
+    // 1. Explicit matches via sourceReference (Xero ID)
+    const explicitIds = invoices
         .map(inv => inv.sourceReference)
         .filter((ref): ref is string => !!ref);
+
+    // 2. Implicit matches via Invoice Number + Supplier
+    const candidates = invoices.filter(inv => !inv.sourceReference && inv.invoiceNumber && inv.supplierId);
+
+    if (candidates.length > 0) {
+        const candidateNumbers = candidates.map(c => c.invoiceNumber!);
+
+        // Find potential Xero matches by Invoice Number
+        const matches = await prisma.xeroInvoice.findMany({
+            where: {
+                organisationId,
+                invoiceNumber: { in: candidateNumbers },
+                deletedAt: null
+            },
+            select: {
+                xeroInvoiceId: true,
+                invoiceNumber: true,
+                supplierId: true
+            }
+        });
+
+        // Filter ensuring Supplier ID also matches
+        const implicitIds = matches
+            .filter(m => candidates.some(c => 
+                c.invoiceNumber === m.invoiceNumber && 
+                c.supplierId === m.supplierId
+            ))
+            .map(m => m.xeroInvoiceId);
+            
+        return Array.from(new Set([...explicitIds, ...implicitIds]));
+    }
+
+    return explicitIds;
 }
 
 /**
