@@ -19,6 +19,14 @@ type RegisterOnboardInput = z.infer<typeof RegisterOnboardRequestSchema>;
 const xeroService = new XeroService();
 const xeroSyncService = new XeroSyncService();
 
+function maskEmail(email: string): string {
+  const [local, domain] = email.split('@');
+  if (!domain) return '***'; // fallback
+  if (local.length <= 1) return `*@${domain}`;
+  if (local.length === 2) return `${local[0]}*@${domain}`;
+  return `${local[0]}***${local[local.length - 1]}@${domain}`;
+}
+
 export const authService = {
   async registerUser(email: string, password: string, firstName: string, lastName: string) {
     const existing = await userRepository.findByEmail(email);
@@ -167,6 +175,29 @@ export const authService = {
           stack: error.stack,
         });
         throw { statusCode: 400, message: `Xero OAuth failed: ${error.message}` };
+      }
+    }
+
+    // Check for existing Xero connection (Conflict Check)
+    if (hasXero && xeroData) {
+      const existingConnection = await prisma.xeroConnection.findUnique({
+        where: { xeroTenantId: xeroData.tenantId },
+        include: { user: true }
+      });
+
+      if (existingConnection) {
+        // If the connection belongs to the same user who is trying to register, 
+        // normally we would check existingUser.id === existingConnection.userId.
+        // But since this is *register*Onboard, existingUser was already checked above and threw 409 if found.
+        // So any existing connection here MUST belong to a DIFFERENT user account.
+        
+        const maskedEmail = maskEmail(existingConnection.user.email);
+        console.warn(`[AuthService] Xero tenant ${xeroData.tenantId} already linked to user ${existingConnection.userId} (${maskedEmail})`);
+        
+        throw { 
+          statusCode: 409, 
+          message: `This Xero organisation is already connected to an account (${maskedEmail})` 
+        };
       }
     }
 
