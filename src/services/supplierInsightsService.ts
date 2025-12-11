@@ -888,7 +888,6 @@ export const supplierInsightsService = {
         JOIN "XeroInvoice" xi ON xli."invoiceId" = xi.id
         LEFT JOIN "Supplier" s ON xi."supplierId" = s.id
         LEFT JOIN "InvoiceFile" f ON f."sourceReference" = xi."xeroInvoiceId"
-          AND f."sourceType" = 'XERO'
           AND f."deletedAt" IS NULL
         WHERE xi."organisationId" = ${organisationId}
         AND xi."status" IN ('AUTHORISED', 'PAID')
@@ -896,7 +895,6 @@ export const supplierInsightsService = {
         AND xi."date" >= ${last6m.start}
         AND xi."date" <= ${new Date()}
         AND (${supersededIds.length > 0 ? Prisma.sql`xi."xeroInvoiceId" NOT IN (${Prisma.join(supersededIds)})` : Prisma.sql`TRUE`})
-        AND (f.id IS NULL OR f."reviewStatus" = 'VERIFIED')
         ${locationId ? Prisma.sql`AND xi."locationId" = ${locationId}` : Prisma.empty}
         ${accountCodes && accountCodes.length > 0 ? Prisma.sql`AND xli."accountCode" IN (${Prisma.join(accountCodes)})` : Prisma.empty}
       `,
