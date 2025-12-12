@@ -1,3 +1,6 @@
+-- AlterTable
+ALTER TABLE "XeroInvoice" ADD COLUMN "deletedAt" TIMESTAMP(3);
+
 -- 1) Speed up verified manual Invoice aggregates per supplier
 CREATE INDEX "idx_invoice_org_loc_verified_supplier_date"
 ON "Invoice" ("organisationId", "locationId", "supplierId", "date")
@@ -12,4 +15,3 @@ WHERE "deletedAt" IS NULL;
 CREATE INDEX "idx_invoicefile_processing_ocr_not_deleted"
 ON "InvoiceFile" ("processingStatus", "ocrJobId")
 WHERE "deletedAt" IS NULL;
-
