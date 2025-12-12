@@ -16,6 +16,7 @@ import locationRoutes from './routes/locationRoutes';
 import supplierRoutes from './routes/supplierRoutes';
 import supplierInsightsRoutes from './routes/supplierInsightsRoutes';
 import invoiceRoutes from './routes/invoiceRoutes';
+import diagnosticsRoutes from './routes/diagnosticsRoutes';
 // import debugRoutes from './routes/debugRoutes'; // Removed debug routes
 import xeroWebhookRoutes from './controllers/xeroWebhookController'; // Assuming we'll create this
 import { config } from './config/env';
@@ -119,6 +120,7 @@ export function buildApp(): FastifyInstance {
   app.register(supplierRoutes, { prefix: '/suppliers' });
   app.register(supplierInsightsRoutes, { prefix: '/supplier-insights' });
   app.register(invoiceRoutes, { prefix: '/invoices' });
+  app.register(diagnosticsRoutes, { prefix: '/diagnostics' });
   // app.register(debugRoutes, { prefix: '/debug' }); // Removed debug routes
 
   // Health Check

@@ -35,6 +35,7 @@ const envSchema = z.object({
   
   // Feature Flags
   ENABLE_XERO_OCR: z.string().optional().default('false'),
+  ENABLE_DIAGNOSTICS: z.string().optional().default('false'),
 
   // Infrastructure
   REDIS_URL: z.string().optional(),
