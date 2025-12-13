@@ -16,9 +16,13 @@ export class DiagnosticsController {
       throw error;
     }
 
-    // 2. Check Role (Owner/Admin only)
-    const { roles } = request.authContext;
-    const isAuthorized = roles && roles.some(r => ['owner', 'admin'].includes(r));
+    // 2. Check Role (Owner/Admin only) OR allow if no roles system exists
+    // If roles array is empty, assume no permission system and allow any authenticated user
+    const { roles, organisationId } = request.authContext;
+    const hasRoles = roles && roles.length > 0;
+    const isAuthorized = hasRoles 
+      ? roles.some(r => ['owner', 'admin'].includes(r))
+      : !!organisationId; // If no roles, allow any user with organisation context
     
     if (!isAuthorized) {
       const error: any = new Error('Not found');
