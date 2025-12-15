@@ -1,6 +1,7 @@
 export type PriceIncreaseItem = {
   productName: string;
   supplierName: string;
+  locationName?: string;
   oldPrice: number; // dollars
   newPrice: number; // dollars
   absoluteChange: number; // dollars
@@ -15,8 +16,9 @@ const formatDate = (date: Date) => {
   return date.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
 };
 
-export const generatePriceAlertHtml = (items: PriceIncreaseItem[], totalCount: number, generatedDate: Date = new Date()): string => {
+export const generatePriceAlertHtml = (items: PriceIncreaseItem[], totalCount: number, organisationName: string, generatedDate: Date = new Date()): string => {
   if (!items || items.length === 0) {
+    const dateStr = formatDate(generatedDate);
     return `
 <!DOCTYPE html>
 <html>
@@ -29,7 +31,7 @@ export const generatePriceAlertHtml = (items: PriceIncreaseItem[], totalCount: n
   <table width="100%" border="0" cellpadding="0" cellspacing="0" style="background-color: #f2f2f5; padding: 40px 0;">
     <tr>
       <td align="center">
-        <p style="color: #666;">No price alerts to display.</p>
+        <p style="color: #666;">No price alerts to display for ${escapeHtml(organisationName)}.</p>
       </td>
     </tr>
   </table>
@@ -52,7 +54,9 @@ export const generatePriceAlertHtml = (items: PriceIncreaseItem[], totalCount: n
                   <tr>
                     <td style="padding: 18px 0; border-bottom: 1px dashed #eee; vertical-align: middle;">
                       <div style="font-size: 15px; font-weight: 600; color: #111;">${escapeHtml(item.productName)}</div>
-                      <div style="font-size: 12px; color: #888; margin-top: 4px;">${escapeHtml(item.supplierName)}</div>
+                      <div style="font-size: 12px; color: #888; margin-top: 4px;">
+                        ${escapeHtml(item.supplierName)}${item.locationName ? ` • <span style="color:#555;">${escapeHtml(item.locationName)}</span>` : ''}
+                      </div>
                     </td>
                     <td style="padding: 18px 0; border-bottom: 1px dashed #eee; text-align: right; vertical-align: middle;">
                       <div style="font-family: 'Menlo', 'Consolas', monospace; font-size: 15px; color: #111; font-weight: 600;">$${formatMoney(item.newPrice)}</div>
@@ -108,7 +112,14 @@ export const generatePriceAlertHtml = (items: PriceIncreaseItem[], totalCount: n
                 </tr>
               </table>
 
-              <div style="margin-top: 30px;">
+              <!-- Organisation Badge -->
+              <div style="margin-top: 20px;">
+                <span style="background: #f4f4f5; color: #555; padding: 4px 10px; border-radius: 4px; font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.5px;">
+                  ${escapeHtml(organisationName)}
+                </span>
+              </div>
+
+              <div style="margin-top: 20px;">
                 <h1 style="margin: 0; font-size: 28px; font-weight: 700; color: #111; letter-spacing: -0.5px; line-height: 1.2;">
                   Price Spike <span style="color: #FF4B1F;">Detected.</span>
                 </h1>
@@ -200,7 +211,7 @@ export const generatePriceAlertHtml = (items: PriceIncreaseItem[], totalCount: n
   `;
 };
 
-export const generatePriceAlertText = (items: PriceIncreaseItem[], totalCount: number, generatedDate: Date = new Date()): string => {
+export const generatePriceAlertText = (items: PriceIncreaseItem[], totalCount: number, organisationName: string, generatedDate: Date = new Date()): string => {
   if (!items || items.length === 0) {
     return "Price increase detected\n\nNo items provided.";
   }
@@ -215,6 +226,7 @@ export const generatePriceAlertText = (items: PriceIncreaseItem[], totalCount: n
   const dateStr = formatDate(generatedDate);
 
   let text = `Price Spike Detected\n\n`;
+  text += `Organisation: ${organisationName}\n`;
   text += `Date: ${dateStr}\n\n`;
   text += `We detected ${displayItems.length} product${displayItems.length > 1 ? 's' : ''} moving against your margin targets.\n\n`;
 
@@ -222,8 +234,8 @@ export const generatePriceAlertText = (items: PriceIncreaseItem[], totalCount: n
   text += `${'='.repeat(50)}\n\n`;
 
   for (const item of displayItems) {
-    text += `${item.productName}\n`;
-    text += `Supplier: ${item.supplierName}\n`;
+    const locationText = item.locationName ? ` (${item.supplierName} • ${item.locationName})` : ` (${item.supplierName})`;
+    text += `${item.productName}${locationText}\n`;
     text += `Price: $${formatMoney(item.oldPrice)} → $${formatMoney(item.newPrice)} (+${formatPercent(item.percentChange)}%)\n\n`;
   }
 
@@ -256,12 +268,12 @@ const escapeHtml = (text: string): string => {
   return text.replace(/[&<>"']/g, (m) => map[m]);
 };
 
-export const buildPriceIncreaseEmail = (items: PriceIncreaseItem[], totalCount?: number) => {
+export const buildPriceIncreaseEmail = (items: PriceIncreaseItem[], totalCount: number, organisationName: string) => {
   if (!items || items.length === 0) {
     return {
       subject: "Price increase detected",
-      html: generatePriceAlertHtml([], 0),
-      text: generatePriceAlertText([], 0),
+      html: generatePriceAlertHtml([], 0, organisationName),
+      text: generatePriceAlertText([], 0, organisationName),
     };
   }
 
@@ -280,8 +292,8 @@ export const buildPriceIncreaseEmail = (items: PriceIncreaseItem[], totalCount?:
 
     return {
       subject,
-      html: generatePriceAlertHtml(displayItems, actualTotalCount, generatedDate),
-      text: generatePriceAlertText(displayItems, actualTotalCount, generatedDate),
+      html: generatePriceAlertHtml(displayItems, actualTotalCount, organisationName, generatedDate),
+      text: generatePriceAlertText(displayItems, actualTotalCount, organisationName, generatedDate),
     };
   }
 
@@ -289,7 +301,7 @@ export const buildPriceIncreaseEmail = (items: PriceIncreaseItem[], totalCount?:
 
   return {
     subject,
-    html: generatePriceAlertHtml(displayItems, actualTotalCount, generatedDate),
-    text: generatePriceAlertText(displayItems, actualTotalCount, generatedDate),
+    html: generatePriceAlertHtml(displayItems, actualTotalCount, organisationName, generatedDate),
+    text: generatePriceAlertText(displayItems, actualTotalCount, organisationName, generatedDate),
   };
 };

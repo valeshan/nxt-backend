@@ -10,10 +10,11 @@ export class NotificationService {
 
   async sendPriceIncreaseAlert(params: {
     toEmail: string | string[];
+    organisationName: string;
     items: PriceIncreaseItem[];
     totalCount?: number;
   }): Promise<void> {
-    const { subject, html, text } = buildPriceIncreaseEmail(params.items, params.totalCount);
+    const { subject, html, text } = buildPriceIncreaseEmail(params.items, params.totalCount || params.items.length, params.organisationName);
 
     await this.emailProvider.sendEmail({
       to: params.toEmail,

@@ -2311,7 +2311,11 @@ export const supplierInsightsService = {
         },
         invoice: {
           select: { 
-            date: true, 
+            date: true,
+            locationId: true,
+            location: {
+              select: { name: true }
+            },
             supplier: {
               select: { id: true, name: true }
             }
@@ -2350,6 +2354,10 @@ export const supplierInsightsService = {
         invoice: {
           select: {
             date: true,
+            locationId: true,
+            location: {
+              select: { name: true }
+            },
             supplier: {
               select: { id: true, name: true }
             }
@@ -2361,9 +2369,9 @@ export const supplierInsightsService = {
       }
     });
 
-    // Group by Product Key (Unified)
-    // For Xero: use productId
-    // For Manual: use `manual:supplierId:base64(key)`
+    // Group by Product Key + Location (Unified)
+    // For Xero: use productId:locationId
+    // For Manual: use `manual:supplierId:base64(key):locationId`
     const productGroups = new Map<string, Array<{
       unitAmount: number;
       date: Date;
@@ -2371,12 +2379,15 @@ export const supplierInsightsService = {
       supplierName?: string;
       productName: string;
       productId: string;
+      locationId?: string;
+      locationName?: string;
     }>>();
 
     // Process Xero Lines
     for (const line of xeroLines) {
       if (!line.productId) continue;
-      const key = line.productId;
+      const locationId = line.invoice.locationId || 'unknown';
+      const key = `${line.productId}:${locationId}`;
       const existing = productGroups.get(key) || [];
       
       existing.push({
@@ -2385,7 +2396,9 @@ export const supplierInsightsService = {
         supplierId: line.product?.supplierId || line.invoice.supplier?.id,
         supplierName: line.product?.supplier?.name || line.invoice.supplier?.name,
         productName: line.product?.name || line.description || 'Unknown',
-        productId: line.productId
+        productId: line.productId,
+        locationId: line.invoice.locationId || undefined,
+        locationName: line.invoice.location?.name || undefined
       });
       
       productGroups.set(key, existing);
@@ -2399,8 +2412,9 @@ export const supplierInsightsService = {
       const keyStr = (line.productCode || line.description || '').trim().toLowerCase();
       if (!keyStr) continue;
 
-      // Generate manual ID
-      const manualId = `manual:${supplierId}:${Buffer.from(keyStr).toString('base64')}`;
+      const locationId = line.invoice.locationId || 'unknown';
+      // Generate manual ID with location
+      const manualId = `manual:${supplierId}:${Buffer.from(keyStr).toString('base64')}:${locationId}`;
       
       const existing = productGroups.get(manualId) || [];
       
@@ -2410,7 +2424,9 @@ export const supplierInsightsService = {
         supplierId: supplierId,
         supplierName: line.invoice.supplier.name,
         productName: line.description || line.productCode || 'Unknown',
-        productId: manualId
+        productId: manualId,
+        locationId: line.invoice.locationId || undefined,
+        locationName: line.invoice.location?.name || undefined
       });
       
       productGroups.set(manualId, existing);
@@ -2427,6 +2443,8 @@ export const supplierInsightsService = {
       productName: string;
       supplierId: string;
       supplierName: string;
+      locationId?: string;
+      locationName?: string;
       oldPrice: number;
       newPrice: number;
       absoluteChange: number;
@@ -2481,6 +2499,8 @@ export const supplierInsightsService = {
         productName: latest.productName,
         supplierId,
         supplierName,
+        locationId: latest.locationId,
+        locationName: latest.locationName,
         oldPrice: prevPrice,
         newPrice: latestPrice,
         absoluteChange: Math.abs(absoluteChange),
@@ -2564,6 +2584,14 @@ export const supplierInsightsService = {
       return;
     }
 
+    // Fetch organisation name
+    const organisation = await prisma.organisation.findUnique({
+      where: { id: organisationId },
+      select: { name: true }
+    });
+
+    const organisationName = organisation?.name || 'Your Organisation';
+
     // Sort by percent change descending and take top 10 for display
     const sortedAlerts = filteredAlerts.sort((a, b) => b.percentChange - a.percentChange);
     const displayAlerts = sortedAlerts.slice(0, 10);
@@ -2573,6 +2601,7 @@ export const supplierInsightsService = {
     const emailItems: PriceIncreaseItem[] = displayAlerts.map(alert => ({
       productName: alert.productName,
       supplierName: alert.supplierName,
+      locationName: alert.locationName,
       oldPrice: alert.oldPrice,
       newPrice: alert.newPrice,
       absoluteChange: alert.absoluteChange,
@@ -2583,6 +2612,7 @@ export const supplierInsightsService = {
       // Send email
       await notificationService.sendPriceIncreaseAlert({
         toEmail: recipientEmail,
+        organisationName,
         items: emailItems,
         totalCount,
       });
