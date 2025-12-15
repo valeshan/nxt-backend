@@ -100,7 +100,7 @@ export const generatePriceAlertHtml = (items: PriceIncreaseItem[], totalCount: n
               <table width="100%" border="0" cellpadding="0" cellspacing="0">
                 <tr>
                   <td>
-                    <span style="font-weight: 800; font-size: 18px; letter-spacing: -1px; color: #000;">the nxt.</span>
+                    <span style="font-weight: 800; font-size: 18px; letter-spacing: -1px; color: #000;">the nxt</span>
                   </td>
                   <td style="text-align: right;">
                     <span style="font-family: 'Menlo', 'Consolas', monospace; font-size: 11px; color: #999; letter-spacing: 0.5px;">${dateStr}</span>
