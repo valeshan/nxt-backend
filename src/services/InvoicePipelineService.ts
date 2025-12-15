@@ -70,6 +70,53 @@ export const invoicePipelineService = {
       }
   },
 
+  async startOcrProcessing(invoiceFileId: string) {
+    try {
+      const file = await prisma.invoiceFile.findFirst({
+        where: { 
+          id: invoiceFileId, 
+          processingStatus: ProcessingStatus.PENDING_OCR,
+          deletedAt: null 
+        } as any
+      });
+
+      if (!file) {
+        throw new Error(`InvoiceFile ${invoiceFileId} not found or not in PENDING_OCR status`);
+      }
+
+      if (!file.storageKey) {
+        throw new Error(`InvoiceFile ${invoiceFileId} has no storageKey`);
+      }
+
+      console.log(`[InvoicePipeline] Starting OCR for ${invoiceFileId}`);
+      const jobId = await ocrService.startAnalysis(file.storageKey);
+      
+      await prisma.invoiceFile.update({
+        where: { id: invoiceFileId },
+        data: {
+          ocrJobId: jobId,
+          processingStatus: ProcessingStatus.OCR_PROCESSING
+        }
+      });
+      
+      console.log(`[InvoicePipeline] OCR started for ${invoiceFileId}, JobId: ${jobId}`);
+    } catch (error: any) {
+      console.error(`[InvoicePipeline] Failed to start OCR for ${invoiceFileId}:`, error);
+      
+      const failureReason = error.message || 'Failed to start OCR processing';
+      
+      await prisma.invoiceFile.update({
+        where: { id: invoiceFileId },
+        data: { 
+          processingStatus: ProcessingStatus.OCR_FAILED,
+          failureReason
+        }
+      }).catch((dbError) => {
+        console.error(`[InvoicePipeline] Failed to update status for ${invoiceFileId}:`, dbError);
+      });
+    }
+  },
+
   async submitForProcessing(
     fileStream: any, 
     metadata: { 

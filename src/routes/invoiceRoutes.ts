@@ -102,5 +102,27 @@ export default async function invoiceRoutes(fastify: FastifyInstance) {
           })
       }
   }, invoiceController.bulkRestore);
+
+  // POST /invoices/upload-session
+  app.post('/upload-session', {
+      schema: {
+          body: z.object({
+              organisationId: z.string(),
+              locationId: z.string().optional(),
+              files: z.array(z.object({
+                  filename: z.string(),
+                  mimeType: z.string(),
+                  sizeBytes: z.number()
+              }))
+          })
+      }
+  }, invoiceController.uploadSession);
+
+  // POST /invoices/:id/complete
+  app.post('/:id/complete', {
+      schema: {
+          params: z.object({ id: z.string() })
+      }
+  }, invoiceController.complete);
 }
 

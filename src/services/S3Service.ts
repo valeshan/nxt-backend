@@ -73,5 +73,22 @@ export const s3Service = {
       throw error;
     }
   },
+
+  async getSignedUploadUrl(key: string, mimeType: string) {
+    try {
+      const command = new PutObjectCommand({
+        Bucket: config.S3_INVOICE_BUCKET,
+        Key: key,
+        ContentType: mimeType,
+      });
+
+      // Expires in 15 minutes
+      const url = await getSignedUrl(s3Client, command, { expiresIn: 900 });
+      return url;
+    } catch (error: any) {
+      console.error(`[S3 Upload Presign Failed] Bucket=${config.S3_INVOICE_BUCKET} Key=${key} Error=${error.name} Message=${error.message}`);
+      throw error;
+    }
+  },
 };
 

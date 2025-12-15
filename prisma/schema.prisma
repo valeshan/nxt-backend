@@ -365,6 +365,7 @@ enum InvoiceSourceType {
 }
 
 enum ProcessingStatus {
+  UPLOADING
   PENDING_OCR
   OCR_PROCESSING
   OCR_COMPLETE
@@ -407,6 +408,9 @@ model InvoiceFile {
   confidenceScore   Float?
   validationErrors  Json?
   ocrJobId          String?           // Textract job reference
+  uploadBatchId     String?           // Groups files uploaded in same session
+  fileSizeBytes     Int?              // File size in bytes
+  failureReason     String?           // Human-readable error message
   createdAt         DateTime          @default(now())
   updatedAt         DateTime          @updatedAt
 

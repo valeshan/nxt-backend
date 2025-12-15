@@ -1,5 +1,10 @@
 import { FastifyRequest, FastifyReply } from 'fastify';
 import { invoicePipelineService } from '../services/InvoicePipelineService';
+import { s3Service } from '../services/S3Service';
+import prisma from '../infrastructure/prismaClient';
+import { ProcessingStatus, InvoiceSourceType, ReviewStatus } from '@prisma/client';
+import { randomUUID } from 'crypto';
+import path from 'path';
 
 export const invoiceController = {
   async upload(req: FastifyRequest, reply: FastifyReply) {
@@ -292,6 +297,169 @@ export const invoiceController = {
               error: e.message
           });
           return reply.status(500).send({ error: 'Failed to process bulk restore' });
+      }
+  },
+
+  async uploadSession(req: FastifyRequest, reply: FastifyReply) {
+      const auth = req.authContext;
+      
+      if (!auth || !auth.organisationId) {
+          return reply.status(401).send({ error: 'Unauthorized' });
+      }
+
+      const { organisationId, locationId, files } = req.body as {
+          organisationId: string;
+          locationId?: string;
+          files: Array<{ filename: string; mimeType: string; sizeBytes: number }>;
+      };
+
+      // Validate organisationId matches auth
+      if (organisationId !== auth.organisationId) {
+          return reply.status(403).send({ error: 'Organisation ID mismatch' });
+      }
+
+      // Validate files array
+      if (!Array.isArray(files) || files.length === 0) {
+          return reply.status(400).send({ error: 'files must be a non-empty array' });
+      }
+
+      if (files.length > 25) {
+          return reply.status(400).send({ error: 'Maximum 25 files per batch' });
+      }
+
+      // Allowed MIME types
+      const allowedMimeTypes = ['application/pdf', 'image/jpeg', 'image/png'];
+      const maxFileSize = 20 * 1024 * 1024; // 20MB
+
+      // Validate each file
+      for (const file of files) {
+          if (!allowedMimeTypes.includes(file.mimeType)) {
+              return reply.status(400).send({ 
+                  error: `File type ${file.mimeType} not supported. Allowed types: PDF, JPEG, PNG` 
+              });
+          }
+
+          if (file.sizeBytes > maxFileSize) {
+              return reply.status(400).send({ 
+                  error: `File ${file.filename} exceeds maximum size of 20MB` 
+              });
+          }
+      }
+
+      try {
+          const uploadBatchId = randomUUID();
+          const finalLocationId = locationId || auth.locationId;
+
+          if (!finalLocationId) {
+              return reply.status(400).send({ error: 'locationId is required' });
+          }
+
+          const uploads = [];
+
+          for (const file of files) {
+              // Sanitize filename: strip path separators and normalize
+              const sanitizedFilename = path.basename(file.filename).replace(/[^a-zA-Z0-9._-]/g, '_');
+              const fileId = randomUUID();
+              const storageKey = `invoices/${organisationId}/${fileId}-${sanitizedFilename}`;
+
+              // Create InvoiceFile record with UPLOADING status
+              const invoiceFile = await prisma.invoiceFile.create({
+                  data: {
+                      id: fileId,
+                      organisationId,
+                      locationId: finalLocationId,
+                      sourceType: InvoiceSourceType.UPLOAD,
+                      storageKey,
+                      fileName: file.filename,
+                      mimeType: file.mimeType,
+                      processingStatus: ProcessingStatus.UPLOADING,
+                      reviewStatus: ReviewStatus.NONE,
+                      uploadBatchId,
+                      fileSizeBytes: file.sizeBytes,
+                  }
+              });
+
+              // Generate presigned upload URL
+              const presignedUrl = await s3Service.getSignedUploadUrl(storageKey, file.mimeType);
+
+              uploads.push({
+                  invoiceFileId: invoiceFile.id,
+                  presignedUrl,
+                  storageKey
+              });
+          }
+
+          // Log batch creation
+          console.log(`[INVOICE_UPLOAD] batch=${uploadBatchId} files=${files.length} org=${organisationId}`);
+
+          return reply.status(200).send({
+              uploadBatchId,
+              uploads
+          });
+      } catch (e: any) {
+          req.log.error({
+              msg: 'Upload session creation failed',
+              error: e.message,
+              stack: e.stack
+          });
+          return reply.status(500).send({ error: 'Failed to create upload session' });
+      }
+  },
+
+  async complete(req: FastifyRequest, reply: FastifyReply) {
+      const { id } = req.params as { id: string };
+      const auth = req.authContext;
+
+      if (!auth || !auth.organisationId) {
+          return reply.status(401).send({ error: 'Unauthorized' });
+      }
+
+      try {
+          // Find the file and verify it exists, is UPLOADING, and belongs to the org
+          const file = await prisma.invoiceFile.findFirst({
+              where: {
+                  id,
+                  organisationId: auth.organisationId,
+                  processingStatus: ProcessingStatus.UPLOADING,
+                  deletedAt: null
+              } as any
+          });
+
+          if (!file) {
+              return reply.status(400).send({ 
+                  error: 'File not found, not in UPLOADING status, or access denied' 
+              });
+          }
+
+          if (!file.storageKey) {
+              return reply.status(400).send({ error: 'File has no storage key' });
+          }
+
+          // Update status to PENDING_OCR
+          await prisma.invoiceFile.update({
+              where: { id },
+              data: {
+                  processingStatus: ProcessingStatus.PENDING_OCR
+              }
+          });
+
+          // Trigger OCR processing (fire-and-forget)
+          invoicePipelineService.startOcrProcessing(id).catch((error) => {
+              req.log.error({
+                  msg: 'Failed to start OCR processing after upload complete',
+                  invoiceFileId: id,
+                  error: error.message
+              });
+          });
+
+          return reply.status(200).send({ success: true });
+      } catch (e: any) {
+          req.log.error({
+              msg: 'Complete upload failed',
+              invoiceFileId: id,
+              error: e.message
+          });
+          return reply.status(500).send({ error: 'Failed to complete upload' });
       }
   }
 };
