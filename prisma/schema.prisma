@@ -465,3 +465,18 @@ model InvoiceLineItem {
 
   invoice     Invoice  @relation(fields: [invoiceId], references: [id], onDelete: Cascade)
 }
+
+model PriceAlertHistory {
+  id             String   @id @default(uuid())
+  organisationId String
+  supplierId     String
+  productId      String
+  oldPrice       Decimal  @db.Decimal(19, 4)
+  newPrice       Decimal  @db.Decimal(19, 4)
+  percentChange  Decimal  @db.Decimal(19, 4)
+  sentAt         DateTime @default(now())
+  channel        String   @default("EMAIL")
+  recipientEmail String
+
+  @@index([organisationId, supplierId, productId, sentAt])
+}

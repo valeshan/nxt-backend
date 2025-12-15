@@ -41,6 +41,21 @@ const envSchema = z.object({
   REDIS_URL: z.string().optional(),
   LOG_LEVEL: z.enum(['debug', 'info', 'warn', 'error']).default('info'),
   ENABLE_RATE_LIMIT: z.string().optional().default('true'),
+
+  // Email Configuration (Gmail SMTP)
+  GMAIL_ALERTS_USER: z.string().optional(),
+  GMAIL_APP_PASSWORD: z.string().optional(),
+  EMAIL_FROM_NAME: z.string().optional().default('the nxt alerts'),
+  EMAIL_REPLY_TO: z.string().optional(),
+
+  // Debug Routes
+  DEBUG_ROUTE_SECRET: z.string().optional(),
+  DEBUG_ROUTES_ENABLED: z.string().optional().default('false'),
+
+  // Price Alert Configuration
+  PRICE_ALERT_CRON_ENABLED: z.string().optional().default('false'),
+  PRICE_ALERT_DEDUPE_DAYS: z.coerce.number().optional().default(14),
+  PRICE_ALERT_RECENCY_DAYS: z.coerce.number().optional().default(14),
 });
 
 const parsed = envSchema.safeParse(process.env);

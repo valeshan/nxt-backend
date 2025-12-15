@@ -1,10 +1,13 @@
-import { PrismaClient, Prisma } from '@prisma/client';
+import { PrismaClient, Prisma, OrganisationRole } from '@prisma/client';
 import prisma from '../infrastructure/prismaClient';
 import { getCategoryName } from '../config/categoryMap';
-import { startOfMonth, subMonths } from 'date-fns';
+import { startOfMonth, subMonths, subDays } from 'date-fns';
 import { forecastService } from './forecast/forecastService';
 import { MANUAL_COGS_ACCOUNT_CODE } from '../config/constants';
 import { mergeTimeSeries, TimeSeriesPoint } from '../utils/dataMerging';
+import { config } from '../config/env';
+import { NotificationService } from './notificationService';
+import { PriceIncreaseItem } from './emailTemplates/priceIncreaseTemplates';
 
 // --- Types & DTOs ---
 
@@ -2274,5 +2277,274 @@ export const supplierInsightsService = {
             OR: conditions
         };
     }
+  },
+
+  async scanAndSendPriceIncreaseAlertsForOrg(organisationId: string): Promise<void> {
+    const notificationService = new NotificationService();
+    const recencyDays = config.PRICE_ALERT_RECENCY_DAYS;
+    const dedupeDays = config.PRICE_ALERT_DEDUPE_DAYS;
+
+    // Calculate date thresholds
+    const now = new Date();
+    const recencyCutoff = subDays(now, recencyDays);
+    const dedupeCutoff = subDays(now, dedupeDays);
+
+    // Fetch price changes (similar to getRecentPriceChanges but with wider filter)
+    const supersededIds = await getSupersededXeroIds(organisationId, undefined, recencyCutoff);
+
+    const recentLines = await prisma.xeroInvoiceLineItem.findMany({
+      where: {
+        productId: { not: null },
+        invoice: {
+          organisationId,
+          date: { gte: recencyCutoff },
+          status: { in: ['AUTHORISED', 'PAID'] },
+          deletedAt: null,
+          xeroInvoiceId: { notIn: supersededIds }
+        }
+      } as any,
+      include: {
+        product: {
+          include: { supplier: true }
+        },
+        invoice: {
+          select: { 
+            date: true, 
+            supplier: {
+              select: { id: true, name: true }
+            }
+          }
+        }
+      },
+      orderBy: {
+        invoice: { date: 'desc' }
+      }
+    });
+
+    // Group by Product ID
+    const productGroups = new Map<string, typeof recentLines>();
+    for (const line of recentLines) {
+      if (!line.productId) continue;
+      const existing = productGroups.get(line.productId) || [];
+      existing.push(line);
+      productGroups.set(line.productId, existing);
+    }
+
+    // Collect qualifying price changes
+    const candidateAlerts: Array<{
+      productId: string;
+      productName: string;
+      supplierId: string;
+      supplierName: string;
+      oldPrice: number;
+      newPrice: number;
+      absoluteChange: number;
+      percentChange: number;
+      effectiveDate: Date;
+    }> = [];
+
+    for (const [productId, lines] of productGroups.entries()) {
+      if (lines.length < 2) continue; // Need at least 2 price points
+
+      const latest = lines[0] as any;
+      const latestPrice = Number(latest.unitAmount || 0);
+      const latestDate = latest.invoice.date;
+      
+      if (latestPrice === 0 || !latestDate) continue;
+      
+      // Ensure latest price is within recency window
+      if (latestDate < recencyCutoff) continue;
+
+      // Find previous price
+      let prevPrice = 0;
+      const olderLines = lines.slice(1) as any[];
+      
+      for (let i = 0; i < olderLines.length; i++) {
+        const candidatePrice = Number(olderLines[i].unitAmount || 0);
+        if (candidatePrice > 0 && Math.abs(candidatePrice - latestPrice) > 0.01) {
+          prevPrice = candidatePrice;
+          break;
+        }
+      }
+
+      if (prevPrice <= 0) continue;
+
+      const absoluteChange = latestPrice - prevPrice;
+      const percentChange = (absoluteChange / prevPrice) * 100;
+
+      // Apply threshold filter: (Percent >= 20% AND Abs >= $0.50) OR (Abs >= $2.00 AND Percent >= 10%)
+      const meetsThreshold = 
+        (percentChange >= 20 && Math.abs(absoluteChange) >= 0.50) ||
+        (Math.abs(absoluteChange) >= 2.00 && percentChange >= 10);
+
+      if (!meetsThreshold) continue;
+
+      const supplierId = latest.product?.supplierId || latest.invoice.supplier?.id;
+      const supplierName = latest.product?.supplier?.name || latest.invoice.supplier?.name || 'Unknown';
+
+      if (!supplierId) continue;
+
+      candidateAlerts.push({
+        productId,
+        productName: latest.product?.name || latest.description || 'Unknown',
+        supplierId,
+        supplierName,
+        oldPrice: prevPrice,
+        newPrice: latestPrice,
+        absoluteChange: Math.abs(absoluteChange),
+        percentChange: Math.abs(percentChange),
+        effectiveDate: latestDate,
+      });
+    }
+
+    if (candidateAlerts.length === 0) {
+      console.log(`[PriceAlert] No qualifying alerts for org ${organisationId}`);
+      return;
+    }
+
+    // Check deduplication against PriceAlertHistory
+    const filteredAlerts: typeof candidateAlerts = [];
+    
+    for (const alert of candidateAlerts) {
+      const existing = await prisma.priceAlertHistory.findFirst({
+        where: {
+          organisationId,
+          supplierId: alert.supplierId,
+          productId: alert.productId,
+          oldPrice: alert.oldPrice,
+          newPrice: alert.newPrice,
+          sentAt: { gte: dedupeCutoff }
+        }
+      });
+
+      if (!existing) {
+        filteredAlerts.push(alert);
+      }
+    }
+
+    if (filteredAlerts.length === 0) {
+      console.log(`[PriceAlert] All alerts for org ${organisationId} were deduplicated`);
+      return;
+    }
+
+    // Find recipient: primary owner, else earliest admin, else skip
+    const owner = await prisma.userOrganisation.findFirst({
+      where: {
+        organisationId,
+        role: OrganisationRole.owner
+      },
+      include: {
+        user: {
+          select: { email: true }
+        }
+      },
+      orderBy: {
+        createdAt: 'asc' // Primary owner (earliest)
+      }
+    });
+
+    let recipientEmail: string | null = null;
+    if (owner?.user?.email) {
+      recipientEmail = owner.user.email;
+    } else {
+      const admin = await prisma.userOrganisation.findFirst({
+        where: {
+          organisationId,
+          role: OrganisationRole.admin
+        },
+        include: {
+          user: {
+            select: { email: true }
+          }
+        },
+        orderBy: {
+          createdAt: 'asc' // Earliest admin
+        }
+      });
+
+      if (admin?.user?.email) {
+        recipientEmail = admin.user.email;
+      }
+    }
+
+    if (!recipientEmail) {
+      console.warn(`[PriceAlert] No recipient found for org ${organisationId}, skipping alert`);
+      return;
+    }
+
+    // Sort by percent change descending and take top 10 for display
+    const sortedAlerts = filteredAlerts.sort((a, b) => b.percentChange - a.percentChange);
+    const displayAlerts = sortedAlerts.slice(0, 10);
+    const totalCount = filteredAlerts.length;
+
+    // Convert to PriceIncreaseItem format
+    const emailItems: PriceIncreaseItem[] = displayAlerts.map(alert => ({
+      productName: alert.productName,
+      supplierName: alert.supplierName,
+      oldPrice: alert.oldPrice,
+      newPrice: alert.newPrice,
+      absoluteChange: alert.absoluteChange,
+      percentChange: alert.percentChange,
+    }));
+
+    try {
+      // Send email
+      await notificationService.sendPriceIncreaseAlert({
+        toEmail: recipientEmail,
+        items: emailItems,
+        totalCount,
+      });
+
+      // Record history for ALL filtered alerts (not just displayed ones)
+      // This prevents re-alerting even if more than 10 items exist
+      const historyRecords = filteredAlerts.map(alert => ({
+        organisationId,
+        supplierId: alert.supplierId,
+        productId: alert.productId,
+        oldPrice: alert.oldPrice,
+        newPrice: alert.newPrice,
+        percentChange: alert.percentChange,
+        channel: 'EMAIL',
+        recipientEmail,
+      }));
+
+      try {
+        await prisma.priceAlertHistory.createMany({
+          data: historyRecords,
+        });
+        console.log(`[PriceAlert] Recorded ${historyRecords.length} alert(s) in history for org ${organisationId}`);
+      } catch (dbError) {
+        // Log error loudly but don't fail the entire operation
+        console.error(`[PriceAlert] CRITICAL: Failed to write alert history for org ${organisationId}:`, dbError);
+        console.error(`[PriceAlert] Alert was sent but not recorded. Manual fix may be needed.`, {
+          organisationId,
+          recipientEmail,
+          alertCount: historyRecords.length,
+          timestamp: new Date().toISOString(),
+        });
+      }
+    } catch (emailError) {
+      console.error(`[PriceAlert] Failed to send alert for org ${organisationId}:`, emailError);
+      throw emailError; // Re-throw to be caught by caller
+    }
+  },
+
+  async scanAndSendPriceIncreaseAlertsAllOrgs(): Promise<void> {
+    const organisations = await prisma.organisation.findMany({
+      select: { id: true },
+    });
+
+    console.log(`[PriceAlert] Starting scan for ${organisations.length} organisation(s)`);
+
+    for (const org of organisations) {
+      try {
+        await this.scanAndSendPriceIncreaseAlertsForOrg(org.id);
+      } catch (error) {
+        console.error(`[PriceAlert] Failed to process org ${org.id}:`, error);
+        // Continue to the next org, don't crash the job
+      }
+    }
+
+    console.log(`[PriceAlert] Completed scan for all organisations`);
   }
 };
