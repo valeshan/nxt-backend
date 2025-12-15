@@ -13,12 +13,13 @@ export class NotificationService {
     items: PriceIncreaseItem[];
     totalCount?: number;
   }): Promise<void> {
-    const { subject, body } = buildPriceIncreaseEmail(params.items, params.totalCount);
+    const { subject, html, text } = buildPriceIncreaseEmail(params.items, params.totalCount);
 
     await this.emailProvider.sendEmail({
       to: params.toEmail,
       subject,
-      text: body,
+      text,
+      html,
     });
 
     // Log the alert for traceability

@@ -5,6 +5,7 @@ type SendEmailParams = {
   to: string | string[];
   subject: string;
   text: string;
+  html?: string;
   replyTo?: string;
 };
 
@@ -44,6 +45,7 @@ export class GmailSmtpProvider {
       to: toList.join(","),
       subject: params.subject,
       text: params.text,
+      html: params.html,
       replyTo: params.replyTo || this.defaultReplyTo || this.fromEmail,
     });
   }

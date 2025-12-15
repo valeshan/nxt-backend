@@ -2287,17 +2287,19 @@ export const supplierInsightsService = {
     // Calculate date thresholds
     const now = new Date();
     const recencyCutoff = subDays(now, recencyDays);
+    const historyStart = subMonths(now, 6); // Look back 6 months for history comparison
     const dedupeCutoff = subDays(now, dedupeDays);
 
     // Fetch price changes (similar to getRecentPriceChanges but with wider filter)
-    const supersededIds = await getSupersededXeroIds(organisationId, undefined, recencyCutoff);
+    // 1. Fetch Xero Line Items
+    const supersededIds = await getSupersededXeroIds(organisationId, undefined, historyStart);
 
-    const recentLines = await prisma.xeroInvoiceLineItem.findMany({
+    const xeroLines = await prisma.xeroInvoiceLineItem.findMany({
       where: {
         productId: { not: null },
         invoice: {
           organisationId,
-          date: { gte: recencyCutoff },
+          date: { gte: historyStart },
           status: { in: ['AUTHORISED', 'PAID'] },
           deletedAt: null,
           xeroInvoiceId: { notIn: supersededIds }
@@ -2321,13 +2323,102 @@ export const supplierInsightsService = {
       }
     });
 
-    // Group by Product ID
-    const productGroups = new Map<string, typeof recentLines>();
-    for (const line of recentLines) {
+    // 2. Fetch Manual/OCR Line Items
+    const manualLines = await prisma.invoiceLineItem.findMany({
+      where: {
+        invoice: {
+          organisationId,
+          date: { gte: historyStart },
+          isVerified: true,
+          invoiceFileId: { not: null },
+          invoiceFile: {
+            reviewStatus: 'VERIFIED',
+            deletedAt: null
+          },
+          deletedAt: null
+        } as any,
+        // Ensure valid price data
+        unitPrice: { gt: 0 },
+        quantity: { gt: 0 }
+      },
+      select: {
+        id: true,
+        description: true,
+        productCode: true,
+        unitPrice: true,
+        quantity: true,
+        invoice: {
+          select: {
+            date: true,
+            supplier: {
+              select: { id: true, name: true }
+            }
+          }
+        }
+      },
+      orderBy: {
+        invoice: { date: 'desc' }
+      }
+    });
+
+    // Group by Product Key (Unified)
+    // For Xero: use productId
+    // For Manual: use `manual:supplierId:base64(key)`
+    const productGroups = new Map<string, Array<{
+      unitAmount: number;
+      date: Date;
+      supplierId?: string;
+      supplierName?: string;
+      productName: string;
+      productId: string;
+    }>>();
+
+    // Process Xero Lines
+    for (const line of xeroLines) {
       if (!line.productId) continue;
-      const existing = productGroups.get(line.productId) || [];
-      existing.push(line);
-      productGroups.set(line.productId, existing);
+      const key = line.productId;
+      const existing = productGroups.get(key) || [];
+      
+      existing.push({
+        unitAmount: Number(line.unitAmount || 0),
+        date: line.invoice.date!,
+        supplierId: line.product?.supplierId || line.invoice.supplier?.id,
+        supplierName: line.product?.supplier?.name || line.invoice.supplier?.name,
+        productName: line.product?.name || line.description || 'Unknown',
+        productId: line.productId
+      });
+      
+      productGroups.set(key, existing);
+    }
+
+    // Process Manual Lines
+    for (const line of manualLines) {
+      if (!line.invoice.supplier?.id) continue;
+      
+      const supplierId = line.invoice.supplier.id;
+      const keyStr = (line.productCode || line.description || '').trim().toLowerCase();
+      if (!keyStr) continue;
+
+      // Generate manual ID
+      const manualId = `manual:${supplierId}:${Buffer.from(keyStr).toString('base64')}`;
+      
+      const existing = productGroups.get(manualId) || [];
+      
+      existing.push({
+        unitAmount: Number(line.unitPrice || 0),
+        date: line.invoice.date!,
+        supplierId: supplierId,
+        supplierName: line.invoice.supplier.name,
+        productName: line.description || line.productCode || 'Unknown',
+        productId: manualId
+      });
+      
+      productGroups.set(manualId, existing);
+    }
+
+    // Sort groups by date desc
+    for (const group of productGroups.values()) {
+      group.sort((a, b) => b.date.getTime() - a.date.getTime());
     }
 
     // Collect qualifying price changes
@@ -2346,21 +2437,22 @@ export const supplierInsightsService = {
     for (const [productId, lines] of productGroups.entries()) {
       if (lines.length < 2) continue; // Need at least 2 price points
 
-      const latest = lines[0] as any;
-      const latestPrice = Number(latest.unitAmount || 0);
-      const latestDate = latest.invoice.date;
+      const latest = lines[0];
+      const latestPrice = latest.unitAmount;
+      const latestDate = latest.date;
       
-      if (latestPrice === 0 || !latestDate) continue;
+      if (latestPrice === 0) continue;
       
       // Ensure latest price is within recency window
       if (latestDate < recencyCutoff) continue;
 
       // Find previous price
       let prevPrice = 0;
-      const olderLines = lines.slice(1) as any[];
+      const olderLines = lines.slice(1);
       
       for (let i = 0; i < olderLines.length; i++) {
-        const candidatePrice = Number(olderLines[i].unitAmount || 0);
+        const candidatePrice = olderLines[i].unitAmount;
+        // Use logic similar to getRecentPriceChanges: allow tiny variance to filter noise but ensure change
         if (candidatePrice > 0 && Math.abs(candidatePrice - latestPrice) > 0.01) {
           prevPrice = candidatePrice;
           break;
@@ -2379,14 +2471,14 @@ export const supplierInsightsService = {
 
       if (!meetsThreshold) continue;
 
-      const supplierId = latest.product?.supplierId || latest.invoice.supplier?.id;
-      const supplierName = latest.product?.supplier?.name || latest.invoice.supplier?.name || 'Unknown';
+      const supplierId = latest.supplierId;
+      const supplierName = latest.supplierName || 'Unknown';
 
       if (!supplierId) continue;
 
       candidateAlerts.push({
         productId,
-        productName: latest.product?.name || latest.description || 'Unknown',
+        productName: latest.productName,
         supplierId,
         supplierName,
         oldPrice: prevPrice,
