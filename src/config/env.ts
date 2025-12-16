@@ -56,6 +56,21 @@ const envSchema = z.object({
   PRICE_ALERT_CRON_ENABLED: z.string().optional().default('false'),
   PRICE_ALERT_DEDUPE_DAYS: z.coerce.number().optional().default(14),
   PRICE_ALERT_RECENCY_DAYS: z.coerce.number().optional().default(14),
+
+  // Mailgun Configuration (Inbound)
+  MAILGUN_WEBHOOK_SIGNING_KEY: z.string().min(1),
+  MAILGUN_API_KEY: z.string().min(1),
+  MAILGUN_DOMAIN: z.string().optional().default('inbound.thenxt.ai'),
+  MAILGUN_WEBHOOK_ENABLED: z.string().optional().default('true'),
+  MAILGUN_PROCESSOR_ENABLED: z.string().optional().default('true'),
+  MAILGUN_MAX_ATTACHMENTS: z.coerce.number().optional().default(10),
+  MAILGUN_MAX_TOTAL_SIZE_MB: z.coerce.number().optional().default(40),
+
+  // Redis Configuration (For Queues)
+  // If REDIS_URL is provided, we can parse it, or use specific host/port
+  REDIS_HOST: z.string().optional(),
+  REDIS_PORT: z.coerce.number().optional(),
+  REDIS_PASSWORD: z.string().optional(),
 });
 
 const parsed = envSchema.safeParse(process.env);

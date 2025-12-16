@@ -20,6 +20,7 @@ import invoiceRoutes from './routes/invoiceRoutes';
 import diagnosticsRoutes from './routes/diagnosticsRoutes';
 import debugRoutes from './routes/debugRoutes';
 import xeroWebhookRoutes from './controllers/xeroWebhookController'; // Assuming we'll create this
+import webhookRoutes from './routes/webhookRoutes';
 import { config } from './config/env';
 
 export function buildApp(): FastifyInstance {
@@ -123,6 +124,10 @@ export function buildApp(): FastifyInstance {
   app.register(supplierInsightsRoutes, { prefix: '/supplier-insights' });
   app.register(invoiceRoutes, { prefix: '/invoices' });
   app.register(diagnosticsRoutes, { prefix: '/diagnostics' });
+  
+  // Register Webhook Routes
+  // Note: These routes might need special handling for multipart/form-data which is handled by the controller
+  app.register(webhookRoutes, { prefix: '/webhooks' });
   
   // Register debug routes conditionally
   if (config.DEBUG_ROUTES_ENABLED === 'true') {

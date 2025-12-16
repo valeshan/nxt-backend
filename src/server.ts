@@ -4,6 +4,7 @@ import { initSentry } from './config/sentry';
 import { cleanupStuckSyncs } from './utils/cleanup';
 import { initCronJobs } from './jobs/cron';
 import prisma from './infrastructure/prismaClient';
+import { setupInboundWorker } from './services/InboundQueueService';
 
 // Initialize Sentry before anything else
 initSentry();
@@ -45,6 +46,12 @@ const start = async () => {
     
     // Initialize Cron Jobs
     initCronJobs();
+
+    // Initialize Mailgun Inbound Worker
+    if (config.MAILGUN_PROCESSOR_ENABLED === 'true') {
+      setupInboundWorker();
+      console.log('Mailgun Inbound Worker started');
+    }
 
     await app.listen({ port: config.PORT, host: '0.0.0.0' });
     console.log(`Server listening on port ${config.PORT}`);

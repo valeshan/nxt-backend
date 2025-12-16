@@ -11,29 +11,27 @@ datasource db {
 }
 
 model User {
-  id                   String    @id @default(uuid())
-  email                String    @unique
-  passwordHash         String
-  firstName            String    @default("")
-  lastName              String    @default("")
+  id                    String             @id @default(uuid())
+  email                 String             @unique
+  passwordHash          String
+  firstName             String             @default("")
+  lastName              String             @default("")
   name                  String?
   profilePicture        String?
   onboardingCompletedAt DateTime?
-  createdAt            DateTime  @default(now())
-  updatedAt            DateTime  @updatedAt
-
-  memberships     UserOrganisation[]
-  settings        UserSettings?
-  xeroConnections XeroConnection[]
+  createdAt             DateTime           @default(now())
+  updatedAt             DateTime           @updatedAt
+  memberships           UserOrganisation[]
+  settings              UserSettings?
+  xeroConnections       XeroConnection[]
 }
 
 model Organisation {
-  id                String    @id @default(uuid())
-  name              String
-  sharedReportEmails String[] @default([])
-  createdAt         DateTime  @default(now())
-  updatedAt         DateTime  @updatedAt
-
+  id                     String                  @id @default(uuid())
+  name                   String
+  sharedReportEmails     String[]                @default([])
+  createdAt              DateTime                @default(now())
+  updatedAt              DateTime                @updatedAt
   locations              Location[]
   members                UserOrganisation[]
   xeroConnections        XeroConnection[]
@@ -48,30 +46,31 @@ model Organisation {
 }
 
 model Location {
-  id             String       @id @default(uuid())
-  name           String
-  organisationId String
-  organisation   Organisation @relation(fields: [organisationId], references: [id])
-  createdAt      DateTime     @default(now())
-  updatedAt      DateTime     @updatedAt
-
+  id                String                  @id @default(uuid())
+  name              String
+  organisationId    String
+  organisation      Organisation            @relation(fields: [organisationId], references: [id])
+  createdAt         DateTime                @default(now())
+  updatedAt         DateTime                @updatedAt
   xeroLocationLinks XeroLocationLink[]
   xeroInvoices      XeroInvoice[]
   accountConfigs    LocationAccountConfig[]
   ocrInvoices       Invoice[]
+
+  // Routing for inbound emails (optional custom alias)
+  mailgunAlias String? @unique
 }
 
 model LocationAccountConfig {
-  id             String   @id @default(uuid())
+  id             String       @id @default(uuid())
   organisationId String
   locationId     String
   accountCode    String
-  category       String   @default("COGS") // COGS, etc.
-  createdAt      DateTime @default(now())
-  updatedAt      DateTime @updatedAt
-
-  organisation Organisation @relation(fields: [organisationId], references: [id])
-  location     Location     @relation(fields: [locationId], references: [id])
+  category       String       @default("COGS") // COGS, etc.
+  createdAt      DateTime     @default(now())
+  updatedAt      DateTime     @updatedAt
+  organisation   Organisation @relation(fields: [organisationId], references: [id])
+  location       Location     @relation(fields: [locationId], references: [id])
 
   @@unique([locationId, accountCode])
   @@index([organisationId, locationId])
@@ -84,35 +83,31 @@ model UserOrganisation {
   role           OrganisationRole
   createdAt      DateTime         @default(now())
   updatedAt      DateTime         @updatedAt
-
-  user         User         @relation(fields: [userId], references: [id])
-  organisation Organisation @relation(fields: [organisationId], references: [id])
+  user           User             @relation(fields: [userId], references: [id])
+  organisation   Organisation     @relation(fields: [organisationId], references: [id])
 
   @@unique([userId, organisationId])
 }
 
 model UserSettings {
-  id     String @id @default(uuid())
-  userId String @unique
-
-  execDashboard      Boolean @default(false)
-  juniorDashboard    Boolean @default(false)
-  chat               Boolean @default(false)
-  subscriptionPlan   Boolean @default(false)
-  contextAi          Boolean @default(false)
-  liveFeed           Boolean @default(true)
-  playbooks          Boolean @default(false)
-  dashboard          Boolean @default(true)
-  settings           Boolean @default(true)
-  notifications      Boolean @default(false)
-  forecast           Boolean @default(false)
-  productPerformance Boolean @default(false)
-  jacobDashboard     Boolean @default(false)
-
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
-
-  user User @relation(fields: [userId], references: [id])
+  id                 String   @id @default(uuid())
+  userId             String   @unique
+  execDashboard      Boolean  @default(false)
+  juniorDashboard    Boolean  @default(false)
+  chat               Boolean  @default(false)
+  subscriptionPlan   Boolean  @default(false)
+  contextAi          Boolean  @default(false)
+  liveFeed           Boolean  @default(true)
+  playbooks          Boolean  @default(false)
+  dashboard          Boolean  @default(true)
+  settings           Boolean  @default(true)
+  notifications      Boolean  @default(false)
+  forecast           Boolean  @default(false)
+  productPerformance Boolean  @default(false)
+  jacobDashboard     Boolean  @default(false)
+  createdAt          DateTime @default(now())
+  updatedAt          DateTime @updatedAt
+  user               User     @relation(fields: [userId], references: [id])
 }
 
 enum OrganisationRole {
@@ -122,10 +117,10 @@ enum OrganisationRole {
 }
 
 model XeroConnection {
-  id                   String    @id @default(uuid())
+  id                   String             @id @default(uuid())
   userId               String
   organisationId       String
-  xeroTenantId         String    @unique
+  xeroTenantId         String             @unique
   tenantName           String
   accessToken          String
   refreshToken         String
@@ -133,26 +128,24 @@ model XeroConnection {
   xeroCode             String? // OAuth authorization code used (for audit/debugging)
   xeroState            String? // OAuth state parameter used (for audit/debugging)
   lastSuccessfulSyncAt DateTime?
-  createdAt            DateTime  @default(now())
-  updatedAt            DateTime  @updatedAt
-
-  organisation  Organisation       @relation(fields: [organisationId], references: [id])
-  user          User               @relation(fields: [userId], references: [id])
-  locationLinks XeroLocationLink[]
-  syncRuns      XeroSyncRun[]
+  createdAt            DateTime           @default(now())
+  updatedAt            DateTime           @updatedAt
+  organisation         Organisation       @relation(fields: [organisationId], references: [id])
+  user                 User               @relation(fields: [userId], references: [id])
+  locationLinks        XeroLocationLink[]
+  syncRuns             XeroSyncRun[]
 }
 
 model XeroLocationLink {
-  id               String   @id @default(uuid())
+  id               String         @id @default(uuid())
   xeroConnectionId String
   organisationId   String
   locationId       String
-  createdAt        DateTime @default(now())
-  updatedAt        DateTime @updatedAt
-
-  xeroConnection XeroConnection @relation(fields: [xeroConnectionId], references: [id])
-  organisation   Organisation   @relation(fields: [organisationId], references: [id])
-  location       Location       @relation(fields: [locationId], references: [id])
+  createdAt        DateTime       @default(now())
+  updatedAt        DateTime       @updatedAt
+  xeroConnection   XeroConnection @relation(fields: [xeroConnectionId], references: [id])
+  organisation     Organisation   @relation(fields: [organisationId], references: [id])
+  location         Location       @relation(fields: [locationId], references: [id])
 }
 
 model OnboardingSession {
@@ -175,7 +168,7 @@ enum OnboardingMode {
 // Supplier Management Models
 
 model Supplier {
-  id             String             @id @default(uuid())
+  id             String               @id @default(uuid())
   organisationId String
   name           String
   normalizedName String
@@ -186,16 +179,15 @@ model Supplier {
   country        String?
   city           String?
   sourceType     SupplierSourceType
-  status         SupplierStatus     @default(ACTIVE)
-  createdAt      DateTime           @default(now())
-  updatedAt      DateTime           @updatedAt
-
-  organisation Organisation         @relation(fields: [organisationId], references: [id])
-  invoices     XeroInvoice[]
-  sourceLinks  SupplierSourceLink[]
-  products     Product[]
-  aliases      SupplierAlias[]
-  ocrInvoices  Invoice[]
+  status         SupplierStatus       @default(ACTIVE)
+  createdAt      DateTime             @default(now())
+  updatedAt      DateTime             @updatedAt
+  organisation   Organisation         @relation(fields: [organisationId], references: [id])
+  invoices       XeroInvoice[]
+  sourceLinks    SupplierSourceLink[]
+  products       Product[]
+  aliases        SupplierAlias[]
+  ocrInvoices    Invoice[]
 
   @@index([organisationId])
   @@index([normalizedName])
@@ -210,61 +202,55 @@ model SupplierSourceLink {
   rawName        String? // e.g. OCR extracted supplier name
   confidence     Float? // 0-1
   createdAt      DateTime             @default(now())
-
-  supplier Supplier @relation(fields: [supplierId], references: [id])
+  supplier       Supplier             @relation(fields: [supplierId], references: [id])
 
   @@index([organisationId, sourceSystem, externalId])
 }
 
 model Product {
-  id             String   @id @default(uuid())
+  id             String                @id @default(uuid())
   organisationId String
   locationId     String
   supplierId     String?
   productKey     String // normalized stable key (lowercase description/itemCode)
   name           String // human-friendly label
-  createdAt      DateTime @default(now())
-  updatedAt      DateTime @updatedAt
-
-  organisation Organisation @relation(fields: [organisationId], references: [id])
-  supplier     Supplier?    @relation(fields: [supplierId], references: [id])
-
-  lineItems XeroInvoiceLineItem[]
+  createdAt      DateTime              @default(now())
+  updatedAt      DateTime              @updatedAt
+  organisation   Organisation          @relation(fields: [organisationId], references: [id])
+  supplier       Supplier?             @relation(fields: [supplierId], references: [id])
+  lineItems      XeroInvoiceLineItem[]
 
   @@unique([organisationId, locationId, productKey])
   @@index([organisationId, locationId])
 }
 
 model XeroInvoice {
-  id             String    @id @default(uuid())
+  id             String                @id @default(uuid())
   organisationId String
-  xeroInvoiceId  String    @unique // Xero InvoiceID
+  xeroInvoiceId  String                @unique // Xero InvoiceID
   invoiceNumber  String?
   reference      String?
   type           String? // ACCPAY, etc.
   status         String? // AUTHORISED, PAID, VOIDED
   date           DateTime?
   dueDate        DateTime?
-  total          Decimal?  @db.Decimal(19, 4)
-  subTotal       Decimal?  @db.Decimal(19, 4)
-  taxAmount      Decimal?  @db.Decimal(19, 4)
-  amountDue      Decimal?  @db.Decimal(19, 4)
-  amountPaid     Decimal?  @db.Decimal(19, 4)
+  total          Decimal?              @db.Decimal(19, 4)
+  subTotal       Decimal?              @db.Decimal(19, 4)
+  taxAmount      Decimal?              @db.Decimal(19, 4)
+  amountDue      Decimal?              @db.Decimal(19, 4)
+  amountPaid     Decimal?              @db.Decimal(19, 4)
   currencyCode   String?
   updatedDateUTC DateTime?
-
-  supplierId   String?
-  supplier     Supplier?    @relation(fields: [supplierId], references: [id])
-  organisation Organisation @relation(fields: [organisationId], references: [id])
-  locationId   String?
-  location     Location?    @relation(fields: [locationId], references: [id])
-  xeroTenantId String?
-
-  lineItems XeroInvoiceLineItem[]
-  
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
-  deletedAt DateTime?
+  supplierId     String?
+  supplier       Supplier?             @relation(fields: [supplierId], references: [id])
+  organisation   Organisation          @relation(fields: [organisationId], references: [id])
+  locationId     String?
+  location       Location?             @relation(fields: [locationId], references: [id])
+  xeroTenantId   String?
+  lineItems      XeroInvoiceLineItem[]
+  createdAt      DateTime              @default(now())
+  updatedAt      DateTime              @updatedAt
+  deletedAt      DateTime?
 
   @@index([organisationId])
   @@index([supplierId])
@@ -272,21 +258,19 @@ model XeroInvoice {
 }
 
 model XeroInvoiceLineItem {
-  id          String   @id @default(uuid())
+  id          String      @id @default(uuid())
   invoiceId   String
   description String?
-  quantity    Decimal? @db.Decimal(19, 4)
-  unitAmount  Decimal? @db.Decimal(19, 4)
-  lineAmount  Decimal? @db.Decimal(19, 4)
-  taxAmount   Decimal? @db.Decimal(19, 4)
+  quantity    Decimal?    @db.Decimal(19, 4)
+  unitAmount  Decimal?    @db.Decimal(19, 4)
+  lineAmount  Decimal?    @db.Decimal(19, 4)
+  taxAmount   Decimal?    @db.Decimal(19, 4)
   itemCode    String?
   accountCode String?
   accountName String?
-
-  productId String?
-  product   Product? @relation(fields: [productId], references: [id])
-
-  invoice XeroInvoice @relation(fields: [invoiceId], references: [id], onDelete: Cascade)
+  productId   String?
+  product     Product?    @relation(fields: [productId], references: [id])
+  invoice     XeroInvoice @relation(fields: [invoiceId], references: [id], onDelete: Cascade)
 
   @@index([invoiceId])
   @@index([productId])
@@ -342,9 +326,8 @@ model XeroSyncRun {
   finishedAt       DateTime?
   errorMessage     String?
   rowsProcessed    Int?
-
-  xeroConnection XeroConnection @relation(fields: [xeroConnectionId], references: [id])
-  organisation   Organisation   @relation(fields: [organisationId], references: [id])
+  xeroConnection   XeroConnection      @relation(fields: [xeroConnectionId], references: [id])
+  organisation     Organisation        @relation(fields: [organisationId], references: [id])
 
   @@index([xeroConnectionId, status, startedAt])
 }
@@ -395,59 +378,56 @@ enum OcrFailureCategory {
 }
 
 model SupplierAlias {
-  id                String   @id @default(uuid())
-  organisationId    String
-  supplierId        String
-  aliasName         String
+  id                  String       @id @default(uuid())
+  organisationId      String
+  supplierId          String
+  aliasName           String
   normalisedAliasName String
-  createdAt         DateTime @default(now())
-  updatedAt         DateTime @updatedAt
-
-  organisation      Organisation @relation(fields: [organisationId], references: [id])
-  supplier          Supplier     @relation(fields: [supplierId], references: [id])
+  createdAt           DateTime     @default(now())
+  updatedAt           DateTime     @updatedAt
+  organisation        Organisation @relation(fields: [organisationId], references: [id])
+  supplier            Supplier     @relation(fields: [supplierId], references: [id])
 
   @@unique([organisationId, normalisedAliasName])
   @@index([organisationId])
 }
 
 model InvoiceFile {
-  id                String            @id @default(uuid())
-  organisationId    String
-  locationId        String
-  sourceType        InvoiceSourceType
-  sourceReference   String?           // Xero bill ID, email ID, etc
-  storageKey        String            // S3 key
-  fileName          String
-  mimeType          String
-  processingStatus  ProcessingStatus
-  reviewStatus      ReviewStatus      @default(NONE)
-  confidenceScore   Float?
-  validationErrors  Json?
-  ocrJobId          String?           // Textract job reference
-  uploadBatchId     String?           // Groups files uploaded in same session
-  fileSizeBytes     Int?              // File size in bytes
-  failureReason     String?           // Human-readable error message
-  ocrAttemptCount   Int               @default(0)
+  id                 String              @id @default(uuid())
+  organisationId     String
+  locationId         String
+  sourceType         InvoiceSourceType
+  sourceReference    String? // Xero bill ID, email ID, etc
+  storageKey         String // S3 key
+  fileName           String
+  mimeType           String
+  processingStatus   ProcessingStatus
+  reviewStatus       ReviewStatus        @default(NONE)
+  confidenceScore    Float?
+  validationErrors   Json?
+  ocrJobId           String? // Textract job reference
+  uploadBatchId      String? // Groups files uploaded in same session
+  fileSizeBytes      Int? // File size in bytes
+  failureReason      String? // Human-readable error message
+  ocrAttemptCount    Int                 @default(0)
   ocrFailureCategory OcrFailureCategory?
-  ocrFailureDetail  String?
-  lastOcrAttemptAt  DateTime?
-  preprocessingFlags Json?             // Store preprocessing flags like { autoRotate: true, contrastBoost: true }
-  createdAt         DateTime          @default(now())
-  updatedAt         DateTime          @updatedAt
-
-  ocrResult         InvoiceOcrResult?
-  invoice           Invoice?
-  deletedAt         DateTime?
+  ocrFailureDetail   String?
+  lastOcrAttemptAt   DateTime?
+  preprocessingFlags Json? // Store preprocessing flags like { autoRotate: true, contrastBoost: true }
+  createdAt          DateTime            @default(now())
+  updatedAt          DateTime            @updatedAt
+  ocrResult          InvoiceOcrResult?
+  invoice            Invoice?
+  deletedAt          DateTime?
 }
 
 model InvoiceOcrResult {
   id            String      @id @default(uuid())
   invoiceFileId String      @unique
-  rawResultJson Json        // full Textract or provider output
-  parsedJson    Json        // normalized schema: header plus line items
+  rawResultJson Json // full Textract or provider output
+  parsedJson    Json // normalized schema: header plus line items
   createdAt     DateTime    @default(now())
   updatedAt     DateTime    @updatedAt
-
   invoiceFile   InvoiceFile @relation(fields: [invoiceFileId], references: [id])
 }
 
@@ -467,7 +447,6 @@ model Invoice {
   isVerified      Boolean           @default(false)
   createdAt       DateTime          @default(now())
   updatedAt       DateTime          @updatedAt
-
   invoiceFile     InvoiceFile?      @relation(fields: [invoiceFileId], references: [id])
   supplier        Supplier?         @relation(fields: [supplierId], references: [id])
   lineItems       InvoiceLineItem[]
@@ -487,7 +466,6 @@ model InvoiceLineItem {
   accountCode String?
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt
-
   invoice     Invoice  @relation(fields: [invoiceId], references: [id], onDelete: Cascade)
 }
 
@@ -504,4 +482,71 @@ model PriceAlertHistory {
   recipientEmail String
 
   @@index([organisationId, supplierId, productId, sentAt])
+}
+
+// Inbound Email Webhook Models
+
+enum InboundEmailStatus {
+  PENDING_FETCH
+  QUEUED
+  PROCESSING
+  PROCESSED
+  FAILED_SIGNATURE
+  FAILED_ROUTING
+  FAILED_FETCH
+  FAILED_PROCESSING
+}
+
+model InboundEmailEvent {
+  id             String             @id @default(uuid())
+  recipient      String
+  recipientAlias String? // Derived alias (e.g. "cafe-nyc" or uuid)
+  sender         String?
+  subject        String?
+  messageId      String?
+  timestamp      String // Raw timestamp from webhook
+  token          String // Webhook token
+  signature      String // Webhook signature
+  status         InboundEmailStatus @default(PENDING_FETCH)
+  failureReason  String?
+  organisationId String?
+  locationId     String?
+  raw            Json // Full webhook payload for debugging
+  createdAt      DateTime           @default(now())
+  updatedAt      DateTime           @updatedAt
+
+  attachments InboundAttachment[]
+
+  @@unique([token, timestamp])
+  @@index([status, createdAt])
+  @@index([recipient])
+  @@index([recipientAlias])
+}
+
+enum InboundAttachmentStatus {
+  PENDING
+  DOWNLOADING
+  UPLOADING
+  OCR_STARTED
+  SKIPPED_TYPE
+  SKIPPED_SIZE
+  FAILED
+}
+
+model InboundAttachment {
+  id                  String                  @id @default(uuid())
+  inboundEmailEventId String
+  invoiceFileId       String?
+  filename            String?
+  mimeType            String?
+  sizeBytes           Int?
+  status              InboundAttachmentStatus @default(PENDING)
+  failureReason       String?
+  createdAt           DateTime                @default(now())
+  updatedAt           DateTime                @updatedAt
+
+  inboundEmailEvent InboundEmailEvent @relation(fields: [inboundEmailEventId], references: [id])
+
+  @@index([inboundEmailEventId])
+  @@index([status, createdAt])
 }
