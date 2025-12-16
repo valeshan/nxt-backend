@@ -1,6 +1,7 @@
 import Fastify, { FastifyInstance } from 'fastify';
 import cors from '@fastify/cors';
 import multipart from '@fastify/multipart';
+import formbody from '@fastify/formbody';
 import cookie from '@fastify/cookie';
 import helmet from '@fastify/helmet';
 import rateLimit from '@fastify/rate-limit';
@@ -82,6 +83,9 @@ export function buildApp(): FastifyInstance {
     // but we can check it in the handler. However, if we want to block it early, we can use the onFile handler or similar.
     // For now, we'll stick to limits here and validate mime type in the controller/service.
   });
+
+  // Register Form Body parser for application/x-www-form-urlencoded
+  app.register(formbody);
 
   // Setup Zod validation
   app.setValidatorCompiler(validatorCompiler);
