@@ -1,30 +1,28 @@
 import { Queue, Worker, QueueEvents, Job } from 'bullmq';
 import { config } from '../config/env';
-import { logger } from '../server'; // Assuming logger is available, or use console
-import Redis from 'ioredis';
+import Redis, { RedisOptions } from 'ioredis';
 
 // Redis connection configuration for BullMQ
-// BullMQ requires a connection object or ioredis instance.
-// We'll create a standard config object based on env.
-const redisConfig = config.REDIS_URL
-  ? {
-      // Parse REDIS_URL if needed, but BullMQ supports connection object
-      url: config.REDIS_URL,
-    }
-  : {
+// We create a factory function or instance that handles the connection options correctly
+const createRedisConnection = () => {
+  const options: RedisOptions = {
+    maxRetriesPerRequest: null, // Required by BullMQ
+  };
+
+  if (config.REDIS_URL) {
+    return new Redis(config.REDIS_URL, options);
+  } else {
+    return new Redis({
       host: config.REDIS_HOST || 'localhost',
       port: config.REDIS_PORT || 6379,
       password: config.REDIS_PASSWORD,
-    };
+      ...options
+    });
+  }
+};
 
 // Create a separate connection for the queue to avoid blocking
-const connection = new Redis(config.REDIS_URL || {
-    host: config.REDIS_HOST || 'localhost',
-    port: config.REDIS_PORT || 6379,
-    password: config.REDIS_PASSWORD,
-}, {
-    maxRetriesPerRequest: null, // Required by BullMQ
-});
+const connection = createRedisConnection();
 
 export const INBOUND_QUEUE_NAME = 'inbound-invoices';
 
