@@ -2,7 +2,7 @@ import { FastifyRequest, FastifyReply } from 'fastify';
 import { invoicePipelineService } from '../services/InvoicePipelineService';
 import { s3Service } from '../services/S3Service';
 import prisma from '../infrastructure/prismaClient';
-import { ProcessingStatus, InvoiceSourceType, ReviewStatus } from '@prisma/client';
+import { ProcessingStatus, InvoiceSourceType, ReviewStatus, Prisma } from '@prisma/client';
 import { randomUUID } from 'crypto';
 import path from 'path';
 
@@ -565,7 +565,7 @@ export const invoiceController = {
                   ocrFailureDetail: null,
                   failureReason: null,
                   lastOcrAttemptAt: null,
-                  preprocessingFlags: null,
+                  preprocessingFlags: Prisma.DbNull,
                   ocrJobId: null,
                   confidenceScore: null,
               }

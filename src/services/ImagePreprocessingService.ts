@@ -1,4 +1,4 @@
-import * as sharp from 'sharp';
+import sharp from 'sharp';
 import { s3Service } from './S3Service';
 import { config } from '../config/env';
 
@@ -120,8 +120,8 @@ export const imagePreprocessingService = {
     if (noiseReduction) {
       pipeline = pipeline.sharpen({
         sigma: 0.5,
-        flat: 1,
-        jagged: 2,
+        m1: 1, // 'flat' is m1 in newer sharp versions
+        m2: 2, // 'jagged' is m2 in newer sharp versions
       });
     }
 
