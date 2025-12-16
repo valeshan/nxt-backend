@@ -461,6 +461,189 @@ export const invoiceController = {
           });
           return reply.status(500).send({ error: 'Failed to complete upload' });
       }
+  },
+
+  async retryOcr(req: FastifyRequest, reply: FastifyReply) {
+      const { id } = req.params as { id: string };
+      const auth = req.authContext;
+
+      if (!auth || !auth.organisationId) {
+          return reply.status(401).send({ error: 'Unauthorized' });
+      }
+
+      try {
+          const file = await prisma.invoiceFile.findFirst({
+              where: {
+                  id,
+                  organisationId: auth.organisationId,
+                  processingStatus: ProcessingStatus.OCR_FAILED,
+                  deletedAt: null
+              } as any
+          });
+
+          if (!file) {
+              return reply.status(404).send({ error: 'File not found or not in failed status' });
+          }
+
+          // Check if max attempts reached
+          if ((file.ocrAttemptCount || 0) >= 3) {
+              return reply.status(400).send({ error: 'Maximum OCR attempts (3) already reached' });
+          }
+
+          // Reset status to PENDING_OCR and trigger retry
+          await prisma.invoiceFile.update({
+              where: { id },
+              data: {
+                  processingStatus: ProcessingStatus.PENDING_OCR,
+                  ocrFailureCategory: null,
+                  ocrFailureDetail: null,
+                  failureReason: null,
+              }
+          });
+
+          // Trigger OCR processing (fire-and-forget)
+          invoicePipelineService.startOcrProcessing(id).catch((error) => {
+              req.log.error({
+                  msg: 'Failed to retry OCR processing',
+                  invoiceFileId: id,
+                  error: error.message
+              });
+          });
+
+          return reply.status(200).send({ success: true, message: 'OCR retry initiated' });
+      } catch (e: any) {
+          req.log.error({
+              msg: 'Retry OCR failed',
+              invoiceFileId: id,
+              error: e.message
+          });
+          return reply.status(500).send({ error: 'Failed to retry OCR' });
+      }
+  },
+
+  async replaceFile(req: FastifyRequest, reply: FastifyReply) {
+      const { id } = req.params as { id: string };
+      const auth = req.authContext;
+
+      if (!auth || !auth.organisationId) {
+          return reply.status(401).send({ error: 'Unauthorized' });
+      }
+
+      const data = await req.file();
+      if (!data) {
+          return reply.status(400).send({ error: 'No file uploaded' });
+      }
+
+      try {
+          const file = await prisma.invoiceFile.findFirst({
+              where: {
+                  id,
+                  organisationId: auth.organisationId,
+                  deletedAt: null
+              } as any
+          });
+
+          if (!file) {
+              return reply.status(404).send({ error: 'File not found' });
+          }
+
+          // Upload new file to S3 (replace the storage key or create new one)
+          const newKey = `invoices/${auth.organisationId}/${randomUUID()}.${data.filename.split('.').pop()}`;
+          await s3Service.uploadFile(data.file, newKey, data.mimetype);
+
+          // Update InvoiceFile with new file and reset OCR state
+          await prisma.invoiceFile.update({
+              where: { id },
+              data: {
+                  storageKey: newKey,
+                  fileName: data.filename,
+                  mimeType: data.mimetype,
+                  fileSizeBytes: data.file?.readable ? undefined : undefined, // Would need to calculate from stream
+                  processingStatus: ProcessingStatus.PENDING_OCR,
+                  ocrAttemptCount: 0,
+                  ocrFailureCategory: null,
+                  ocrFailureDetail: null,
+                  failureReason: null,
+                  lastOcrAttemptAt: null,
+                  preprocessingFlags: null,
+                  ocrJobId: null,
+                  confidenceScore: null,
+              }
+          });
+
+          // Trigger OCR processing
+          invoicePipelineService.startOcrProcessing(id).catch((error) => {
+              req.log.error({
+                  msg: 'Failed to start OCR after file replace',
+                  invoiceFileId: id,
+                  error: error.message
+              });
+          });
+
+          return reply.status(200).send({ success: true, message: 'File replaced and OCR initiated' });
+      } catch (e: any) {
+          req.log.error({
+              msg: 'Replace file failed',
+              invoiceFileId: id,
+              error: e.message
+          });
+          return reply.status(500).send({ error: 'Failed to replace file' });
+      }
+  },
+
+  async createManualEntry(req: FastifyRequest, reply: FastifyReply) {
+      const { id } = req.params as { id: string };
+      const auth = req.authContext;
+
+      if (!auth || !auth.organisationId) {
+          return reply.status(401).send({ error: 'Unauthorized' });
+      }
+
+      try {
+          const file = await prisma.invoiceFile.findFirst({
+              where: {
+                  id,
+                  organisationId: auth.organisationId,
+                  processingStatus: ProcessingStatus.OCR_FAILED,
+                  deletedAt: null
+              } as any,
+              include: { invoice: true }
+          });
+
+          if (!file) {
+              return reply.status(404).send({ error: 'File not found or not in failed status' });
+          }
+
+          // Create a draft invoice linked to the failed file
+          let invoice;
+          if (file.invoice) {
+              // Invoice already exists, return it
+              invoice = file.invoice;
+          } else {
+              invoice = await prisma.invoice.create({
+                  data: {
+                      organisationId: file.organisationId,
+                      locationId: file.locationId,
+                      invoiceFileId: file.id,
+                      sourceType: file.sourceType,
+                      isVerified: false,
+                  }
+              });
+          }
+
+          return reply.status(200).send({ 
+              success: true, 
+              invoiceId: invoice.id,
+              message: 'Draft invoice created for manual entry' 
+          });
+      } catch (e: any) {
+          req.log.error({
+              msg: 'Create manual entry failed',
+              invoiceFileId: id,
+              error: e.message
+          });
+          return reply.status(500).send({ error: 'Failed to create manual entry' });
+      }
   }
 };
 

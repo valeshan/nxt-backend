@@ -12,6 +12,7 @@ import * as Sentry from '@sentry/node';
 import xeroRoutes from './routes/xeroRoutes';
 import authRoutes from './routes/authRoutes';
 import organisationRoutes from './routes/organisationRoutes';
+import userRoutes from './routes/userRoutes';
 import locationRoutes from './routes/locationRoutes';
 import supplierRoutes from './routes/supplierRoutes';
 import supplierInsightsRoutes from './routes/supplierInsightsRoutes';
@@ -111,6 +112,7 @@ export function buildApp(): FastifyInstance {
   
   app.register(authRoutes, { prefix: '/auth' });
   app.register(organisationRoutes, { prefix: '/organisations' });
+  app.register(userRoutes, { prefix: '/users' });
   // locationRoutes handles its own path prefix currently: /organisations/:organisationId/locations
   // so we register it at root or verify if we want to nest it.
   // Registering at root:

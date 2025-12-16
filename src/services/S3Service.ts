@@ -56,13 +56,13 @@ export const s3Service = {
     }
   },
 
-  async getSignedUrl(key: string) {
+  async getSignedUrl(key: string, mimeType: string = 'application/pdf') {
     try {
       const command = new GetObjectCommand({
         Bucket: config.S3_INVOICE_BUCKET,
         Key: key,
         ResponseContentDisposition: 'inline',
-        ResponseContentType: 'application/pdf',
+        ResponseContentType: mimeType,
       });
 
       // Expires in 15 minutes
@@ -87,6 +87,43 @@ export const s3Service = {
       return url;
     } catch (error: any) {
       console.error(`[S3 Upload Presign Failed] Bucket=${config.S3_INVOICE_BUCKET} Key=${key} Error=${error.name} Message=${error.message}`);
+      throw error;
+    }
+  },
+
+  async getObject(key: string): Promise<Buffer> {
+    try {
+      const command = new GetObjectCommand({
+        Bucket: config.S3_INVOICE_BUCKET,
+        Key: key,
+      });
+
+      const response = await s3Client.send(command);
+      if (!response.Body) {
+        throw new Error(`S3 object ${key} has no body`);
+      }
+
+      return await streamToBuffer(response.Body as Readable);
+    } catch (error: any) {
+      console.error(`[S3 Get Failed] Bucket=${config.S3_INVOICE_BUCKET} Key=${key} Error=${error.name} Message=${error.message}`);
+      throw error;
+    }
+  },
+
+  async putObject(key: string, body: Buffer, options?: { ContentType?: string }): Promise<string> {
+    try {
+      const command = new PutObjectCommand({
+        Bucket: config.S3_INVOICE_BUCKET,
+        Key: key,
+        Body: body,
+        ContentLength: body.length,
+        ContentType: options?.ContentType || 'application/octet-stream',
+      });
+
+      await s3Client.send(command);
+      return key;
+    } catch (error: any) {
+      console.error(`[S3 Put Failed] Bucket=${config.S3_INVOICE_BUCKET} Key=${key} Error=${error.name} Message=${error.message}`);
       throw error;
     }
   },

@@ -2,7 +2,8 @@ import prisma from '../infrastructure/prismaClient';
 import { s3Service } from './S3Service';
 import { ocrService } from './OcrService';
 import { supplierResolutionService } from './SupplierResolutionService';
-import { InvoiceSourceType, ProcessingStatus, ReviewStatus, SupplierSourceType, SupplierStatus } from '@prisma/client';
+import { imagePreprocessingService } from './ImagePreprocessingService';
+import { InvoiceSourceType, ProcessingStatus, ReviewStatus, SupplierSourceType, SupplierStatus, OcrFailureCategory } from '@prisma/client';
 import { randomUUID } from 'crypto';
 import { MANUAL_COGS_ACCOUNT_CODE } from '../config/constants';
 
@@ -25,6 +26,103 @@ export class BulkActionError extends Error {
 }
 
 import { pusherService } from './pusherService';
+
+/**
+ * Classify OCR failure based on error, confidence, and text detection
+ */
+function classifyOcrFailure(
+  error: any,
+  confidenceScore?: number,
+  detectedTextWords?: number
+): { category: OcrFailureCategory; detail: string } {
+  // Early abort cases (low quality input)
+  if (detectedTextWords !== undefined && detectedTextWords < 5) {
+    return {
+      category: OcrFailureCategory.NOT_A_DOCUMENT,
+      detail: `Detected only ${detectedTextWords} words, likely not a document`,
+    };
+  }
+
+  if (confidenceScore !== undefined && confidenceScore < 10) {
+    return {
+      category: OcrFailureCategory.NOT_A_DOCUMENT,
+      detail: `Confidence score ${confidenceScore}% is too low`,
+    };
+  }
+
+  // AWS Textract specific errors
+  const errorMessage = error?.message || error?.toString() || '';
+  const errorCode = error?.name || error?.code || '';
+
+  if (errorCode === 'ThrottlingException' || errorMessage.includes('throttle')) {
+    return {
+      category: OcrFailureCategory.PROVIDER_TIMEOUT,
+      detail: 'OCR provider rate limit exceeded',
+    };
+  }
+
+  if (errorCode === 'InvalidParameterException' || errorMessage.includes('invalid')) {
+    return {
+      category: OcrFailureCategory.DOCUMENT_TYPE_MISMATCH,
+      detail: 'Invalid document format or type',
+    };
+  }
+
+  if (errorMessage.includes('timeout') || errorMessage.includes('Timeout')) {
+    return {
+      category: OcrFailureCategory.PROVIDER_TIMEOUT,
+      detail: 'OCR processing timed out',
+    };
+  }
+
+  if (errorMessage.includes('blur') || errorMessage.includes('Blur')) {
+    return {
+      category: OcrFailureCategory.BLURRY,
+      detail: 'Image is too blurry for OCR',
+    };
+  }
+
+  if (errorMessage.includes('resolution') || errorMessage.includes('Resolution')) {
+    return {
+      category: OcrFailureCategory.LOW_RESOLUTION,
+      detail: 'Image resolution is too low',
+    };
+  }
+
+  // Generic provider errors
+  if (errorCode || errorMessage) {
+    return {
+      category: OcrFailureCategory.PROVIDER_ERROR,
+      detail: errorMessage || `Provider error: ${errorCode}`,
+    };
+  }
+
+  // Default fallback
+  return {
+    category: OcrFailureCategory.UNKNOWN,
+    detail: 'OCR processing failed for unknown reason',
+  };
+}
+
+/**
+ * Count detected words from parsed OCR result
+ */
+function countDetectedWords(parsed: any): number {
+  let wordCount = 0;
+  
+  if (parsed.supplierName) wordCount += parsed.supplierName.split(/\s+/).length;
+  if (parsed.invoiceNumber) wordCount += parsed.invoiceNumber.split(/\s+/).length;
+  
+  if (parsed.lineItems) {
+    for (const item of parsed.lineItems) {
+      if (item.description) {
+        wordCount += item.description.split(/\s+/).length;
+      }
+    }
+  }
+  
+  return wordCount;
+}
 
 export const invoicePipelineService = {
   async processPendingOcrJobs() {
@@ -60,6 +158,7 @@ export const invoicePipelineService = {
                   await pusherService.triggerEvent(channel, 'invoice-status-updated', {
                       invoiceFileId: updated.id,
                       status: updated.processingStatus,
+                      reviewStatus: updated.reviewStatus,
                       invoice: updated.invoice ?? null
                   });
               }
@@ -75,41 +174,108 @@ export const invoicePipelineService = {
       const file = await prisma.invoiceFile.findFirst({
         where: { 
           id: invoiceFileId, 
-          processingStatus: ProcessingStatus.PENDING_OCR,
+          processingStatus: { in: [ProcessingStatus.PENDING_OCR, ProcessingStatus.OCR_FAILED] },
           deletedAt: null 
         } as any
       });
 
       if (!file) {
-        throw new Error(`InvoiceFile ${invoiceFileId} not found or not in PENDING_OCR status`);
+        throw new Error(`InvoiceFile ${invoiceFileId} not found or not in valid status for OCR`);
       }
 
       if (!file.storageKey) {
         throw new Error(`InvoiceFile ${invoiceFileId} has no storageKey`);
       }
 
-      console.log(`[InvoicePipeline] Starting OCR for ${invoiceFileId}`);
-      const jobId = await ocrService.startAnalysis(file.storageKey);
+      // Check attempt count (max 3 attempts)
+      const attemptCount = (file.ocrAttemptCount || 0) + 1;
+      if (attemptCount > 3) {
+        throw new Error(`Maximum OCR attempts (3) reached for ${invoiceFileId}`);
+      }
+
+      // Determine if this is an image that needs preprocessing
+      const isImage = imagePreprocessingService.isImageFile(file.mimeType);
+      let s3KeyToUse = file.storageKey;
+      let preprocessingFlags: any = {};
+
+      // Apply preprocessing based on attempt number (images only)
+      if (isImage) {
+        if (attemptCount === 1) {
+          // Attempt 1: Baseline - auto-rotate only
+          console.log(`[InvoicePipeline] Attempt 1: Baseline preprocessing for ${invoiceFileId}`);
+          try {
+            const result = await imagePreprocessingService.preprocessImage(file.storageKey, {
+              autoRotate: true,
+              contrastBoost: false,
+              upscale: false,
+              noiseReduction: false,
+            });
+            s3KeyToUse = result.processedS3Key;
+            preprocessingFlags = result.flags;
+          } catch (preprocessError: any) {
+            console.error(`[InvoicePipeline] Preprocessing failed for ${invoiceFileId}:`, preprocessError);
+            // Continue with original file if preprocessing fails
+          }
+        } else if (attemptCount === 2) {
+          // Attempt 2: Aggressive preprocessing
+          console.log(`[InvoicePipeline] Attempt 2: Aggressive preprocessing for ${invoiceFileId}`);
+          try {
+            const result = await imagePreprocessingService.preprocessImage(file.storageKey, {
+              autoRotate: true,
+              contrastBoost: true,
+              upscale: true,
+              noiseReduction: true,
+            });
+            s3KeyToUse = result.processedS3Key;
+            preprocessingFlags = result.flags;
+          } catch (preprocessError: any) {
+            console.error(`[InvoicePipeline] Aggressive preprocessing failed for ${invoiceFileId}:`, preprocessError);
+            // Continue with original file if preprocessing fails
+          }
+        } else if (attemptCount === 3) {
+          // Attempt 3: Last resort - use original or minimal preprocessing
+          console.log(`[InvoicePipeline] Attempt 3: Final attempt for ${invoiceFileId}`);
+          // Use original file or try with provider's native deskew
+          s3KeyToUse = file.storageKey;
+          preprocessingFlags = { providerDeskewUsed: true };
+        }
+      }
+
+      // Update attempt tracking before starting OCR
+      await prisma.invoiceFile.update({
+        where: { id: invoiceFileId },
+        data: {
+          ocrAttemptCount: attemptCount,
+          lastOcrAttemptAt: new Date(),
+          preprocessingFlags: preprocessingFlags,
+          processingStatus: ProcessingStatus.OCR_PROCESSING,
+        }
+      });
+
+      console.log(`[InvoicePipeline] Starting OCR attempt ${attemptCount} for ${invoiceFileId} using ${s3KeyToUse}`);
+      const jobId = await ocrService.startAnalysis(s3KeyToUse);
       
       await prisma.invoiceFile.update({
         where: { id: invoiceFileId },
         data: {
           ocrJobId: jobId,
-          processingStatus: ProcessingStatus.OCR_PROCESSING
         }
       });
       
-      console.log(`[InvoicePipeline] OCR started for ${invoiceFileId}, JobId: ${jobId}`);
+      console.log(`[InvoicePipeline] OCR started for ${invoiceFileId}, JobId: ${jobId}, Attempt: ${attemptCount}`);
     } catch (error: any) {
       console.error(`[InvoicePipeline] Failed to start OCR for ${invoiceFileId}:`, error);
       
       const failureReason = error.message || 'Failed to start OCR processing';
+      const classification = classifyOcrFailure(error);
       
       await prisma.invoiceFile.update({
         where: { id: invoiceFileId },
         data: { 
           processingStatus: ProcessingStatus.OCR_FAILED,
-          failureReason
+          failureReason,
+          ocrFailureCategory: classification.category,
+          ocrFailureDetail: classification.detail,
         }
       }).catch((dbError) => {
         console.error(`[InvoicePipeline] Failed to update status for ${invoiceFileId}:`, dbError);
@@ -228,6 +394,35 @@ export const invoicePipelineService = {
                  // Parse
                  const parsed = ocrService.parseTextractOutput(result);
 
+                 // Early abort check: If confidence or word count is too low, fail immediately
+                 const detectedWords = countDetectedWords(parsed);
+                 const confidenceScore = parsed.confidenceScore || 0;
+
+                 if (detectedWords < 5 || confidenceScore < 10) {
+                   console.log(
+                     `[InvoicePipeline] Early abort for ${file.id}: words=${detectedWords}, confidence=${confidenceScore}%`
+                   );
+
+                   const classification = classifyOcrFailure(
+                     { message: 'Low quality input detected' },
+                     confidenceScore,
+                     detectedWords
+                   );
+
+                   const updated = await prisma.invoiceFile.update({
+                     where: { id: file.id },
+                     data: {
+                       processingStatus: ProcessingStatus.OCR_FAILED,
+                       ocrFailureCategory: classification.category,
+                       ocrFailureDetail: classification.detail,
+                       failureReason: `Early abort: ${classification.detail}`,
+                       confidenceScore: confidenceScore,
+                     },
+                   });
+
+                   return this.enrichStatus(updated);
+                 }
+
                  // Default to OCR date (parsed.date is likely a Date object or ISO string suitable for Prisma)
                  let invoiceDate = parsed.date;
                  let xeroSupplierId: string | undefined;
@@ -340,9 +535,21 @@ export const invoicePipelineService = {
                  return this.enrichStatus(updatedFile);
 
              } else if (result.JobStatus === 'FAILED') {
+                  // Classify the failure
+                  const classification = classifyOcrFailure(
+                    { message: 'OCR job failed', code: 'JobFailed' },
+                    undefined,
+                    undefined
+                  );
+
                   const updated = await prisma.invoiceFile.update({
                      where: { id: file.id },
-                     data: { processingStatus: ProcessingStatus.OCR_FAILED }
+                     data: { 
+                       processingStatus: ProcessingStatus.OCR_FAILED,
+                       ocrFailureCategory: classification.category,
+                       ocrFailureDetail: classification.detail,
+                       failureReason: `OCR job failed: ${classification.detail}`
+                     }
                   });
                   // Return enriched status even on failure
                   return this.enrichStatus(updated);
@@ -363,7 +570,7 @@ export const invoicePipelineService = {
       console.log(`[InvoicePipeline] enrichStatus fileId=${file.id} hasStorageKey=${!!file.storageKey}`);
       if (file.storageKey) {
           try {
-            presignedUrl = await s3Service.getSignedUrl(file.storageKey);
+            presignedUrl = await s3Service.getSignedUrl(file.storageKey, file.mimeType || 'application/pdf');
             console.log(`[InvoicePipeline] Generated presignedUrl length=${presignedUrl?.length}`);
           } catch (e) {
             console.error('Error generating presigned URL', e);

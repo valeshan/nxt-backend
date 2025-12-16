@@ -124,5 +124,26 @@ export default async function invoiceRoutes(fastify: FastifyInstance) {
           params: z.object({ id: z.string() })
       }
   }, invoiceController.complete);
+
+  // POST /invoices/:id/retry-ocr
+  app.post('/:id/retry-ocr', {
+      schema: {
+          params: z.object({ id: z.string() })
+      }
+  }, invoiceController.retryOcr);
+
+  // POST /invoices/:id/replace
+  app.post('/:id/replace', {
+      schema: {
+          params: z.object({ id: z.string() })
+      }
+  }, invoiceController.replaceFile);
+
+  // POST /invoices/:id/manual-entry
+  app.post('/:id/manual-entry', {
+      schema: {
+          params: z.object({ id: z.string() })
+      }
+  }, invoiceController.createManualEntry);
 }
 

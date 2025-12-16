@@ -117,3 +117,4 @@ console.log(
 console.log('');
 console.log('  Safe to proceed with database operations.');
 process.exit(0);
+

@@ -11,15 +11,16 @@ datasource db {
 }
 
 model User {
-  id             String   @id @default(uuid())
-  email          String   @unique
-  passwordHash   String
-  firstName      String   @default("")
-  lastName       String   @default("")
-  name           String?
-  profilePicture String?
-  createdAt      DateTime @default(now())
-  updatedAt      DateTime @updatedAt
+  id                   String    @id @default(uuid())
+  email                String    @unique
+  passwordHash         String
+  firstName            String    @default("")
+  lastName              String    @default("")
+  name                  String?
+  profilePicture        String?
+  onboardingCompletedAt DateTime?
+  createdAt            DateTime  @default(now())
+  updatedAt            DateTime  @updatedAt
 
   memberships     UserOrganisation[]
   settings        UserSettings?
@@ -27,10 +28,11 @@ model User {
 }
 
 model Organisation {
-  id        String   @id @default(uuid())
-  name      String
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
+  id                String    @id @default(uuid())
+  name              String
+  sharedReportEmails String[] @default([])
+  createdAt         DateTime  @default(now())
+  updatedAt         DateTime  @updatedAt
 
   locations              Location[]
   members                UserOrganisation[]
@@ -378,6 +380,20 @@ enum ReviewStatus {
   VERIFIED
 }
 
+enum OcrFailureCategory {
+  LOW_IMAGE_QUALITY
+  BLURRY
+  GLARE_OR_SHADOW
+  LOW_RESOLUTION
+  ROTATION_OR_SKEW
+  CROPPED_OR_PARTIAL
+  DOCUMENT_TYPE_MISMATCH
+  NOT_A_DOCUMENT
+  PROVIDER_TIMEOUT
+  PROVIDER_ERROR
+  UNKNOWN
+}
+
 model SupplierAlias {
   id                String   @id @default(uuid())
   organisationId    String
@@ -411,6 +427,11 @@ model InvoiceFile {
   uploadBatchId     String?           // Groups files uploaded in same session
   fileSizeBytes     Int?              // File size in bytes
   failureReason     String?           // Human-readable error message
+  ocrAttemptCount   Int               @default(0)
+  ocrFailureCategory OcrFailureCategory?
+  ocrFailureDetail  String?
+  lastOcrAttemptAt  DateTime?
+  preprocessingFlags Json?             // Store preprocessing flags like { autoRotate: true, contrastBoost: true }
   createdAt         DateTime          @default(now())
   updatedAt         DateTime          @updatedAt
 
