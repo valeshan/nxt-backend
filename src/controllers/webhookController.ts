@@ -3,6 +3,8 @@ import crypto from 'node:crypto';
 import prisma from '../infrastructure/prismaClient';
 import { config } from '../config/env';
 import { addInboundJob } from '../services/InboundQueueService';
+import { s3Service } from '../services/S3Service';
+import { randomUUID } from 'node:crypto';
 
 /**
  * Verifies Mailgun webhook signature using timing-safe comparison.
@@ -154,9 +156,6 @@ export const webhookController = {
 
       // 6. Upload Files to S3 if present (Handling "Forward" route case)
       if (uploadedFiles.length > 0) {
-        const { s3Service } = await import('../services/S3Service');
-        const { randomUUID } = await import('node:crypto');
-        
         // We need to resolve routing logic here or temporarily store them.
         // To keep it simple, we'll store them in a temporary S3 location or pass them differently.
         // Actually, we can just process them in the worker if we can pass the data.

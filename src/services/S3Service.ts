@@ -1,4 +1,4 @@
-import { S3Client, PutObjectCommand, GetObjectCommand } from '@aws-sdk/client-s3';
+import { S3Client, PutObjectCommand, GetObjectCommand, CopyObjectCommand } from '@aws-sdk/client-s3';
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
 import { config } from '../config/env';
 import { Readable } from 'stream';
@@ -124,6 +124,22 @@ export const s3Service = {
       return key;
     } catch (error: any) {
       console.error(`[S3 Put Failed] Bucket=${config.S3_INVOICE_BUCKET} Key=${key} Error=${error.name} Message=${error.message}`);
+      throw error;
+    }
+  },
+
+  async copyObject(sourceKey: string, destinationKey: string): Promise<string> {
+    try {
+      const command = new CopyObjectCommand({
+        CopySource: `${config.S3_INVOICE_BUCKET}/${sourceKey}`,
+        Bucket: config.S3_INVOICE_BUCKET,
+        Key: destinationKey,
+      });
+
+      await s3Client.send(command);
+      return destinationKey;
+    } catch (error: any) {
+      console.error(`[S3 Copy Failed] Source=${sourceKey} Dest=${destinationKey} Error=${error.name} Message=${error.message}`);
       throw error;
     }
   },
