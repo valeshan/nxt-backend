@@ -75,8 +75,8 @@ export function buildApp(): FastifyInstance {
   // Register Multipart for file uploads
   app.register(multipart, {
     limits: {
-      fileSize: 10 * 1024 * 1024, // 10MB
-      files: 1,
+      fileSize: 20 * 1024 * 1024, // 20MB
+      files: 10, // Allow up to 10 files
     },
     // Only allow PDF (checking mime type)
     // Note: fastify-multipart doesn't strictly enforce mime type in the config unless using attachFieldsToBody: true (which we might not want for streaming),
