@@ -83,7 +83,14 @@ export const webhookController = {
     );
 
     if (!isValid) {
-      req.log.warn({ token, timestamp }, 'Invalid Mailgun webhook signature');
+      req.log.warn({ 
+        token, 
+        timestamp, 
+        signature,
+        signingKeyLength: config.MAILGUN_WEBHOOK_SIGNING_KEY?.length,
+        signingKeyPrefix: config.MAILGUN_WEBHOOK_SIGNING_KEY?.substring(0, 4),
+        payloadKeys: Object.keys(payload)
+      }, 'Invalid Mailgun webhook signature - Debug Info');
       return reply.status(403).send({ error: 'Invalid signature' });
     }
 
