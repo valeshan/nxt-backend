@@ -131,7 +131,7 @@ export const s3Service = {
   async copyObject(sourceKey: string, destinationKey: string): Promise<string> {
     try {
       const command = new CopyObjectCommand({
-        CopySource: `${config.S3_INVOICE_BUCKET}/${sourceKey}`,
+        CopySource: `${config.S3_INVOICE_BUCKET}/${encodeURIComponent(sourceKey)}`,
         Bucket: config.S3_INVOICE_BUCKET,
         Key: destinationKey,
       });

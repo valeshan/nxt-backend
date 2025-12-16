@@ -2584,13 +2584,20 @@ export const supplierInsightsService = {
       return;
     }
 
-    // Fetch organisation name
+    // Fetch organisation name and shared emails
     const organisation = await prisma.organisation.findUnique({
       where: { id: organisationId },
-      select: { name: true }
+      select: { 
+        name: true,
+        sharedReportEmails: true
+      }
     });
 
     const organisationName = organisation?.name || 'Your Organisation';
+
+    // Combine primary recipient with shared emails (deduplicated)
+    const additionalEmails = organisation?.sharedReportEmails || [];
+    const allRecipients = Array.from(new Set([recipientEmail, ...additionalEmails]));
 
     // Sort by percent change descending and take top 10 for display
     const sortedAlerts = filteredAlerts.sort((a, b) => b.percentChange - a.percentChange);
@@ -2611,7 +2618,7 @@ export const supplierInsightsService = {
     try {
       // Send email
       await notificationService.sendPriceIncreaseAlert({
-        toEmail: recipientEmail,
+        toEmail: allRecipients,
         organisationName,
         items: emailItems,
         totalCount,
