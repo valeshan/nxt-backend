@@ -34,22 +34,37 @@ export const verifyMailgunSignature = (
 
 export const webhookController = {
   mailgunInbound: async (req: FastifyRequest, reply: FastifyReply) => {
-    // 1. Parse Multipart Fields manually
-    // Fastify multipart gives us a stream of parts. We must consume them all to get the signature fields.
-    const parts = req.parts();
+    // 1. Determine Content-Type
+    const contentType = req.headers['content-type'] || '';
     const payload: Record<string, any> = {};
 
-    for await (const part of parts) {
-      if (part.type === 'field') {
-        // Only keep fields, ignore file streams if any (we use Store and Notify, so files shouldn't be here)
-        // Store in payload. If multiple values, strict Mailgun spec says keep them, 
-        // but for signature verification we usually just need the scalar values provided in the root.
-        // Mailgun sends scalar fields for signature.
-        payload[part.fieldname] = part.value;
+    try {
+      if (contentType.includes('multipart/form-data')) {
+        // Fastify multipart gives us a stream of parts. We must consume them all.
+        const parts = req.parts();
+        for await (const part of parts) {
+          if (part.type === 'field') {
+            payload[part.fieldname] = part.value;
+          } else {
+            // Consume file stream to avoid hanging
+            await part.toBuffer(); 
+          }
+        }
+      } else if (contentType.includes('application/x-www-form-urlencoded') || contentType.includes('application/json')) {
+        // Standard body parsing (handled by Fastify or fastify-formbody if registered)
+        // If fastify-raw-body is used, we might need to parse manually or rely on Fastify's body
+        // Assuming Fastify has parsed the body into req.body
+        const body = req.body as Record<string, any>;
+        if (body) {
+          Object.assign(payload, body);
+        }
       } else {
-        // If there is a file, consume the stream to avoid hanging
-        await part.toBuffer(); 
+        // Fallback or Error
+        return reply.status(415).send({ error: 'Unsupported Content-Type' });
       }
+    } catch (err) {
+      req.log.error(err, 'Error parsing webhook body');
+      return reply.status(400).send({ error: 'Body parsing failed' });
     }
 
     // 2. Verify Signature
