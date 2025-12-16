@@ -101,37 +101,70 @@ export const inboundEmailService = {
         data: { locationId, organisationId },
       });
 
-      // 3. Fetch Message from Mailgun
-      // The webhook raw payload might have storage url.
+      // 3. Fetch Message from Mailgun OR Use Staging Attachments
       const rawPayload = event.raw as any;
-      const storageUrl = rawPayload['storage']?.['url'] || rawPayload['message-url']; 
-      
-      if (!storageUrl) {
-         // Fallback logic or error. For "Store and Notify", there should be a storage URL.
-         // If "message-url" is not present, we might need to construct it or use what's available.
-         // However, standard "Store and Notify" sends "message-url" or "storage.url".
-         throw new Error('No storage URL found in webhook payload');
-      }
+      let attachments: MailgunAttachment[] = [];
+      let stagingAttachments: any[] = [];
 
-      console.log(`[InboundEmail] Fetching message content from ${storageUrl}`);
-      
-      const response = await fetch(storageUrl, {
-        headers: {
-          Authorization: `Basic ${Buffer.from(`api:${config.MAILGUN_API_KEY}`).toString('base64')}`,
-          Accept: 'application/json'
+      if (rawPayload.stagingAttachments && Array.isArray(rawPayload.stagingAttachments)) {
+        // "Forward" route case: Attachments already in S3 (staging)
+        console.log(`[InboundEmail] Found ${rawPayload.stagingAttachments.length} pre-uploaded staging attachments`);
+        stagingAttachments = rawPayload.stagingAttachments;
+      } else {
+        // "Store and Notify" route case: Fetch from Storage URL
+        const storageUrl = rawPayload['storage']?.['url'] || rawPayload['message-url']; 
+        
+        if (!storageUrl) {
+           // Fallback logic or error. For "Store and Notify", there should be a storage URL.
+           // If "message-url" is not present, we might need to construct it or use what's available.
+           // However, standard "Store and Notify" sends "message-url" or "storage.url".
+           throw new Error('No storage URL found in webhook payload and no direct attachments present');
         }
-      });
+  
+        console.log(`[InboundEmail] Fetching message content from ${storageUrl}`);
+        
+        // Try original URL first
+        let response = await fetch(storageUrl, {
+          headers: {
+            Authorization: `Basic ${Buffer.from(`api:${config.MAILGUN_API_KEY}`).toString('base64')}`,
+            Accept: 'application/json'
+          }
+        });
 
-      if (!response.ok) {
-        throw new Error(`Mailgun API error: ${response.status} ${response.statusText}`);
+        // Fallback Logic for Storage URL Auth Issues
+        if (response.status === 401 || response.status === 403 || response.status === 404) {
+             console.warn(`[InboundEmail] Storage URL failed (${response.status}), attempting fallback to standard API endpoint...`);
+             
+             // Extract path from storage URL (e.g., /v3/domains/...)
+             // Storage URL format: https://storage-us-east4.api.mailgun.net/v3/domains/...
+             try {
+                 const urlObj = new URL(storageUrl);
+                 const standardApiUrl = `https://api.mailgun.net${urlObj.pathname}`;
+                 
+                 console.log(`[InboundEmail] Fallback URL: ${standardApiUrl}`);
+                 
+                 response = await fetch(standardApiUrl, {
+                    headers: {
+                        Authorization: `Basic ${Buffer.from(`api:${config.MAILGUN_API_KEY}`).toString('base64')}`,
+                        Accept: 'application/json'
+                    }
+                 });
+             } catch (urlErr) {
+                 console.error('[InboundEmail] Failed to construct fallback URL', urlErr);
+             }
+        }
+  
+        if (!response.ok) {
+          throw new Error(`Mailgun API error: ${response.status} ${response.statusText}`);
+        }
+  
+        const messageData = await response.json() as MailgunMessage;
+        attachments = messageData.attachments || [];
       }
 
-      const messageData = await response.json() as MailgunMessage;
-      const attachments = messageData.attachments || [];
+      console.log(`[InboundEmail] Found ${attachments.length + stagingAttachments.length} attachments to process`);
 
-      console.log(`[InboundEmail] Found ${attachments.length} attachments`);
-
-      if (attachments.length === 0) {
+      if (attachments.length === 0 && stagingAttachments.length === 0) {
           await prisma.inboundEmailEvent.update({
               where: { id: eventId },
               data: { 
@@ -148,25 +181,35 @@ export const inboundEmailService = {
 
       // Limit max attachments
       const maxAttachments = config.MAILGUN_MAX_ATTACHMENTS || 10;
-      const attachmentsToProcess = attachments.slice(0, maxAttachments);
+      
+      // Combine lists (prioritizing staging if both exist, which is unlikely)
+      const allAttachments = [
+          ...stagingAttachments.map(sa => ({ type: 'staging', ...sa })),
+          ...attachments.map(ma => ({ type: 'mailgun', ...ma }))
+      ].slice(0, maxAttachments);
 
-      for (const att of attachmentsToProcess) {
+      for (const att of allAttachments) {
         processedAttachmentsCount++;
         
+        // Normalize fields
+        const fileName = att.type === 'staging' ? att.originalName : att.name;
+        const mimeType = att.type === 'staging' ? att.mimeType : att['content-type'];
+        const sizeBytes = att.type === 'staging' ? att.size : att.size;
+
         // Create InboundAttachment record
         const inboundAtt = await prisma.inboundAttachment.create({
           data: {
             inboundEmailEventId: eventId,
-            filename: att.name,
-            mimeType: att['content-type'],
-            sizeBytes: att.size,
+            filename: fileName,
+            mimeType: mimeType,
+            sizeBytes: sizeBytes,
             status: InboundAttachmentStatus.PENDING
           }
         });
 
         // Validation: Mime Type
         const allowedMimes = ['application/pdf', 'image/jpeg', 'image/png', 'image/jpg'];
-        if (!allowedMimes.includes(att['content-type'])) {
+        if (!allowedMimes.includes(mimeType)) {
            await prisma.inboundAttachment.update({
              where: { id: inboundAtt.id },
              data: { status: InboundAttachmentStatus.SKIPPED_TYPE, failureReason: 'Unsupported file type' }
@@ -175,10 +218,9 @@ export const inboundEmailService = {
         }
 
         // Validation: Size
-        const maxSize = (config.MAILGUN_MAX_TOTAL_SIZE_MB || 40) * 1024 * 1024; // This config is total, but usually applies per file in simple logic or we sum up. 
         // Plan says "Max 20MB per attachment" in logic, but env has 40MB total.
         // Let's enforce 20MB individual limit for safety as per plan.
-        if (att.size > 20 * 1024 * 1024) {
+        if (sizeBytes > 20 * 1024 * 1024) {
              await prisma.inboundAttachment.update({
              where: { id: inboundAtt.id },
              data: { status: InboundAttachmentStatus.SKIPPED_SIZE, failureReason: 'File too large (>20MB)' }
@@ -186,32 +228,53 @@ export const inboundEmailService = {
            continue;
         }
 
-        // Download & Upload
+        // Download & Upload (or Copy from Staging)
         try {
-            await prisma.inboundAttachment.update({
-                where: { id: inboundAtt.id },
-                data: { status: InboundAttachmentStatus.DOWNLOADING }
-            });
+            let finalS3Key = '';
 
-            const attResponse = await fetch(att.url, {
-                headers: {
-                    Authorization: `Basic ${Buffer.from(`api:${config.MAILGUN_API_KEY}`).toString('base64')}`
-                }
-            });
+            if (att.type === 'staging') {
+                // It's already in S3 (Staging) -> Move/Copy to Final
+                await prisma.inboundAttachment.update({
+                    where: { id: inboundAtt.id },
+                    data: { status: InboundAttachmentStatus.UPLOADING } // It's technically moving
+                });
 
-            if (!attResponse.ok) throw new Error(`Failed to download attachment: ${attResponse.statusText}`);
+                // We need to move it to the correct final path structure
+                const stagingKey = att.key;
+                finalS3Key = `inbound-email/${organisationId}/${locationId}/${eventId}/${randomUUID()}-${fileName.replace(/[^a-zA-Z0-9.-]/g, '_')}`;
+                
+                // CopyObject (Move)
+                await s3Service.copyObject(stagingKey, finalS3Key);
+                // Optionally delete staging object, but S3 lifecycle rules are safer
+                // await s3Service.deleteObject(stagingKey); 
 
-            const arrayBuffer = await attResponse.arrayBuffer();
-            const buffer = Buffer.from(arrayBuffer);
-
-            await prisma.inboundAttachment.update({
-                where: { id: inboundAtt.id },
-                data: { status: InboundAttachmentStatus.UPLOADING }
-            });
-
-            const s3Key = `inbound-email/${organisationId}/${locationId}/${eventId}/${randomUUID()}-${att.name.replace(/[^a-zA-Z0-9.-]/g, '_')}`;
-            
-            await s3Service.putObject(s3Key, buffer, { ContentType: att['content-type'] });
+            } else {
+                // It's in Mailgun -> Download & Upload
+                await prisma.inboundAttachment.update({
+                    where: { id: inboundAtt.id },
+                    data: { status: InboundAttachmentStatus.DOWNLOADING }
+                });
+    
+                const attResponse = await fetch(att.url, {
+                    headers: {
+                        Authorization: `Basic ${Buffer.from(`api:${config.MAILGUN_API_KEY}`).toString('base64')}`
+                    }
+                });
+    
+                if (!attResponse.ok) throw new Error(`Failed to download attachment: ${attResponse.statusText}`);
+    
+                const arrayBuffer = await attResponse.arrayBuffer();
+                const buffer = Buffer.from(arrayBuffer);
+    
+                await prisma.inboundAttachment.update({
+                    where: { id: inboundAtt.id },
+                    data: { status: InboundAttachmentStatus.UPLOADING }
+                });
+    
+                finalS3Key = `inbound-email/${organisationId}/${locationId}/${eventId}/${randomUUID()}-${fileName.replace(/[^a-zA-Z0-9.-]/g, '_')}`;
+                
+                await s3Service.putObject(finalS3Key, buffer, { ContentType: mimeType });
+            }
 
             // Create InvoiceFile
             const invoiceFile = await prisma.invoiceFile.create({
@@ -220,10 +283,10 @@ export const inboundEmailService = {
                     locationId: locationId!,
                     sourceType: InvoiceSourceType.EMAIL,
                     sourceReference: eventId, // Link back to event
-                    fileName: att.name,
-                    mimeType: att['content-type'],
-                    storageKey: s3Key,
-                    fileSizeBytes: att.size,
+                    fileName: fileName,
+                    mimeType: mimeType,
+                    storageKey: finalS3Key,
+                    fileSizeBytes: sizeBytes,
                     processingStatus: ProcessingStatus.PENDING_OCR,
                     reviewStatus: ReviewStatus.NONE
                 }
@@ -244,7 +307,7 @@ export const inboundEmailService = {
             await invoicePipelineService.startOcrProcessing(invoiceFile.id);
             
             successCount++;
-
+            
         } catch (attError: any) {
             console.error(`[InboundEmail] Attachment processing failed for ${inboundAtt.id}`, attError);
             await prisma.inboundAttachment.update({

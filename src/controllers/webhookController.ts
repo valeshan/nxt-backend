@@ -38,6 +38,13 @@ export const webhookController = {
     const contentType = req.headers['content-type'] || '';
     const payload: Record<string, any> = {};
 
+    const uploadedFiles: Array<{
+      filename: string;
+      mimetype: string;
+      encoding: string;
+      content: Buffer;
+    }> = [];
+
     try {
       if (contentType.includes('multipart/form-data')) {
         // Fastify multipart gives us a stream of parts. We must consume them all.
@@ -46,8 +53,14 @@ export const webhookController = {
           if (part.type === 'field') {
             payload[part.fieldname] = part.value;
           } else {
-            // Consume file stream to avoid hanging
-            await part.toBuffer(); 
+            // Consume file stream to buffer
+            const buffer = await part.toBuffer();
+            uploadedFiles.push({
+              filename: part.filename,
+              mimetype: part.mimetype,
+              encoding: part.encoding,
+              content: buffer,
+            });
           }
         }
       } else if (contentType.includes('application/x-www-form-urlencoded') || contentType.includes('application/json')) {
@@ -139,7 +152,46 @@ export const webhookController = {
         },
       });
 
-      // 6. Enqueue Job
+      // 6. Upload Files to S3 if present (Handling "Forward" route case)
+      if (uploadedFiles.length > 0) {
+        const { s3Service } = await import('../services/S3Service');
+        const { randomUUID } = await import('node:crypto');
+        
+        // We need to resolve routing logic here or temporarily store them.
+        // To keep it simple, we'll store them in a temporary S3 location or pass them differently.
+        // Actually, we can just process them in the worker if we can pass the data.
+        // But passing 20MB buffers to Redis is bad.
+        // So we upload to S3 NOW and update the event with metadata.
+        
+        // Wait, we don't have the organizationId/locationId yet (routing happens in service).
+        // So we'll store in a temporary "staging" path.
+        
+        const stagingAttachments = [];
+        
+        for (const file of uploadedFiles) {
+          const s3Key = `inbound-email/staging/${event.id}/${randomUUID()}-${file.filename}`;
+          await s3Service.putObject(s3Key, file.content, { ContentType: file.mimetype });
+          stagingAttachments.push({
+            originalName: file.filename,
+            mimeType: file.mimetype,
+            size: file.content.length,
+            key: s3Key
+          });
+        }
+        
+        // Update event with staging attachments metadata
+        await prisma.inboundEmailEvent.update({
+          where: { id: event.id },
+          data: {
+            raw: {
+              ...(payload as any),
+              stagingAttachments // Add this to the raw payload so worker finds it
+            }
+          }
+        });
+      }
+
+      // 7. Enqueue Job
       await addInboundJob(event.id);
 
       req.log.info({ eventId: event.id, alias: recipientAlias }, 'Enqueued inbound email');
