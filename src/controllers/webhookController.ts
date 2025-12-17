@@ -36,6 +36,7 @@ export const verifyMailgunSignature = (
 
 export const webhookController = {
   mailgunInbound: async (req: FastifyRequest, reply: FastifyReply) => {
+    console.log('[Webhook] Received Mailgun inbound webhook request');
     // 1. Determine Content-Type
     const contentType = req.headers['content-type'] || '';
     const payload: Record<string, any> = {};
@@ -127,6 +128,7 @@ export const webhookController = {
 
     // 4. Normalization
     const recipient = (payload.recipient || '').toString().toLowerCase().trim();
+    console.log(`[Webhook] Processing email for recipient: ${recipient}`);
     // Normalize Recipient: Strip "Name <email>" format
     // Regex matches text inside < > or just the full string if no brackets
     const emailMatch = recipient.match(/<([^>]+)>/);

@@ -54,6 +54,7 @@ export const inboundEmailService = {
       // 2. Routing Logic
       let locationId: string | null = null;
       let organisationId: string | null = null;
+      let locationForwardingStatus: LocationForwardingStatus | null = null;
 
       // Prefer Recipient Alias (extracted in controller)
       const alias = event.recipientAlias;
@@ -68,21 +69,23 @@ export const inboundEmailService = {
       if (isUuid) {
         const location = await prisma.location.findUnique({
           where: { id: alias },
-          select: { id: true, organisationId: true },
+          select: { id: true, organisationId: true, forwardingStatus: true },
         });
         if (location) {
           locationId = location.id;
           organisationId = location.organisationId;
+          locationForwardingStatus = location.forwardingStatus;
         }
       } else {
         // Check custom mailgunAlias
         const location = await prisma.location.findUnique({
           where: { mailgunAlias: alias },
-          select: { id: true, organisationId: true },
+          select: { id: true, organisationId: true, forwardingStatus: true },
         });
         if (location) {
           locationId = location.id;
           organisationId = location.organisationId;
+          locationForwardingStatus = location.forwardingStatus;
         }
       }
 
@@ -213,6 +216,21 @@ export const inboundEmailService = {
             return;
           }
         }
+      }
+
+      // 2.6. Check if forwarding is verified before processing invoices
+      // Only process invoices if forwarding status is VERIFIED
+      // Verification emails are handled above, so we skip them here
+      if (locationForwardingStatus !== LocationForwardingStatus.VERIFIED) {
+        console.log(`[InboundEmail] Skipping invoice processing - forwarding not verified. Status: ${locationForwardingStatus}`);
+        await prisma.inboundEmailEvent.update({
+          where: { id: eventId },
+          data: { 
+            status: InboundEmailStatus.FAILED_PROCESSING,
+            failureReason: `Email forwarding not verified for location. Current status: ${locationForwardingStatus}`
+          },
+        });
+        return;
       }
 
       // 3. Fetch Message from Mailgun OR Use Staging Attachments
