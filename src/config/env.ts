@@ -58,8 +58,8 @@ const envSchema = z.object({
   PRICE_ALERT_RECENCY_DAYS: z.coerce.number().optional().default(14),
 
   // Mailgun Configuration (Inbound)
-  MAILGUN_WEBHOOK_SIGNING_KEY: z.string().min(1),
-  MAILGUN_API_KEY: z.string().min(1),
+  MAILGUN_WEBHOOK_SIGNING_KEY: z.string().optional().default(''),
+  MAILGUN_API_KEY: z.string().optional().default(''),
   MAILGUN_DOMAIN: z.string().optional().default('inbound.thenxt.ai'),
   MAILGUN_WEBHOOK_ENABLED: z.string().optional().default('true'),
   MAILGUN_PROCESSOR_ENABLED: z.string().optional().default('true'),

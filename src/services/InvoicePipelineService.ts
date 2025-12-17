@@ -159,7 +159,9 @@ export const invoicePipelineService = {
                       invoiceFileId: updated.id,
                       status: updated.processingStatus,
                       reviewStatus: updated.reviewStatus,
-                      invoice: updated.invoice ?? null
+                      invoice: updated.invoice ?? null,
+                      ocrFailureCategory: updated.ocrFailureCategory ?? null,
+                      ocrFailureDetail: updated.ocrFailureDetail ?? null,
                   });
               }
           } catch (err) {

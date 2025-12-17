@@ -52,27 +52,31 @@ describe('Multi-Tenant Auth Context Integration', () => {
     ]});
 
     // Add dummy verified invoices so suppliers appear in list (due to activeInvoicesFilter)
-    await prisma.invoice.create({
+    // Note: listSuppliers requires InvoiceFile with reviewStatus='VERIFIED' for manual invoices
+    // So we use XeroInvoice instead, which doesn't have this requirement
+    await prisma.xeroInvoice.create({
         data: {
+            xeroInvoiceId: 'xero-inv-a',
             organisationId: orgA.id,
             locationId: locA.id,
             supplierId: supplierA.id,
-            isVerified: true,
-            sourceType: 'UPLOAD',
+            status: 'AUTHORISED',
             date: new Date(),
-            total: 100
+            total: 100,
+            invoiceNumber: 'INV-A-001'
         }
     });
 
-    await prisma.invoice.create({
+    await prisma.xeroInvoice.create({
         data: {
+            xeroInvoiceId: 'xero-inv-b',
             organisationId: orgB.id,
-            locationId: locB.id, // Ensure this matches User B's context if tested
+            locationId: locB.id,
             supplierId: supplierB.id,
-            isVerified: true,
-            sourceType: 'UPLOAD',
+            status: 'AUTHORISED',
             date: new Date(),
-            total: 100
+            total: 100,
+            invoiceNumber: 'INV-B-001'
         }
     });
   }, 30000); // Increased timeout for slow DB reset/seed
