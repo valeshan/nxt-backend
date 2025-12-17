@@ -2,6 +2,7 @@ import prisma from '../infrastructure/prismaClient';
 import { config } from '../config/env';
 import { s3Service } from './S3Service';
 import { invoicePipelineService } from './InvoicePipelineService';
+import { pusherService } from './pusherService';
 import { InvoiceSourceType, ProcessingStatus, ReviewStatus, InboundEmailStatus, InboundAttachmentStatus } from '@prisma/client';
 import { randomUUID } from 'crypto';
 
@@ -299,6 +300,17 @@ export const inboundEmailService = {
                     status: InboundAttachmentStatus.OCR_STARTED,
                     invoiceFileId: invoiceFile.id 
                 }
+            });
+
+            // Trigger Pusher Event for real-time UI update
+            const channel = pusherService.getOrgChannel(organisationId!);
+            await pusherService.triggerEvent(channel, 'invoice-file-created', {
+                invoiceFileId: invoiceFile.id,
+                fileName: invoiceFile.fileName,
+                sourceType: 'EMAIL',
+                status: invoiceFile.processingStatus,
+                createdAt: invoiceFile.createdAt.toISOString(),
+                locationId: invoiceFile.locationId
             });
 
             // Trigger OCR
