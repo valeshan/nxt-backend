@@ -72,3 +72,6 @@ export default async function diagnosticsRoutes(fastify: FastifyInstance) {
 }
 
 
+
+
+

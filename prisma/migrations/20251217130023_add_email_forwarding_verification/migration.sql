@@ -41,3 +41,6 @@ ALTER TABLE "EmailForwardingVerification" ADD CONSTRAINT "EmailForwardingVerific
 
 -- AddForeignKey
 ALTER TABLE "EmailForwardingVerification" ADD CONSTRAINT "EmailForwardingVerification_locationId_fkey" FOREIGN KEY ("locationId") REFERENCES "Location"("id") ON DELETE RESTRICT ON UPDATE CASCADE;
+
+
+

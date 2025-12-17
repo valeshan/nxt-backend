@@ -39,3 +39,6 @@ export default async function emailForwardingRoutes(fastify: FastifyInstance) {
     },
   }, emailForwardingController.confirmVerification);
 }
+
+
+
