@@ -772,7 +772,7 @@ export const invoicePipelineService = {
       limit = 20, 
       filters?: {
           search?: string;
-          sourceType?: string; // 'ALL' | 'XERO' | 'MANUAL'
+          sourceType?: string; // 'ALL' | 'XERO' | 'EMAIL' | 'MANUAL'
           startDate?: string;
           endDate?: string;
           status?: 'ALL' | 'REVIEWED' | 'PENDING' | 'DELETED';
@@ -800,9 +800,11 @@ export const invoicePipelineService = {
       if (filters?.sourceType && filters.sourceType !== 'ALL') {
           if (filters.sourceType === 'XERO') {
               where.sourceType = InvoiceSourceType.XERO;
+          } else if (filters.sourceType === 'EMAIL') {
+              where.sourceType = InvoiceSourceType.EMAIL;
           } else if (filters.sourceType === 'MANUAL') {
-              // Manual includes UPLOAD and EMAIL usually, or explicitly MANUAL
-              where.sourceType = { in: [InvoiceSourceType.UPLOAD, InvoiceSourceType.EMAIL] };
+              // Manual includes UPLOAD only (EMAIL is separate)
+              where.sourceType = InvoiceSourceType.UPLOAD;
           }
       }
 
