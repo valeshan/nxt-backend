@@ -113,9 +113,12 @@ export const inboundEmailService = {
                                    sender?.toLowerCase().includes('forwarding-noreply@googlemail.com');
       
       if (mightBeVerification) {
+        console.log(`[InboundEmail] Potential verification email detected from ${sender}`);
         // First, try to get body from raw payload (already in webhook)
         let bodyText: string | null = rawPayload['body-plain'] || rawPayload['stripped-text'] || null;
         let bodyHtml: string | null = rawPayload['body-html'] || rawPayload['stripped-html'] || null;
+        
+        console.log(`[InboundEmail] Body text length: ${bodyText?.length || 0}, HTML length: ${bodyHtml?.length || 0}`);
         
         // If body not in raw payload, fetch from Mailgun storage URL
         if (!bodyText && !bodyHtml) {
@@ -152,8 +155,12 @@ export const inboundEmailService = {
         }
         
         // After getting body (from payload or fetch), run extraction and only then commit to verification branch
-        if (isForwardingVerificationEmail(sender, bodyText, bodyHtml)) {
+        const isVerification = isForwardingVerificationEmail(sender, bodyText, bodyHtml);
+        console.log(`[InboundEmail] isForwardingVerificationEmail returned: ${isVerification}`);
+        
+        if (isVerification) {
           const verificationLink = extractGmailVerificationLink(bodyText, bodyHtml);
+          console.log(`[InboundEmail] Extracted verification link: ${verificationLink ? 'Found' : 'Not found'}`);
           
           if (verificationLink) {
             // Expire existing PENDING verifications and create new one in a transaction

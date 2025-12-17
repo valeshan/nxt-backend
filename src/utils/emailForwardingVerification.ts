@@ -20,7 +20,9 @@ export function isForwardingVerificationEmail(
   // Secondary: Check if body contains the verification link pattern
   // Use original content (not lowercased) to preserve URL integrity
   const bodyContent = bodyHtml || bodyText || '';
-  if (bodyContent.includes('https://mail-settings.google.com/mail/vf-')) {
+  // Gmail uses both mail-settings.google.com and mail.google.com for verification links
+  if (bodyContent.includes('https://mail-settings.google.com/mail/vf-') ||
+      bodyContent.includes('https://mail.google.com/mail/vf-')) {
     return true;
   }
   
@@ -40,8 +42,9 @@ export function extractGmailVerificationLink(
   const bodyContent = bodyHtml || bodyText || '';
   
   // Match only vf- links (verification), not uf- links (unverify)
-  // Pattern: https://mail-settings.google.com/mail/vf-[TOKEN]-[MORE_TOKEN]
-  const verificationLinkPattern = /https:\/\/mail-settings\.google\.com\/mail\/vf-[^\s<>"']+/;
+  // Gmail uses both mail-settings.google.com and mail.google.com for verification links
+  // Pattern: https://(mail-settings|mail).google.com/mail/vf-[TOKEN]-[MORE_TOKEN]
+  const verificationLinkPattern = /https:\/\/(?:mail-settings|mail)\.google\.com\/mail\/vf-[^\s<>"']+/;
   
   const match = bodyContent.match(verificationLinkPattern);
   if (match && match[0]) {
