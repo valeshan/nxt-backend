@@ -221,13 +221,13 @@ export const inboundEmailService = {
       // 2.6. Check if forwarding is verified before processing invoices
       // Only process invoices if forwarding status is VERIFIED
       // Verification emails are handled above, so we skip them here
-      if (locationForwardingStatus !== LocationForwardingStatus.VERIFIED) {
-        console.log(`[InboundEmail] Skipping invoice processing - forwarding not verified. Status: ${locationForwardingStatus}`);
+      if (!locationForwardingStatus || locationForwardingStatus !== LocationForwardingStatus.VERIFIED) {
+        console.log(`[InboundEmail] Skipping invoice processing - forwarding not verified. Status: ${locationForwardingStatus || 'null/undefined'}`);
         await prisma.inboundEmailEvent.update({
           where: { id: eventId },
           data: { 
             status: InboundEmailStatus.FAILED_PROCESSING,
-            failureReason: `Email forwarding not verified for location. Current status: ${locationForwardingStatus}`
+            failureReason: `Email forwarding not verified for location. Current status: ${locationForwardingStatus || 'NOT_CONFIGURED'}`
           },
         });
         return;
