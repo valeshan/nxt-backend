@@ -15,6 +15,7 @@ import authRoutes from './routes/authRoutes';
 import organisationRoutes from './routes/organisationRoutes';
 import userRoutes from './routes/userRoutes';
 import locationRoutes from './routes/locationRoutes';
+import emailForwardingRoutes from './routes/emailForwardingRoutes';
 import supplierRoutes from './routes/supplierRoutes';
 import supplierInsightsRoutes from './routes/supplierInsightsRoutes';
 import invoiceRoutes from './routes/invoiceRoutes';
@@ -122,6 +123,7 @@ export function buildApp(): FastifyInstance {
   // so we register it at root or verify if we want to nest it.
   // Registering at root:
   app.register(locationRoutes); 
+  app.register(emailForwardingRoutes);
   
   app.register(xeroRoutes, { prefix: '/xero' });
   app.register(supplierRoutes, { prefix: '/suppliers' });

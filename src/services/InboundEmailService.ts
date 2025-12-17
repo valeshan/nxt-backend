@@ -3,8 +3,9 @@ import { config } from '../config/env';
 import { s3Service } from './S3Service';
 import { invoicePipelineService } from './InvoicePipelineService';
 import { pusherService } from './pusherService';
-import { InvoiceSourceType, ProcessingStatus, ReviewStatus, InboundEmailStatus, InboundAttachmentStatus } from '@prisma/client';
+import { InvoiceSourceType, ProcessingStatus, ReviewStatus, InboundEmailStatus, InboundAttachmentStatus, EmailForwardingVerificationStatus, LocationForwardingStatus } from '@prisma/client';
 import { randomUUID } from 'crypto';
+import { isForwardingVerificationEmail, extractGmailVerificationLink } from '../utils/emailForwardingVerification';
 
 // Mailgun types (partial)
 interface MailgunAttachment {
@@ -102,8 +103,109 @@ export const inboundEmailService = {
         data: { locationId, organisationId },
       });
 
-      // 3. Fetch Message from Mailgun OR Use Staging Attachments
+      // 2.5. Check if this is a forwarding verification email
       const rawPayload = event.raw as any;
+      const sender = event.sender;
+      
+      // Strict pre-check: only forwarding-noreply@google.com or forwarding-noreply@googlemail.com
+      // OR body contains verification link pattern
+      const mightBeVerification = sender?.toLowerCase().includes('forwarding-noreply@google.com') || 
+                                   sender?.toLowerCase().includes('forwarding-noreply@googlemail.com');
+      
+      if (mightBeVerification) {
+        // Fetch message body to check for verification link
+        let bodyText: string | null = null;
+        let bodyHtml: string | null = null;
+        
+        const storageUrl = rawPayload['storage']?.['url'] || rawPayload['message-url'];
+        if (storageUrl) {
+          try {
+            let response = await fetch(storageUrl, {
+              headers: {
+                Authorization: `Basic ${Buffer.from(`api:${config.MAILGUN_API_KEY}`).toString('base64')}`,
+                Accept: 'application/json'
+              }
+            });
+            
+            if (response.status === 401 || response.status === 403 || response.status === 404) {
+              const urlObj = new URL(storageUrl);
+              const standardApiUrl = `https://api.mailgun.net${urlObj.pathname}`;
+              response = await fetch(standardApiUrl, {
+                headers: {
+                  Authorization: `Basic ${Buffer.from(`api:${config.MAILGUN_API_KEY}`).toString('base64')}`,
+                  Accept: 'application/json'
+                }
+              });
+            }
+            
+            if (response.ok) {
+              const messageData = await response.json() as MailgunMessage;
+              bodyText = messageData['body-plain'] || null;
+              bodyHtml = messageData['body-html'] || null;
+            }
+          } catch (err) {
+            console.error('[InboundEmail] Failed to fetch message for verification check', err);
+          }
+        }
+        
+        // After fetching, run extraction and only then commit to verification branch
+        if (isForwardingVerificationEmail(sender, bodyText, bodyHtml)) {
+          const verificationLink = extractGmailVerificationLink(bodyText, bodyHtml);
+          
+          if (verificationLink) {
+            // Expire existing PENDING verifications and create new one in a transaction
+            await prisma.$transaction(async (tx) => {
+              // Expire existing PENDING verifications for this location
+              await tx.emailForwardingVerification.updateMany({
+                where: {
+                  locationId: locationId!,
+                  status: EmailForwardingVerificationStatus.PENDING
+                },
+                data: {
+                  status: EmailForwardingVerificationStatus.EXPIRED
+                }
+              });
+              
+              // Create new PENDING verification
+              await tx.emailForwardingVerification.create({
+                data: {
+                  organisationId: organisationId!,
+                  locationId: locationId!,
+                  recipientAlias: event.recipientAlias || event.recipient,
+                  provider: 'GMAIL',
+                  status: EmailForwardingVerificationStatus.PENDING,
+                  verificationLink,
+                  sender,
+                  subject: event.subject,
+                  emailMessageId: event.messageId || null,
+                  expiresAt: new Date(Date.now() + 72 * 60 * 60 * 1000) // 72 hours
+                }
+              });
+              
+              // Update location forwarding status
+              // This ensures status transitions correctly even if previous verification expired
+              await tx.location.update({
+                where: { id: locationId! },
+                data: {
+                  forwardingStatus: LocationForwardingStatus.PENDING_VERIFICATION
+                }
+              });
+            });
+            
+            // Mark event as processed (successfully handled, though not as invoice)
+            // Note: PROCESSED is used for all successfully handled emails, including verification emails
+            await prisma.inboundEmailEvent.update({
+              where: { id: eventId },
+              data: { status: InboundEmailStatus.PROCESSED }
+            });
+            
+            console.log(`[InboundEmail] Processed Gmail forwarding verification email for location ${locationId}`);
+            return;
+          }
+        }
+      }
+
+      // 3. Fetch Message from Mailgun OR Use Staging Attachments
       let attachments: MailgunAttachment[] = [];
       let stagingAttachments: any[] = [];
 

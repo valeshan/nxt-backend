@@ -43,6 +43,7 @@ model Organisation {
   locationAccountConfigs LocationAccountConfig[]
   supplierAliases        SupplierAlias[]
   ocrInvoices            Invoice[]
+  emailForwardingVerifications EmailForwardingVerification[]
 }
 
 model Location {
@@ -59,6 +60,12 @@ model Location {
 
   // Routing for inbound emails (optional custom alias)
   mailgunAlias String? @unique
+
+  // Email forwarding status
+  forwardingStatus     LocationForwardingStatus? @default(NOT_CONFIGURED)
+  forwardingVerifiedAt DateTime?
+  
+  emailForwardingVerifications EmailForwardingVerification[]
 }
 
 model LocationAccountConfig {
@@ -549,4 +556,42 @@ model InboundAttachment {
 
   @@index([inboundEmailEventId])
   @@index([status, createdAt])
+}
+
+// Email Forwarding Verification Models
+
+enum EmailForwardingVerificationStatus {
+  PENDING
+  COMPLETED
+  EXPIRED
+  CANCELLED
+}
+
+enum LocationForwardingStatus {
+  NOT_CONFIGURED
+  PENDING_VERIFICATION
+  VERIFIED
+}
+
+model EmailForwardingVerification {
+  id              String                            @id @default(uuid())
+  organisationId  String
+  locationId      String
+  recipientAlias  String                            // The full inbound address (invoices+{locationId}@...)
+  provider        String                            @default("GMAIL") // GMAIL, OUTLOOK, etc.
+  status          EmailForwardingVerificationStatus @default(PENDING)
+  verificationLink String?                          // The extracted vf- link
+  sender          String?                           // For debugging
+  subject         String?                           // For debugging
+  emailMessageId  String?                           // Mailgun message ID for reference
+  expiresAt       DateTime                          // 72 hours from creation
+  createdAt       DateTime                          @default(now())
+  updatedAt       DateTime                          @updatedAt
+  
+  organisation    Organisation                      @relation(fields: [organisationId], references: [id])
+  location        Location                          @relation(fields: [locationId], references: [id])
+  
+  @@index([locationId, status])
+  @@index([organisationId])
+  @@index([expiresAt]) // For cleanup jobs
 }
