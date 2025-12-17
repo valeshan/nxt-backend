@@ -113,42 +113,45 @@ export const inboundEmailService = {
                                    sender?.toLowerCase().includes('forwarding-noreply@googlemail.com');
       
       if (mightBeVerification) {
-        // Fetch message body to check for verification link
-        let bodyText: string | null = null;
-        let bodyHtml: string | null = null;
+        // First, try to get body from raw payload (already in webhook)
+        let bodyText: string | null = rawPayload['body-plain'] || rawPayload['stripped-text'] || null;
+        let bodyHtml: string | null = rawPayload['body-html'] || rawPayload['stripped-html'] || null;
         
-        const storageUrl = rawPayload['storage']?.['url'] || rawPayload['message-url'];
-        if (storageUrl) {
-          try {
-            let response = await fetch(storageUrl, {
-              headers: {
-                Authorization: `Basic ${Buffer.from(`api:${config.MAILGUN_API_KEY}`).toString('base64')}`,
-                Accept: 'application/json'
-              }
-            });
-            
-            if (response.status === 401 || response.status === 403 || response.status === 404) {
-              const urlObj = new URL(storageUrl);
-              const standardApiUrl = `https://api.mailgun.net${urlObj.pathname}`;
-              response = await fetch(standardApiUrl, {
+        // If body not in raw payload, fetch from Mailgun storage URL
+        if (!bodyText && !bodyHtml) {
+          const storageUrl = rawPayload['storage']?.['url'] || rawPayload['message-url'];
+          if (storageUrl) {
+            try {
+              let response = await fetch(storageUrl, {
                 headers: {
                   Authorization: `Basic ${Buffer.from(`api:${config.MAILGUN_API_KEY}`).toString('base64')}`,
                   Accept: 'application/json'
                 }
               });
+              
+              if (response.status === 401 || response.status === 403 || response.status === 404) {
+                const urlObj = new URL(storageUrl);
+                const standardApiUrl = `https://api.mailgun.net${urlObj.pathname}`;
+                response = await fetch(standardApiUrl, {
+                  headers: {
+                    Authorization: `Basic ${Buffer.from(`api:${config.MAILGUN_API_KEY}`).toString('base64')}`,
+                    Accept: 'application/json'
+                  }
+                });
+              }
+              
+              if (response.ok) {
+                const messageData = await response.json() as MailgunMessage;
+                bodyText = messageData['body-plain'] || null;
+                bodyHtml = messageData['body-html'] || null;
+              }
+            } catch (err) {
+              console.error('[InboundEmail] Failed to fetch message for verification check', err);
             }
-            
-            if (response.ok) {
-              const messageData = await response.json() as MailgunMessage;
-              bodyText = messageData['body-plain'] || null;
-              bodyHtml = messageData['body-html'] || null;
-            }
-          } catch (err) {
-            console.error('[InboundEmail] Failed to fetch message for verification check', err);
           }
         }
         
-        // After fetching, run extraction and only then commit to verification branch
+        // After getting body (from payload or fetch), run extraction and only then commit to verification branch
         if (isForwardingVerificationEmail(sender, bodyText, bodyHtml)) {
           const verificationLink = extractGmailVerificationLink(bodyText, bodyHtml);
           
