@@ -37,6 +37,8 @@ describe('Supplier Insights Pricing Logic', () => {
     await prisma.xeroInvoice.create({
       data: {
         organisationId: orgId,
+        locationId: locationId,
+        supplierId: supplierId,
         xeroInvoiceId: `inv-${Math.random()}`,
         status: 'AUTHORISED',
         date: date,
@@ -55,6 +57,50 @@ describe('Supplier Insights Pricing Logic', () => {
     });
   };
 
+  const createManualInvoiceItem = async (
+    prodKey: string, 
+    date: Date, 
+    qty: number, 
+    unitPrice: number
+  ) => {
+    // Create InvoiceFile (required for manual lines)
+    const file = await prisma.invoiceFile.create({
+        data: {
+            organisationId: orgId,
+            locationId: locationId,
+            fileName: 'test.pdf',
+            fileKey: `key-${Math.random()}`,
+            status: 'PROCESSED',
+            reviewStatus: 'VERIFIED',
+            uploadedByUserId: 'test-user'
+        }
+    });
+
+    const invoice = await prisma.invoice.create({
+        data: {
+            organisationId: orgId,
+            locationId: locationId,
+            supplierId: supplierId,
+            invoiceFileId: file.id,
+            sourceType: 'UPLOAD',
+            date: date,
+            isVerified: true,
+            total: qty * unitPrice,
+        }
+    });
+
+    await prisma.invoiceLineItem.create({
+        data: {
+            invoiceId: invoice.id,
+            description: `Manual Item ${prodKey}`,
+            productCode: prodKey,
+            quantity: qty,
+            unitPrice: unitPrice,
+            lineTotal: qty * unitPrice
+        }
+    });
+  };
+
   beforeAll(async () => {
     await resetDb();
     
@@ -66,6 +112,9 @@ describe('Supplier Insights Pricing Logic', () => {
         suppliers: { create: { id: supplierId, name: 'Test Supplier', normalizedName: 'test supplier', sourceType: 'MANUAL' } }
       }
     });
+    
+    // Create a user for uploadedByUserId constraint if needed
+    // Assuming user table is not strictly FK linked for this test or handled by resetDb
   }, 30000);
 
   afterAll(async () => {
@@ -221,4 +270,273 @@ describe('Supplier Insights Pricing Logic', () => {
     expect(detail?.canCalculateProductPriceTrend).toBe(false);
     expect(detail?.productPriceTrendPercent).toBe(0);
   }, 15000);
+
+  // ========== getRecentPriceChanges Tests ==========
+  
+  describe('getRecentPriceChanges', () => {
+    it('should detect price change with 2 invoices from same supplier', async () => {
+      const product = await createProduct('price-change-prod', 'Price Change Product');
+      const today = new Date();
+      const lastMonth = new Date(today.getFullYear(), today.getMonth() - 1, 15);
+
+      // Older invoice: $10.00
+      await createInvoiceItem(product.id, lastMonth, 1, 10.00);
+      // Recent invoice: $12.00 (20% increase)
+      await createInvoiceItem(product.id, today, 1, 12.00);
+
+      const changes = await supplierInsightsService.getRecentPriceChanges(orgId, locationId);
+      
+      expect(changes.length).toBeGreaterThan(0);
+      const change = changes.find(c => c.productId === product.id);
+      expect(change).toBeDefined();
+      expect(change?.latestUnitPrice).toBeCloseTo(12.00);
+      expect(change?.percentChange).toBeCloseTo(20.0); // (12-10)/10 * 100
+      expect(change?.productName).toBe('Price Change Product');
+      expect(change?.supplierName).toBe('Test Supplier');
+    }, 15000);
+
+    it('should correctly sort invoices by date when created out of order', async () => {
+      const product = await createProduct('out-of-order-prod', 'Out of Order Product');
+      const today = new Date();
+      const lastMonth = new Date(today.getFullYear(), today.getMonth() - 1, 15);
+      const twoMonthsAgo = new Date(today.getFullYear(), today.getMonth() - 2, 15);
+
+      // Create invoices out of chronological order
+      await createInvoiceItem(product.id, today, 1, 15.00); // Most recent
+      await createInvoiceItem(product.id, twoMonthsAgo, 1, 10.00); // Oldest
+      await createInvoiceItem(product.id, lastMonth, 1, 12.00); // Middle
+
+      const changes = await supplierInsightsService.getRecentPriceChanges(orgId, locationId);
+      
+      const change = changes.find(c => c.productId === product.id);
+      expect(change).toBeDefined();
+      // Should compare latest ($15) with most recent different price ($12), not oldest ($10)
+      expect(change?.latestUnitPrice).toBeCloseTo(15.00);
+      expect(change?.percentChange).toBeCloseTo(25.0); // (15-12)/12 * 100 = 25%
+    }, 15000);
+
+    it('should require at least 2 invoices to detect a change', async () => {
+      const product = await createProduct('single-invoice-prod', 'Single Invoice Product');
+      const today = new Date();
+
+      // Only one invoice
+      await createInvoiceItem(product.id, today, 1, 10.00);
+
+      const changes = await supplierInsightsService.getRecentPriceChanges(orgId, locationId);
+      
+      const change = changes.find(c => c.productId === product.id);
+      expect(change).toBeUndefined(); // Should not appear since only 1 invoice
+    }, 15000);
+
+    it('should find most recent different price when multiple invoices have same price', async () => {
+      const product = await createProduct('same-price-prod', 'Same Price Product');
+      const today = new Date();
+      const lastWeek = new Date(today.getTime() - 7 * 24 * 60 * 60 * 1000);
+      const lastMonth = new Date(today.getFullYear(), today.getMonth() - 1, 15);
+      const twoMonthsAgo = new Date(today.getFullYear(), today.getMonth() - 2, 15);
+
+      // Oldest: $10.00
+      await createInvoiceItem(product.id, twoMonthsAgo, 1, 10.00);
+      // Last month: $12.00 (first change)
+      await createInvoiceItem(product.id, lastMonth, 1, 12.00);
+      // Last week: $12.00 (same as last month)
+      await createInvoiceItem(product.id, lastWeek, 1, 12.00);
+      // Today: $15.00 (new change)
+      await createInvoiceItem(product.id, today, 1, 15.00);
+
+      const changes = await supplierInsightsService.getRecentPriceChanges(orgId, locationId);
+      
+      const change = changes.find(c => c.productId === product.id);
+      expect(change).toBeDefined();
+      // Should compare $15 (latest) with $12 (most recent different price), not $10
+      expect(change?.latestUnitPrice).toBeCloseTo(15.00);
+      expect(change?.percentChange).toBeCloseTo(25.0); // (15-12)/12 * 100 = 25%
+    }, 15000);
+
+    it('should filter out price changes less than 0.5%', async () => {
+      const product = await createProduct('tiny-change-prod', 'Tiny Change Product');
+      const today = new Date();
+      const lastMonth = new Date(today.getFullYear(), today.getMonth() - 1, 15);
+
+      // Last month: $10.00
+      await createInvoiceItem(product.id, lastMonth, 1, 10.00);
+      // Today: $10.03 (0.3% increase - below 0.5% threshold)
+      await createInvoiceItem(product.id, today, 1, 10.03);
+
+      const changes = await supplierInsightsService.getRecentPriceChanges(orgId, locationId);
+      
+      const change = changes.find(c => c.productId === product.id);
+      expect(change).toBeUndefined(); // Should be filtered out
+    }, 15000);
+
+    it('should include price changes greater than 0.5%', async () => {
+      const product = await createProduct('small-change-prod', 'Small Change Product');
+      const today = new Date();
+      const lastMonth = new Date(today.getFullYear(), today.getMonth() - 1, 15);
+
+      // Last month: $10.00
+      await createInvoiceItem(product.id, lastMonth, 1, 10.00);
+      // Today: $10.06 (0.6% increase - above 0.5% threshold)
+      await createInvoiceItem(product.id, today, 1, 10.06);
+
+      const changes = await supplierInsightsService.getRecentPriceChanges(orgId, locationId);
+      
+      const change = changes.find(c => c.productId === product.id);
+      expect(change).toBeDefined();
+      expect(change?.percentChange).toBeCloseTo(0.6); // (10.06-10)/10 * 100 = 0.6%
+    }, 15000);
+
+    it('should handle price decreases correctly', async () => {
+      const product = await createProduct('decrease-prod', 'Decrease Product');
+      const today = new Date();
+      const lastMonth = new Date(today.getFullYear(), today.getMonth() - 1, 15);
+
+      // Last month: $12.00
+      await createInvoiceItem(product.id, lastMonth, 1, 12.00);
+      // Today: $10.00 (16.67% decrease)
+      await createInvoiceItem(product.id, today, 1, 10.00);
+
+      const changes = await supplierInsightsService.getRecentPriceChanges(orgId, locationId);
+      
+      const change = changes.find(c => c.productId === product.id);
+      expect(change).toBeDefined();
+      expect(change?.latestUnitPrice).toBeCloseTo(10.00);
+      expect(change?.percentChange).toBeCloseTo(-16.67, 1); // (10-12)/12 * 100 = -16.67%
+    }, 15000);
+
+    it('should return multiple products sorted by absolute percent change', async () => {
+      const product1 = await createProduct('small-change-prod', 'Small Change Product');
+      const product2 = await createProduct('large-change-prod', 'Large Change Product');
+      const today = new Date();
+      const lastMonth = new Date(today.getFullYear(), today.getMonth() - 1, 15);
+
+      // Product 1: 5% increase
+      await createInvoiceItem(product1.id, lastMonth, 1, 10.00);
+      await createInvoiceItem(product1.id, today, 1, 10.50);
+
+      // Product 2: 20% increase (should appear first)
+      await createInvoiceItem(product2.id, lastMonth, 1, 10.00);
+      await createInvoiceItem(product2.id, today, 1, 12.00);
+
+      const changes = await supplierInsightsService.getRecentPriceChanges(orgId, locationId, undefined, 10);
+      
+      expect(changes.length).toBeGreaterThanOrEqual(2);
+      // Should be sorted by absolute percent change descending
+      const product2Change = changes.find(c => c.productId === product2.id);
+      const product1Change = changes.find(c => c.productId === product1.id);
+      
+      expect(product2Change).toBeDefined();
+      expect(product1Change).toBeDefined();
+      
+      // Product 2 (20%) should appear before Product 1 (5%)
+      const product2Index = changes.findIndex(c => c.productId === product2.id);
+      const product1Index = changes.findIndex(c => c.productId === product1.id);
+      expect(product2Index).toBeLessThan(product1Index);
+    }, 15000);
+
+    it('should not show changes when prices are identical', async () => {
+      const product = await createProduct('no-change-prod', 'No Change Product');
+      const today = new Date();
+      const lastMonth = new Date(today.getFullYear(), today.getMonth() - 1, 15);
+
+      // Both invoices have same price
+      await createInvoiceItem(product.id, lastMonth, 1, 10.00);
+      await createInvoiceItem(product.id, today, 1, 10.00);
+
+      const changes = await supplierInsightsService.getRecentPriceChanges(orgId, locationId);
+      
+      const change = changes.find(c => c.productId === product.id);
+      expect(change).toBeUndefined(); // Should not appear since no price change
+    }, 15000);
+
+    it('should respect the limit parameter', async () => {
+      // Create multiple products with different price changes
+      const products = [];
+      for (let i = 0; i < 10; i++) {
+        const product = await createProduct(`limit-prod-${i}`, `Limit Product ${i}`);
+        products.push(product);
+        const today = new Date();
+        const lastMonth = new Date(today.getFullYear(), today.getMonth() - 1, 15);
+        
+        await createInvoiceItem(product.id, lastMonth, 1, 10.00);
+        await createInvoiceItem(product.id, today, 1, 10.00 + i); // Different prices
+      }
+
+      const changes = await supplierInsightsService.getRecentPriceChanges(orgId, locationId, undefined, 5);
+      
+      expect(changes.length).toBeLessThanOrEqual(5);
+    }, 20000);
+
+    it('should only show price changes within the last 3 months', async () => {
+      const product = await createProduct('old-change-prod', 'Old Change Product');
+      const today = new Date();
+      const fourMonthsAgo = new Date(today.getFullYear(), today.getMonth() - 4, 15);
+      const threeMonthsAgo = new Date(today.getFullYear(), today.getMonth() - 3, 1);
+      const twoMonthsAgo = new Date(today.getFullYear(), today.getMonth() - 2, 15);
+      const lastMonth = new Date(today.getFullYear(), today.getMonth() - 1, 15);
+
+      // Invoice from 4 months ago (outside 3-month window): $10.00
+      await createInvoiceItem(product.id, fourMonthsAgo, 1, 10.00);
+      
+      // Invoice from 3 months ago (just inside window): $12.00
+      await createInvoiceItem(product.id, threeMonthsAgo, 1, 12.00);
+      
+      // Invoice from 2 months ago: $12.00 (same price)
+      await createInvoiceItem(product.id, twoMonthsAgo, 1, 12.00);
+      
+      // Invoice from last month: $15.00 (price change)
+      await createInvoiceItem(product.id, lastMonth, 1, 15.00);
+
+      const changes = await supplierInsightsService.getRecentPriceChanges(orgId, locationId);
+      
+      const change = changes.find(c => c.productId === product.id);
+      expect(change).toBeDefined();
+      // Should compare $15 (last month) with $12 (3 months ago), NOT with $10 (4 months ago)
+      expect(change?.latestUnitPrice).toBeCloseTo(15.00);
+      expect(change?.percentChange).toBeCloseTo(25.0); // (15-12)/12 * 100 = 25%
+      // Should NOT be comparing against the $10 from 4 months ago (which would be 50% change)
+    }, 15000);
+
+    it('should not show price changes if the previous price is outside 3-month window', async () => {
+      const product = await createProduct('outside-window-prod', 'Outside Window Product');
+      const today = new Date();
+      const fourMonthsAgo = new Date(today.getFullYear(), today.getMonth() - 4, 15);
+
+      // Only invoice from 4 months ago (outside 3-month window): $10.00
+      await createInvoiceItem(product.id, fourMonthsAgo, 1, 10.00);
+      
+      // No invoices within the last 3 months
+      const changes = await supplierInsightsService.getRecentPriceChanges(orgId, locationId);
+      
+      const change = changes.find(c => c.productId === product.id);
+      expect(change).toBeUndefined(); // Should not appear since no invoices in last 3 months
+    }, 15000);
+
+    it('should detect price changes from MANUAL invoices', async () => {
+      // 1. Create Product (so we have a matching key)
+      const product = await createProduct('manual-prod-key', 'Manual Product');
+      
+      const today = new Date();
+      const lastMonth = new Date(today.getFullYear(), today.getMonth() - 1, 15);
+
+      // 2. Create Manual Invoices
+      // Old: $10.00
+      await createManualInvoiceItem('manual-prod-key', lastMonth, 1, 10.00);
+      // New: $12.00
+      await createManualInvoiceItem('manual-prod-key', today, 1, 12.00);
+
+      // 3. Enable manual data (accountCodes=['MANUAL_COGS'])
+      // Or if we pass [] or undefined, it depends on shouldIncludeManualData implementation.
+      // shouldIncludeManualData returns true if accountCodes is undefined/empty or contains MANUAL_COGS_ACCOUNT_CODE.
+      // Let's pass undefined to be safe/default.
+      
+      const changes = await supplierInsightsService.getRecentPriceChanges(orgId, locationId);
+      
+      const change = changes.find(c => c.productId === product.id);
+      expect(change).toBeDefined();
+      expect(change?.latestUnitPrice).toBeCloseTo(12.00);
+      expect(change?.percentChange).toBeCloseTo(20.0);
+      expect(change?.productName).toBe('Manual Product');
+    }, 15000);
+  });
 });

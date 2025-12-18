@@ -485,6 +485,42 @@ export const invoicePipelineService = {
                  });
                  
                  if (!currentFile?.invoice) {
+                     // Validate organisation and location exist before creating invoice
+                     const [organisation, location] = await Promise.all([
+                         prisma.organisation.findUnique({
+                             where: { id: file.organisationId },
+                             select: { id: true }
+                         }),
+                         prisma.location.findUnique({
+                             where: { id: file.locationId },
+                             select: { id: true }
+                         })
+                     ]);
+                     
+                     if (!organisation) {
+                         console.error(`[InvoicePipeline] Organisation ${file.organisationId} not found for file ${file.id}. Skipping invoice creation.`);
+                         await prisma.invoiceFile.update({
+                             where: { id: file.id },
+                             data: {
+                                 processingStatus: ProcessingStatus.OCR_FAILED,
+                                 failureReason: `Organisation ${file.organisationId} not found`
+                             }
+                         });
+                         return this.enrichStatus(await prisma.invoiceFile.findUnique({ where: { id: file.id } }) as any);
+                     }
+                     
+                     if (!location) {
+                         console.error(`[InvoicePipeline] Location ${file.locationId} not found for file ${file.id}. Skipping invoice creation.`);
+                         await prisma.invoiceFile.update({
+                             where: { id: file.id },
+                             data: {
+                                 processingStatus: ProcessingStatus.OCR_FAILED,
+                                 failureReason: `Location ${file.locationId} not found`
+                             }
+                         });
+                         return this.enrichStatus(await prisma.invoiceFile.findUnique({ where: { id: file.id } }) as any);
+                     }
+                     
                      try {
                         await prisma.invoice.create({
                             data: {
@@ -511,6 +547,18 @@ export const invoicePipelineService = {
                             }
                         });
                      } catch (e: any) {
+                         // Handle foreign key constraint violations
+                         if (e.code === 'P2003') {
+                             console.error(`[InvoicePipeline] Foreign key constraint violation for file ${file.id}: ${e.meta?.field_name}. Organisation or location may not exist.`);
+                             await prisma.invoiceFile.update({
+                                 where: { id: file.id },
+                                 data: {
+                                     processingStatus: ProcessingStatus.OCR_FAILED,
+                                     failureReason: `Foreign key constraint violation: ${e.meta?.field_name || 'unknown'}`
+                                 }
+                             });
+                             return this.enrichStatus(await prisma.invoiceFile.findUnique({ where: { id: file.id } }) as any);
+                         }
                          // Ignore P2002 (Unique constraint) as it means it was created concurrently
                          if (e.code !== 'P2002') throw e;
                          console.log(`[InvoicePipeline] Invoice already exists for file ${file.id}, skipping creation.`);
