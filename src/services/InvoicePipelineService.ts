@@ -647,6 +647,7 @@ export const invoicePipelineService = {
           lineTotal?: number;
           productCode?: string;
       }>;
+      hasManuallyAddedItems?: boolean;
   }) {
       console.log('[InvoicePipeline] verifyInvoice start', { invoiceId, ...data });
 
@@ -667,6 +668,14 @@ export const invoicePipelineService = {
 
       // Run everything in a transaction to ensure atomicity
       return await prisma.$transaction(async (tx) => {
+          // Fetch InvoiceFile fresh to avoid stale relation data
+          let invoiceFile = null;
+          if (invoice.invoiceFileId) {
+              invoiceFile = await tx.invoiceFile.findUnique({
+                  where: { id: invoice.invoiceFileId },
+                  select: { id: true, processingStatus: true }
+              });
+          }
           let targetSupplierId = data.supplierId;
 
           // 2. Resolve or Create Supplier if needed
@@ -752,10 +761,19 @@ export const invoicePipelineService = {
           });
 
           // 6. Update InvoiceFile Status
-          if (invoice.invoiceFileId) {
+          if (invoice.invoiceFileId && invoiceFile) {
+              // Determine if we should mark as MANUALLY_UPDATED
+              // Guard: only if hasManuallyAddedItems is true AND items.length > 0 (backend sanity check)
+              const shouldMarkAsManual = data.hasManuallyAddedItems === true 
+                  && data.items && data.items.length > 0
+                  && invoiceFile.processingStatus === ProcessingStatus.OCR_FAILED;
+
               await tx.invoiceFile.update({
                   where: { id: invoice.invoiceFileId },
-                  data: { reviewStatus: ReviewStatus.VERIFIED }
+                  data: { 
+                      reviewStatus: ReviewStatus.VERIFIED,
+                      ...(shouldMarkAsManual && { processingStatus: ProcessingStatus.MANUALLY_UPDATED })
+                  }
               });
           }
 

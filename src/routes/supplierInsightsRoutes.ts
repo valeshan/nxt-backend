@@ -226,4 +226,55 @@ export default async function supplierInsightsRoutes(fastify: FastifyInstance) {
         return reply.status(400).send({ error: { code: 'INVALID_ID', message: 'Invalid Product ID' } });
     }
   });
+
+  app.post('/trigger-price-alerts', {
+    schema: {
+      tags: ['Supplier Insights'],
+      summary: 'Manually trigger price alert scan and email sending',
+      querystring: z.object({
+        organisationId: z.string().optional(),
+      }),
+      response: {
+        200: z.object({
+          success: z.boolean(),
+          message: z.string(),
+          organisationId: z.string(),
+        }),
+        400: z.object({
+          error: z.string(),
+        }),
+        500: z.object({
+          error: z.string(),
+          message: z.string().optional(),
+        }),
+      }
+    }
+  }, async (request, reply) => {
+    const { organisationId: orgIdFromContext } = request.authContext;
+    const { organisationId: orgIdParam } = request.query;
+    
+    // Use query param if provided, otherwise use auth context
+    const organisationId = orgIdParam || orgIdFromContext;
+    
+    if (!organisationId) {
+      return reply.status(400).send({ error: 'organisationId is required' });
+    }
+    
+    try {
+      console.log(`[TriggerPriceAlerts] Manually triggering price alerts for organisation ${organisationId}`);
+      await supplierInsightsService.scanAndSendPriceIncreaseAlertsForOrg(organisationId);
+      
+      return reply.send({
+        success: true,
+        message: `Price alerts triggered for organisation ${organisationId}. Check logs for details.`,
+        organisationId,
+      });
+    } catch (error: any) {
+      console.error('[TriggerPriceAlerts] Error:', error);
+      return reply.status(500).send({
+        error: 'Failed to trigger price alerts',
+        message: error.message,
+      });
+    }
+  });
 }

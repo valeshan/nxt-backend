@@ -362,6 +362,7 @@ enum ProcessingStatus {
   OCR_PROCESSING
   OCR_COMPLETE
   OCR_FAILED
+  MANUALLY_UPDATED
 }
 
 enum ReviewStatus {

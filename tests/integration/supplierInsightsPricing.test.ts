@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeAll, afterAll } from 'vitest';
+import { describe, it, expect, beforeAll, afterAll, beforeEach } from 'vitest';
 import { supplierInsightsService } from '../../src/services/supplierInsightsService';
 import prisma from '../../src/infrastructure/prismaClient';
 import { resetDb, teardown } from './testApp';
@@ -63,16 +63,37 @@ describe('Supplier Insights Pricing Logic', () => {
     qty: number, 
     unitPrice: number
   ) => {
+    // Ensure product exists so manual lines can map productKey -> productId
+    // (supplierInsightsService maps manual line items via productKey derived from (productCode, description))
+    await prisma.product.upsert({
+      where: {
+        organisationId_locationId_productKey: {
+          organisationId: orgId,
+          locationId,
+          productKey: prodKey,
+        },
+      },
+      update: {},
+      create: {
+        organisationId: orgId,
+        locationId,
+        productKey: prodKey,
+        name: `Manual Product ${prodKey}`,
+        supplierId,
+      },
+    });
+
     // Create InvoiceFile (required for manual lines)
     const file = await prisma.invoiceFile.create({
         data: {
             organisationId: orgId,
             locationId: locationId,
+            sourceType: 'UPLOAD',
+            storageKey: `invoices/test/${Math.random()}.pdf`,
             fileName: 'test.pdf',
-            fileKey: `key-${Math.random()}`,
-            status: 'PROCESSED',
-            reviewStatus: 'VERIFIED',
-            uploadedByUserId: 'test-user'
+            mimeType: 'application/pdf',
+            processingStatus: 'OCR_COMPLETE',
+            reviewStatus: 'VERIFIED'
         }
     });
 
@@ -119,6 +140,20 @@ describe('Supplier Insights Pricing Logic', () => {
 
   afterAll(async () => {
     await teardown();
+  });
+
+  // Keep org/location/supplier, but isolate pricing tests from each other.
+  // This prevents:
+  // - getRecentPriceChanges() default limit (5) from dropping later-test products
+  // - unique constraint collisions on (organisationId, locationId, productKey)
+  beforeEach(async () => {
+    await prisma.xeroInvoiceLineItem.deleteMany();
+    await prisma.invoiceLineItem.deleteMany();
+    await prisma.xeroInvoice.deleteMany();
+    await prisma.invoiceOcrResult.deleteMany();
+    await prisma.invoice.deleteMany();
+    await prisma.invoiceFile.deleteMany();
+    await prisma.product.deleteMany();
   });
 
   it('Test 1: Stable price - unit cost should be stable and change 0%', async () => {
