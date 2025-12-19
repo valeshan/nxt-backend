@@ -158,6 +158,8 @@ export const invoicePipelineService = {
                   await pusherService.triggerEvent(channel, 'invoice-status-updated', {
                       invoiceFileId: updated.id,
                       status: updated.processingStatus,
+                      locationId: updated.locationId,
+                      updatedAt: updated.updatedAt,
                       reviewStatus: updated.reviewStatus,
                       invoice: updated.invoice ?? null,
                       ocrFailureCategory: updated.ocrFailureCategory ?? null,
@@ -171,6 +173,78 @@ export const invoicePipelineService = {
       }
   },
 
+  async cleanupOrphanedOcrJobs() {
+    const staleThreshold = new Date(Date.now() - 5 * 60 * 1000); // 5 minutes
+    
+    const orphanedFiles = await prisma.invoiceFile.findMany({
+      where: {
+        deletedAt: null,
+        updatedAt: { lt: staleThreshold }, // Use updatedAt, not createdAt
+        OR: [
+          { processingStatus: ProcessingStatus.PENDING_OCR },
+          { 
+            processingStatus: ProcessingStatus.OCR_PROCESSING,
+            ocrJobId: null // Only if no job started
+          }
+        ]
+      },
+      take: 10 // Small batch to avoid DB thrash
+    });
+
+    if (orphanedFiles.length === 0) return;
+
+    console.log(`[InvoicePipeline] Cleaning up ${orphanedFiles.length} orphaned OCR jobs...`);
+
+    for (const file of orphanedFiles) {
+      if ((file.ocrAttemptCount || 0) < 3) {
+        // RETRY: Explicitly reset state for clean retry
+        await prisma.invoiceFile.update({
+          where: { id: file.id },
+          data: {
+            processingStatus: ProcessingStatus.PENDING_OCR,
+            ocrAttemptCount: { increment: 1 },
+            // Clear failure fields for clean slate
+            ocrFailureCategory: null,
+            ocrFailureDetail: null,
+            failureReason: null,
+          }
+        });
+        // Let processPendingOcrJobs() pick it up on next tick
+        console.log(`[InvoicePipeline] Reset orphaned file ${file.id} to PENDING_OCR for retry (attempt ${(file.ocrAttemptCount || 0) + 1})`);
+      } else {
+        // FAIL: Max attempts reached
+        const updated = await prisma.invoiceFile.update({
+          where: { id: file.id },
+          data: {
+            processingStatus: ProcessingStatus.OCR_FAILED,
+            ocrFailureCategory: OcrFailureCategory.PROVIDER_TIMEOUT,
+            ocrFailureDetail: 'Processing timed out after multiple attempts',
+            failureReason: 'Processing timed out after multiple attempts',
+          },
+          select: { organisationId: true, locationId: true, updatedAt: true }
+        });
+        
+        // Send Pusher (non-blocking)
+        if (updated.organisationId) {
+          try {
+            const channel = pusherService.getOrgChannel(updated.organisationId);
+            await pusherService.triggerEvent(channel, 'invoice-status-updated', {
+              invoiceFileId: file.id,
+              status: ProcessingStatus.OCR_FAILED,
+              locationId: updated.locationId,
+              updatedAt: updated.updatedAt,
+              ocrFailureCategory: OcrFailureCategory.PROVIDER_TIMEOUT,
+              ocrFailureDetail: 'Processing timed out after multiple attempts',
+            });
+          } catch (e) {
+            console.warn(`[InvoicePipeline] Pusher emit failed for orphaned file ${file.id}:`, e);
+          }
+        }
+        console.log(`[InvoicePipeline] Marked orphaned file ${file.id} as OCR_FAILED (max attempts reached)`);
+      }
+    }
+  },
+
   async startOcrProcessing(invoiceFileId: string) {
     try {
       const file = await prisma.invoiceFile.findFirst({
@@ -178,7 +252,15 @@ export const invoicePipelineService = {
           id: invoiceFileId, 
           processingStatus: { in: [ProcessingStatus.PENDING_OCR, ProcessingStatus.OCR_FAILED] },
           deletedAt: null 
-        } as any
+        } as any,
+        select: {
+          id: true,
+          organisationId: true,
+          locationId: true,
+          storageKey: true,
+          mimeType: true,
+          ocrAttemptCount: true,
+        }
       });
 
       if (!file) {
@@ -188,6 +270,9 @@ export const invoicePipelineService = {
       if (!file.storageKey) {
         throw new Error(`InvoiceFile ${invoiceFileId} has no storageKey`);
       }
+
+      // Capture for Pusher in case of failure
+      const { organisationId, locationId } = file;
 
       // Check attempt count (max 3 attempts)
       const attemptCount = (file.ocrAttemptCount || 0) + 1;
@@ -266,22 +351,51 @@ export const invoicePipelineService = {
       
       console.log(`[InvoicePipeline] OCR started for ${invoiceFileId}, JobId: ${jobId}, Attempt: ${attemptCount}`);
     } catch (error: any) {
-      console.error(`[InvoicePipeline] Failed to start OCR for ${invoiceFileId}:`, error);
+      // ALWAYS log the original error with context
+      console.error(`[InvoicePipeline] Failed to start OCR for ${invoiceFileId}:`, {
+        error: error.message,
+        stack: error.stack,
+        invoiceFileId,
+      });
       
       const failureReason = error.message || 'Failed to start OCR processing';
       const classification = classifyOcrFailure(error);
       
-      await prisma.invoiceFile.update({
-        where: { id: invoiceFileId },
-        data: { 
-          processingStatus: ProcessingStatus.OCR_FAILED,
-          failureReason,
-          ocrFailureCategory: classification.category,
-          ocrFailureDetail: classification.detail,
-        }
-      }).catch((dbError) => {
+      // 1. Update DB first (critical path)
+      let updated;
+      try {
+        updated = await prisma.invoiceFile.update({
+          where: { id: invoiceFileId },
+          data: { 
+            processingStatus: ProcessingStatus.OCR_FAILED,
+            failureReason,
+            ocrFailureCategory: classification.category,
+            ocrFailureDetail: classification.detail,
+          },
+          select: { organisationId: true, locationId: true, updatedAt: true }
+        });
+      } catch (dbError) {
         console.error(`[InvoicePipeline] Failed to update status for ${invoiceFileId}:`, dbError);
-      });
+        return; // Exit - can't proceed without DB update
+      }
+
+      // 2. Send Pusher event NON-BLOCKING (wrap in try/catch)
+      if (updated.organisationId) {
+        try {
+          const channel = pusherService.getOrgChannel(updated.organisationId);
+          await pusherService.triggerEvent(channel, 'invoice-status-updated', {
+            invoiceFileId,
+            status: ProcessingStatus.OCR_FAILED,
+            locationId: updated.locationId,
+            updatedAt: updated.updatedAt,
+            ocrFailureCategory: classification.category,
+            ocrFailureDetail: classification.detail,
+          });
+        } catch (pusherError) {
+          // Log but don't throw - Pusher failure shouldn't break the handler
+          console.warn(`[InvoicePipeline] Pusher emit failed for ${invoiceFileId}:`, pusherError);
+        }
+      }
     }
   },
 

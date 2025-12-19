@@ -7,18 +7,39 @@ import { config } from '../config/env';
 export function initCronJobs() {
   console.log('[Cron] Initializing cron jobs...');
 
+  // Mutex guards to prevent overlapping runs
+  let isProcessingPending = false;
+  let isCleanupRunning = false;
+
   // Run cleanup every hour
   cron.schedule('0 * * * *', async () => {
     console.log('[Cron] Running hourly cleanup for stuck syncs...');
     await cleanupStuckSyncs();
   });
 
-  // Poll for OCR updates every 10 seconds
+  // Poll for OCR updates every 10 seconds (user-facing latency)
   cron.schedule('*/10 * * * * *', async () => {
+    if (isProcessingPending) return; // Skip if previous run still active
+    isProcessingPending = true;
     try {
       await invoicePipelineService.processPendingOcrJobs();
     } catch (err) {
       console.error('[Cron] processPendingOcrJobs failed', err);
+    } finally {
+      isProcessingPending = false;
+    }
+  });
+
+  // Cleanup orphaned files every 2 minutes (background maintenance)
+  cron.schedule('*/2 * * * *', async () => {
+    if (isCleanupRunning) return; // Skip if previous run still active
+    isCleanupRunning = true;
+    try {
+      await invoicePipelineService.cleanupOrphanedOcrJobs();
+    } catch (err) {
+      console.error('[Cron] cleanupOrphanedOcrJobs failed', err);
+    } finally {
+      isCleanupRunning = false;
     }
   });
 
