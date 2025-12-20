@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { supplierInsightsService } from '../../src/services/supplierInsightsService';
+import { MANUAL_COGS_ACCOUNT_CODE } from '../../src/config/constants';
 // import { prisma } from '../../src/infrastructure/prismaClient'; // Don't use named import if service uses default
 
 // Define mocks using vi.hoisted to avoid hoisting issues
@@ -262,5 +263,185 @@ describe('supplierInsightsService', () => {
       // Just check it didn't throw. The original test logic was trying to inspect internal logic via mocks.
       // We fixed the mocking, so it should pass if logic is correct.
   });
+  });
+
+  describe('getRecentPriceChanges (manual vs xero productId encoding)', () => {
+    it('returns manual:* productId for manual-only price changes', async () => {
+      // Order of prisma.findMany calls inside getRecentPriceChanges():
+      // 1) invoice.findMany (superseded lookup)
+      // 2) xeroInvoiceLineItem.findMany (recent xero lines)
+      // 3) invoiceLineItem.findMany (recent manual lines)
+      // 4) product.findMany (map manual productKey -> product)
+      mockFindMany.mockReset();
+
+      const supplierId = 'sup-1';
+      const key = 'transportation & logistics'; // normalized
+      const keyBase64 = Buffer.from(key).toString('base64');
+      const expectedManualId = `manual:${supplierId}:${keyBase64}`;
+
+      mockFindMany
+        .mockResolvedValueOnce([]) // invoice.findMany -> no superseded
+        .mockResolvedValueOnce([]) // xeroInvoiceLineItem.findMany -> none (manual-only)
+        .mockResolvedValueOnce([
+          // invoiceLineItem.findMany -> two manual lines to form a price change
+          {
+            lineTotal: 10,
+            unitPrice: 10,
+            quantity: 1,
+            description: 'Manual Item',
+            productCode: key, // helper uses productCode first
+            invoice: {
+              date: new Date('2025-12-15T00:00:00Z'),
+              supplier: { id: supplierId, name: 'Supplier 1' },
+            },
+          },
+          {
+            lineTotal: 8,
+            unitPrice: 8,
+            quantity: 1,
+            description: 'Manual Item',
+            productCode: key,
+            invoice: {
+              date: new Date('2025-11-15T00:00:00Z'),
+              supplier: { id: supplierId, name: 'Supplier 1' },
+            },
+          },
+        ] as any)
+        .mockResolvedValueOnce([
+          // product.findMany -> allow manual lines to be mapped to a product (as the service expects)
+          {
+            id: 'prod-uuid-1',
+            productKey: key,
+            name: 'Transportation & Logistics',
+          },
+        ] as any);
+
+      const res = await supplierInsightsService.getRecentPriceChanges(
+        orgId,
+        'loc-1',
+        [MANUAL_COGS_ACCOUNT_CODE],
+        5
+      );
+
+      expect(res.length).toBe(1);
+      expect(res[0].productId).toBe(expectedManualId);
+    });
+
+    it('returns UUID productId when the group is mixed (has Xero lines)', async () => {
+      mockFindMany.mockReset();
+
+      const supplierId = 'sup-1';
+      const key = 'transportation & logistics';
+      const productUuid = 'prod-uuid-1';
+
+      mockFindMany
+        .mockResolvedValueOnce([]) // invoice.findMany -> no superseded
+        .mockResolvedValueOnce([
+          // xeroInvoiceLineItem.findMany -> one recent xero line
+          {
+            productId: productUuid,
+            unitAmount: 10,
+            lineAmount: 10, // marker used by hasXeroLines
+            product: { id: productUuid, name: 'Transportation & Logistics' },
+            invoice: {
+              date: new Date('2025-12-14T00:00:00Z'),
+              supplier: { id: supplierId, name: 'Supplier 1' },
+            },
+          },
+          {
+            productId: productUuid,
+            unitAmount: 8,
+            lineAmount: 8,
+            product: { id: productUuid, name: 'Transportation & Logistics' },
+            invoice: {
+              date: new Date('2025-11-14T00:00:00Z'),
+              supplier: { id: supplierId, name: 'Supplier 1' },
+            },
+          },
+        ] as any)
+        .mockResolvedValueOnce([
+          // invoiceLineItem.findMany -> manual lines that would map to same productUuid
+          {
+            lineTotal: 10,
+            unitPrice: 10,
+            quantity: 1,
+            description: 'Manual Item',
+            productCode: key,
+            invoice: {
+              date: new Date('2025-12-15T00:00:00Z'),
+              supplier: { id: supplierId, name: 'Supplier 1' },
+            },
+          },
+          {
+            lineTotal: 8,
+            unitPrice: 8,
+            quantity: 1,
+            description: 'Manual Item',
+            productCode: key,
+            invoice: {
+              date: new Date('2025-11-15T00:00:00Z'),
+              supplier: { id: supplierId, name: 'Supplier 1' },
+            },
+          },
+        ] as any)
+        .mockResolvedValueOnce([
+          // product.findMany
+          { id: productUuid, productKey: key, name: 'Transportation & Logistics' },
+        ] as any);
+
+      const res = await supplierInsightsService.getRecentPriceChanges(
+        orgId,
+        'loc-1',
+        [MANUAL_COGS_ACCOUNT_CODE],
+        5
+      );
+
+      expect(res.length).toBe(1);
+      expect(res[0].productId).toBe(productUuid);
+    });
+
+    it('returns UUID productId for xero-only price changes', async () => {
+      mockFindMany.mockReset();
+
+      const supplierId = 'sup-1';
+      const productUuid = 'prod-uuid-1';
+
+      mockFindMany
+        .mockResolvedValueOnce([]) // invoice.findMany -> no superseded
+        .mockResolvedValueOnce([
+          // xeroInvoiceLineItem.findMany -> two xero lines with different unitAmount
+          {
+            productId: productUuid,
+            unitAmount: 10,
+            lineAmount: 10,
+            product: { id: productUuid, name: 'Xero Product' },
+            invoice: {
+              date: new Date('2025-12-15T00:00:00Z'),
+              supplier: { id: supplierId, name: 'Supplier 1' },
+            },
+          },
+          {
+            productId: productUuid,
+            unitAmount: 8,
+            lineAmount: 8,
+            product: { id: productUuid, name: 'Xero Product' },
+            invoice: {
+              date: new Date('2025-11-15T00:00:00Z'),
+              supplier: { id: supplierId, name: 'Supplier 1' },
+            },
+          },
+        ] as any)
+        .mockResolvedValueOnce([]); // invoiceLineItem.findMany (manual) -> none
+
+      const res = await supplierInsightsService.getRecentPriceChanges(
+        orgId,
+        'loc-1',
+        [MANUAL_COGS_ACCOUNT_CODE],
+        5
+      );
+
+      expect(res.length).toBe(1);
+      expect(res[0].productId).toBe(productUuid);
+    });
   });
 });

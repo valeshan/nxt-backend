@@ -567,7 +567,10 @@ describe('Supplier Insights Pricing Logic', () => {
       
       const changes = await supplierInsightsService.getRecentPriceChanges(orgId, locationId);
       
-      const change = changes.find(c => c.productId === product.id);
+      // Manual recent price changes should emit a manual:* productId so product detail routes to manual detail logic.
+      // Format: manual:<supplierId>:<base64(normalizedKey)>
+      const expectedManualId = `manual:${supplierId}:${Buffer.from('manual-prod-key').toString('base64')}`;
+      const change = changes.find(c => c.productId === expectedManualId);
       expect(change).toBeDefined();
       expect(change?.latestUnitPrice).toBeCloseTo(12.00);
       expect(change?.percentChange).toBeCloseTo(20.0);

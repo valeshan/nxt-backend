@@ -939,8 +939,36 @@ export const supplierInsightsService = {
         
         // Only include if change is significant (more than 0.5%)
         if (Math.abs(percentChange) > 0.5) {
+             // If this change came from verified manual invoices (and the group is not mixed with Xero),
+             // emit a manual-style productId so the product detail endpoint routes to manual detail logic.
+             //
+             // Why: manual lines are mapped to an existing Product UUID for grouping, but ProductDetail(UUID)
+             // only considers Xero lines. For manual-only changes, we need a manual:* ID.
+             const hasXeroLines = sortedLines.some((l: any) => l?.lineAmount != null); // XeroInvoiceLineItem has lineAmount
+             const isManualLatest = (latest as any)?.lineTotal != null; // InvoiceLineItem has lineTotal
+
+             let resolvedProductId = latest.productId || latest.product?.id || 'unknown';
+
+             if (isManualLatest && !hasXeroLines) {
+               const supplierId =
+                 (latest as any)?.invoice?.supplier?.id ||
+                 (latest as any)?.invoice?.supplierId;
+
+               const normalizedKey =
+                 typeof (latest as any)?.productKey === 'string'
+                   ? (latest as any).productKey
+                   : getProductKeyFromLineItem(
+                       (latest as any)?.productCode,
+                       (latest as any)?.description
+                     );
+
+               if (supplierId && normalizedKey && normalizedKey !== 'unknown') {
+                 resolvedProductId = `manual:${supplierId}:${Buffer.from(normalizedKey).toString('base64')}`;
+               }
+             }
+
              results.push({
-               productId: latest.productId || latest.product?.id || 'unknown',
+               productId: resolvedProductId,
                productName: latest.product?.name || latest.description || 'Unknown',
                supplierName: latest.invoice.supplier?.name || 'Unknown',
                latestUnitPrice: latestPrice,
