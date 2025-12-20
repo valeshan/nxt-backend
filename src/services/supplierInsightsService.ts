@@ -2379,7 +2379,7 @@ export const supplierInsightsService = {
   // K-anonymity and contributor thresholds apply ONLY to future cross-venue
   // Market Benchmark features where data is aggregated across organisations.
   // Do NOT add aggregation guards here.
-  async scanAndSendPriceIncreaseAlertsForOrg(organisationId: string): Promise<void> {
+  async scanAndSendPriceIncreaseAlertsForOrg(organisationId: string, locationIdFilter?: string): Promise<void> {
     const notificationService = new NotificationService();
     const recencyDays = config.PRICE_ALERT_RECENCY_DAYS;
     const dedupeDays = config.PRICE_ALERT_DEDUPE_DAYS;
@@ -2663,6 +2663,17 @@ export const supplierInsightsService = {
     // Log warnings for alerts without locationId
     if (alertsWithoutLocation.length > 0) {
       console.warn(`[PriceAlert] Skipping ${alertsWithoutLocation.length} alert(s) with missing locationId for org ${organisationId}`);
+    }
+
+    // If caller wants a single location, filter now
+    if (locationIdFilter) {
+      const onlyAlerts = alertsByLocation.get(locationIdFilter);
+      if (!onlyAlerts || onlyAlerts.length === 0) {
+        console.log(`[PriceAlert] No qualifying alerts for location ${locationIdFilter} in org ${organisationId}`);
+        return;
+      }
+      alertsByLocation.clear();
+      alertsByLocation.set(locationIdFilter, onlyAlerts);
     }
 
     // Process each location

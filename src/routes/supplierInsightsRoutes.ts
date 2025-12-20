@@ -3,6 +3,8 @@ import { ZodTypeProvider } from 'fastify-type-provider-zod';
 import { z } from 'zod';
 import { supplierInsightsService } from '../services/supplierInsightsService';
 import authContextPlugin from '../plugins/authContext';
+import { userOrganisationRepository } from '../repositories/userOrganisationRepository';
+import prisma from '../infrastructure/prismaClient';
 
 export default async function supplierInsightsRoutes(fastify: FastifyInstance) {
   // Register Auth Plugin for all routes in this file
@@ -232,15 +234,19 @@ export default async function supplierInsightsRoutes(fastify: FastifyInstance) {
       tags: ['Supplier Insights'],
       summary: 'Manually trigger price alert scan and email sending',
       querystring: z.object({
-        organisationId: z.string().optional(),
+        locationId: z.string().optional(),
       }),
       response: {
         200: z.object({
           success: z.boolean(),
           message: z.string(),
           organisationId: z.string(),
+          locationId: z.string().optional(),
         }),
         400: z.object({
+          error: z.string(),
+        }),
+        403: z.object({
           error: z.string(),
         }),
         500: z.object({
@@ -250,24 +256,49 @@ export default async function supplierInsightsRoutes(fastify: FastifyInstance) {
       }
     }
   }, async (request, reply) => {
-    const { organisationId: orgIdFromContext } = request.authContext;
-    const { organisationId: orgIdParam } = request.query;
-    
-    // Use query param if provided, otherwise use auth context
-    const organisationId = orgIdParam || orgIdFromContext;
-    
+    const { userId, organisationId, locationId: ctxLocationId, tokenType } = request.authContext;
+    const { locationId: queryLocationId } = request.query;
+
     if (!organisationId) {
-      return reply.status(400).send({ error: 'organisationId is required' });
+      return reply.status(400).send({ error: 'organisationId is required (missing from auth context)' });
+    }
+
+    // Any org member can trigger (no owner/admin roles enforced)
+    const membership = await userOrganisationRepository.findMembership(userId, organisationId);
+    if (!membership) {
+      return reply.status(403).send({ error: 'Not a member of this organisation' });
+    }
+
+    // Determine target location safely:
+    // - If user is on a location token, ONLY allow triggering for that location.
+    // - Otherwise, allow specifying a locationId query param.
+    const targetLocationId =
+      tokenType === 'location'
+        ? ctxLocationId
+        : queryLocationId;
+
+    if (!targetLocationId) {
+      return reply.status(400).send({ error: 'locationId is required' });
+    }
+
+    // Validate location belongs to org
+    const loc = await prisma.location.findUnique({
+      where: { id: targetLocationId },
+      select: { id: true, organisationId: true }
+    });
+    if (!loc || loc.organisationId !== organisationId) {
+      return reply.status(400).send({ error: 'Invalid locationId for organisation' });
     }
     
     try {
-      console.log(`[TriggerPriceAlerts] Manually triggering price alerts for organisation ${organisationId}`);
-      await supplierInsightsService.scanAndSendPriceIncreaseAlertsForOrg(organisationId);
+      console.log(`[TriggerPriceAlerts] Manually triggering price alerts`, { organisationId, locationId: targetLocationId });
+      await supplierInsightsService.scanAndSendPriceIncreaseAlertsForOrg(organisationId, targetLocationId);
       
       return reply.send({
         success: true,
-        message: `Price alerts triggered for organisation ${organisationId}. Check logs for details.`,
+        message: `Price alerts triggered for location ${targetLocationId}. Check logs for details.`,
         organisationId,
+        locationId: targetLocationId,
       });
     } catch (error: any) {
       console.error('[TriggerPriceAlerts] Error:', error);
