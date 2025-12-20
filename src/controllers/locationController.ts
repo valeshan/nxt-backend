@@ -3,6 +3,7 @@ import { locationService } from '../services/locationService';
 import { CreateLocationRequest } from '../dtos/authDtos';
 import { z } from 'zod';
 import { Prisma } from '@prisma/client';
+import { getLocationIfOwned } from '../utils/authorization';
 
 export const locationController = {
   async create(request: FastifyRequest<{ Body: z.infer<typeof CreateLocationRequest> }>, reply: FastifyReply) {
@@ -45,6 +46,18 @@ export const locationController = {
     const { id } = request.params;
     const { name } = request.body;
     const userId = request.authContext.userId;
+    const organisationId = request.authContext.organisationId;
+    
+    if (!organisationId) {
+      return reply.status(401).send({ error: 'Unauthorized' });
+    }
+    
+    // Verify location belongs to org
+    const location = await getLocationIfOwned(id, organisationId);
+    if (!location) {
+      return reply.status(404).send({ error: 'Location not found' });
+    }
+    
     const result = await locationService.updateLocation(userId, id, name);
     return reply.send(result);
   },
@@ -57,9 +70,13 @@ export const locationController = {
     const { userId, organisationId } = request.authContext;
 
     if (!organisationId) {
-      return reply.status(403).send({
-        error: { code: 'FORBIDDEN', message: 'Organisation context required' },
-      } as any);
+      return reply.status(401).send({ error: 'Unauthorized' });
+    }
+    
+    // Verify location belongs to org
+    const location = await getLocationIfOwned(id, organisationId);
+    if (!location) {
+      return reply.status(404).send({ error: 'Location not found' });
     }
 
     try {

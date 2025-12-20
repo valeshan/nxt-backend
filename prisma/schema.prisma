@@ -43,6 +43,10 @@ model Organisation {
   supplierAliases        SupplierAlias[]
   ocrInvoices            Invoice[]
   emailForwardingVerifications EmailForwardingVerification[]
+  
+  // Data contribution consent
+  dataContributionEnabled   Boolean   @default(true)
+  dataContributionUpdatedAt DateTime?
 }
 
 model Location {
@@ -66,6 +70,10 @@ model Location {
   forwardingVerifiedAt DateTime?
   
   emailForwardingVerifications EmailForwardingVerification[]
+  
+  // Segmentation for analytics
+  industry  VenueIndustry?
+  region    String?
 }
 
 model LocationAccountConfig {
@@ -121,6 +129,17 @@ enum OrganisationRole {
   owner
   admin
   member
+}
+
+enum VenueIndustry {
+  CAFE
+  RESTAURANT
+  BAR
+  BAKERY
+  RETAIL
+  HOTEL
+  CATERING
+  OTHER
 }
 
 model XeroConnection {

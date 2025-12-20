@@ -2373,6 +2373,12 @@ export const supplierInsightsService = {
     }
   },
 
+  // NOTE:
+  // Price Alerts are first-party, per-location insights.
+  // They compare a venue's own historical prices (did MY supplier raise MY price?).
+  // K-anonymity and contributor thresholds apply ONLY to future cross-venue
+  // Market Benchmark features where data is aggregated across organisations.
+  // Do NOT add aggregation guards here.
   async scanAndSendPriceIncreaseAlertsForOrg(organisationId: string): Promise<void> {
     const notificationService = new NotificationService();
     const recencyDays = config.PRICE_ALERT_RECENCY_DAYS;

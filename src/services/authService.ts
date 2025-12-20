@@ -223,9 +223,11 @@ export const authService = {
         data: {
           name: locationName,
           organisationId: organisation.id,
+          industry: input.industry || null,
+          region: input.region ? input.region.trim().toLowerCase() : null, // Normalize region at write time
         },
       });
-      console.log('[AuthService] Location created', { id: location.id, name: location.name });
+      console.log('[AuthService] Location created', { id: location.id, name: location.name, industry: location.industry, region: location.region });
 
       // 3. Create User
       const user = await tx.user.create({

@@ -5,6 +5,7 @@ import prisma from '../infrastructure/prismaClient';
 import { ProcessingStatus, InvoiceSourceType, ReviewStatus, Prisma } from '@prisma/client';
 import { randomUUID } from 'crypto';
 import path from 'path';
+import { getInvoiceFileIfOwned, getLocationIfOwned, validateLocationScope } from '../utils/authorization';
 
 export const invoiceController = {
   async upload(req: FastifyRequest, reply: FastifyReply) {
@@ -61,6 +62,16 @@ export const invoiceController = {
 
   async getStatus(req: FastifyRequest, reply: FastifyReply) {
      const { id } = req.params as { id: string };
+     const auth = req.authContext;
+     
+     if (!auth?.organisationId) {
+       return reply.status(401).send({ error: 'Unauthorized' });
+     }
+     
+     const file = await getInvoiceFileIfOwned(id, auth.organisationId);
+     if (!file) {
+       return reply.status(404).send({ error: 'Invoice file not found' });
+     }
      
      try {
          const result = await invoicePipelineService.pollProcessing(id);
@@ -75,6 +86,21 @@ export const invoiceController = {
 
   async verify(req: FastifyRequest, reply: FastifyReply) {
       const { id } = req.params as { id: string };
+      const auth = req.authContext;
+      
+      if (!auth?.organisationId) {
+        return reply.status(401).send({ error: 'Unauthorized' });
+      }
+      
+      // Verify invoice belongs to org before processing
+      const invoice = await prisma.invoice.findFirst({
+        where: { id, organisationId: auth.organisationId },
+        select: { id: true }
+      });
+      if (!invoice) {
+        return reply.status(404).send({ error: 'Invoice not found' });
+      }
+      
       // Extract all relevant fields from body
       const { supplierId, supplierName, total, createAlias, aliasName, selectedLineItemIds, date, items, hasManuallyAddedItems } = req.body as any;
       
@@ -139,6 +165,21 @@ export const invoiceController = {
           status?: 'ALL' | 'REVIEWED' | 'PENDING' | 'DELETED'
       };
       const auth = req.authContext;
+      
+      if (!auth?.organisationId) {
+        return reply.status(401).send({ error: 'Unauthorized' });
+      }
+      
+      // Validate location belongs to org
+      const location = await getLocationIfOwned(locationId, auth.organisationId);
+      if (!location) {
+        return reply.status(404).send({ error: 'Location not found' });
+      }
+      
+      // If token is location-scoped, validate it matches
+      if (!validateLocationScope(locationId, auth)) {
+        return reply.status(404).send({ error: 'Location not found' });
+      }
       
       try {
           const result = await invoicePipelineService.listInvoices(locationId, page, limit, {

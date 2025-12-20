@@ -9,7 +9,7 @@ ADD COLUMN     "ocrFailureDetail" TEXT,
 ADD COLUMN     "preprocessingFlags" JSONB;
 
 -- AlterTable
-ALTER TABLE "Organisation" ADD COLUMN     "sharedReportEmails" TEXT[] DEFAULT ARRAY[]::TEXT[];
+ALTER TABLE "Location" ADD COLUMN     "sharedReportEmails" TEXT[] DEFAULT ARRAY[]::TEXT[];
 
 -- AlterTable
 ALTER TABLE "User" ADD COLUMN     "onboardingCompletedAt" TIMESTAMP(3);

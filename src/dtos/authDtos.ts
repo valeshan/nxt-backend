@@ -32,6 +32,9 @@ export const RegisterOnboardRequestSchema = z.object({
   xeroState: z.string().optional(),
   venueName: z.string().min(1).optional(),
   onboardingSessionId: z.string().optional(),
+  // Segmentation fields (optional for now, will be required in future)
+  industry: z.enum(['CAFE', 'RESTAURANT', 'BAR', 'BAKERY', 'RETAIL', 'HOTEL', 'CATERING', 'OTHER']).optional(),
+  region: z.string().min(1).optional(),
 }).refine(
   (data) => data.password === data.confirmPassword,
   { path: ["confirmPassword"], message: "Passwords do not match" }
