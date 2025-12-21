@@ -2,11 +2,16 @@ generator client {
   provider = "prisma-client-js"
 }
 
+// Dev-only Prisma schema.
+// This is identical to schema.prisma, except it enables a shadow database for migrate dev/reset.
+// IMPORTANT: Do NOT use this schema in production.
+
 datasource db {
   provider = "postgresql"
   url      = env("DATABASE_URL")
-  // Note: We intentionally do NOT require SHADOW_DATABASE_URL in production.
-  // Prisma can use an automatically-managed shadow database in development when needed.
+  // Dev-only: required for prisma migrate dev/reset.
+  // Production must NOT set SHADOW_DATABASE_URL.
+  shadowDatabaseUrl = env("SHADOW_DATABASE_URL")
 }
 
 model User {
@@ -633,3 +638,4 @@ model EmailForwardingVerification {
   @@index([organisationId])
   @@index([expiresAt]) // For cleanup jobs
 }
+

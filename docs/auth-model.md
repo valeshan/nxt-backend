@@ -42,4 +42,17 @@ The system uses a secure, stateful-frontend / stateless-backend authentication m
 *   **CORS**: strictly limited to Frontend URL in production.
 *   **Cookies**: HttpOnly to prevent XSS token theft.
 *   **CSRF**: Mitigated by SameSite=Lax (sufficient for this architecture).
-*   **Database**: Connection pooling configured to prevent exhaustion.
+*   **Database (Prisma pooling)**: Prisma connection pooling is configured via `DATABASE_URL` query params (not PgBouncer), e.g. `?connection_limit=5&pool_timeout=10`.
+    *   Scaling: \((instances + workers/job\_processes) \times connection\_limit\) should stay under the DB connection cap (Railway ~97).
+
+## Prisma Migration Safety (Dev vs Prod)
+
+We intentionally keep two Prisma schemas:
+
+- `prisma/schema.prisma` (default / production-safe): does **not** require `SHADOW_DATABASE_URL`.
+- `prisma/schema.dev.prisma` (development-only): includes `shadowDatabaseUrl = env("SHADOW_DATABASE_URL")` and is used for dev migrations.
+
+Scripts:
+
+- Dev: `npm run prisma:migrate:dev` / `npm run prisma:migrate:reset` (uses `schema.dev.prisma`)
+- Prod: `npm run prisma:migrate:deploy` (uses `schema.prisma`)

@@ -9,6 +9,11 @@ if (process.env.NODE_ENV === 'development') {
 
 const envSchema = z.object({
   DATABASE_URL: z.string().min(1),
+  // Expected format for production (Railway Postgres):
+  // postgresql://user:pass@host:port/db?connection_limit=5&pool_timeout=10
+  // Notes:
+  // - This configures Prisma's internal connection pool (not PgBouncer).
+  // - Scaling: Total connections ~= (app instances + workers/job processes) x connection_limit < Railway limit (~97).
   JWT_VERIFY_SECRET: z.string().min(1),
   JWT_REFRESH_SECRET: z.string().min(1),
   TOKEN_ENCRYPTION_KEY: z.string().min(32),
@@ -42,6 +47,11 @@ const envSchema = z.object({
   REDIS_URL: z.string().optional(),
   LOG_LEVEL: z.enum(['debug', 'info', 'warn', 'error']).default('info'),
   ENABLE_RATE_LIMIT: z.string().optional().default('true'),
+
+  // Prisma slow query logging (backend)
+  // - In production, we do NOT log SQL text or params; only duration + query hash.
+  PRISMA_SLOW_QUERY_LOGGING: z.string().optional().default('true'),
+  PRISMA_SLOW_MS: z.coerce.number().optional().default(800),
 
   // Email Configuration (Gmail SMTP)
   GMAIL_ALERTS_USER: z.string().optional(),

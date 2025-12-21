@@ -5,8 +5,8 @@ Backend service for Xero integration metadata.
 ## 🔥 Database Safety Rules
 
 - **Local dev:**
-  - Edit `schema.prisma`.
-  - Run `npm run prisma:migrate:dev`.
+  - Edit `prisma/schema.prisma`.
+  - Migrations use `prisma/schema.dev.prisma` (dev-only) so `SHADOW_DATABASE_URL` is available to `prisma migrate dev/reset`.
   - Uses local `DATABASE_URL` and `SHADOW_DATABASE_URL`.
 
 - **Production (hosted env, e.g. Railway):**
@@ -14,6 +14,21 @@ Backend service for Xero integration metadata.
   - `SHADOW_DATABASE_URL` is **never** set.
   - Never run `migrate dev` / `reset` / `db push`.
   - To apply migrations: `npm run prisma:migrate:deploy`.
+
+## Prisma Schemas (Dev vs Prod)
+
+We intentionally keep two Prisma schemas:
+
+- **`prisma/schema.prisma` (default / production-safe)**:
+  - Does **not** reference `SHADOW_DATABASE_URL`, so production environments don’t need it.
+  - Used by `npm run prisma:migrate:deploy` (production).
+
+- **`prisma/schema.dev.prisma` (development-only)**:
+  - Same models as `schema.prisma`, but includes:
+    - `shadowDatabaseUrl = env("SHADOW_DATABASE_URL")`
+  - Used by:
+    - `npm run prisma:migrate:dev`
+    - `npm run prisma:migrate:reset`
 
 ### Using the Safety Script
 
@@ -36,13 +51,14 @@ Follow this step-by-step process to safely develop and deploy database migration
 This is your safe testing ground. Always test migrations locally before deploying.
 
 1. **Edit the schema:**
-   - Open `prisma/schema.prisma`
+   - Open `prisma/schema.prisma` (this is the source of truth)
    - Make your changes (e.g., add a nullable field to an existing model)
 
 2. **Create the migration:**
    ```bash
    npm run prisma:migrate:dev
    ```
+   - This uses `prisma/schema.dev.prisma` under the hood (dev-only shadow DB enabled).
    - Note: The `--name <descriptive_name>` flag is optional; Prisma will prompt you for a name if omitted.
 
 3. **Verify the migration:**
