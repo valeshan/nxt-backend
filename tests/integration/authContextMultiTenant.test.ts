@@ -79,6 +79,33 @@ describe('Multi-Tenant Auth Context Integration', () => {
             invoiceNumber: 'INV-B-001'
         }
     });
+
+    // Seed an InvoiceFile + Invoice in Org A so cross-org requests are meaningful
+    await prisma.invoiceFile.create({
+      data: {
+        id: 'file-a',
+        organisationId: orgA.id,
+        locationId: locA.id,
+        sourceType: 'UPLOAD',
+        storageKey: 'test/file-a.pdf',
+        fileName: 'file-a.pdf',
+        mimeType: 'application/pdf',
+        processingStatus: 'OCR_FAILED',
+        reviewStatus: 'NONE',
+      },
+    });
+
+    await prisma.invoice.create({
+      data: {
+        id: 'inv-a',
+        organisationId: orgA.id,
+        locationId: locA.id,
+        sourceType: 'UPLOAD',
+        invoiceFileId: 'file-a',
+        supplierId: supplierA.id,
+        isVerified: false,
+      },
+    });
   }, 30000); // Increased timeout for slow DB reset/seed
 
   it('Test 1: Valid tenant access - Location Token for Org A should see Supplier A', async () => {
@@ -222,6 +249,45 @@ describe('Multi-Tenant Auth Context Integration', () => {
     const returnedIds = body.data.map((s: any) => s.id);
     expect(returnedIds).toContain(supplierA.id);
     expect(returnedIds).not.toContain(supplierB.id);
+  });
+
+  it('Test 7: IDOR regression - Org B cannot access Org A invoice file status (404)', async () => {
+    const tokenB = signAccessToken({
+      sub: userB.id,
+      orgId: orgB.id,
+      locId: locB.id,
+      tokenType: 'location',
+      roles: ['owner'],
+      tokenVersion: 0,
+    });
+
+    const response = await app.inject({
+      method: 'GET',
+      url: '/invoices/file-a/status',
+      headers: { Authorization: `Bearer ${tokenB}` },
+    });
+
+    expect(response.statusCode).toBe(404);
+  });
+
+  it('Test 8: IDOR regression - Org B cannot verify Org A invoice (404)', async () => {
+    const tokenB = signAccessToken({
+      sub: userB.id,
+      orgId: orgB.id,
+      locId: locB.id,
+      tokenType: 'location',
+      roles: ['owner'],
+      tokenVersion: 0,
+    });
+
+    const response = await app.inject({
+      method: 'PATCH',
+      url: '/invoices/inv-a/verify',
+      headers: { Authorization: `Bearer ${tokenB}` },
+      payload: {},
+    });
+
+    expect(response.statusCode).toBe(404);
   });
 });
 

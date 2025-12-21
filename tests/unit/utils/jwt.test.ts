@@ -19,6 +19,12 @@ describe('JWT Utils', () => {
     expect(decoded.tokenType).toBe('login');
   });
 
+  it('refresh token should not verify with access token verifier', () => {
+    const payload = { sub: 'user1', tokenType: 'login' as const, roles: [], tokenVersion: 0 };
+    const token = signRefreshToken(payload);
+    expect(() => verifyToken(token)).toThrow();
+  });
+
   it('should fail for invalid signature', () => {
     const token = jwt.sign({ sub: 'user1' }, 'wrongsecret');
     expect(() => verifyToken(token)).toThrow();

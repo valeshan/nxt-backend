@@ -54,4 +54,38 @@ describe('Auth Service', () => {
     expect(result.access_token).toBeDefined();
     expect(result.refresh_token).toBeDefined();
   });
+
+  it('refreshTokens should reject when tokenVersion mismatches (revoked)', async () => {
+    const token = 'revoked_refresh_token';
+    vi.spyOn(jwtUtils, 'verifyRefreshToken').mockReturnValue({
+      sub: 'u1',
+      tokenType: 'login',
+      roles: [],
+      tokenVersion: 0,
+    } as any);
+    vi.mocked(userRepository.findById).mockResolvedValue({ id: 'u1', tokenVersion: 1 } as any);
+
+    await expect(authService.refreshTokens(token)).rejects.toMatchObject({ statusCode: 401 });
+  });
+
+  it('refreshTokens should not increment tokenVersion (should re-issue with same version)', async () => {
+    const token = 'valid_refresh_token';
+    vi.spyOn(jwtUtils, 'verifyRefreshToken').mockReturnValue({
+      sub: 'u1',
+      tokenType: 'login',
+      roles: [],
+      tokenVersion: 7,
+    } as any);
+    vi.mocked(userRepository.findById).mockResolvedValue({ id: 'u1', tokenVersion: 7 } as any);
+
+    const signAccessSpy = vi.spyOn(jwtUtils, 'signAccessToken').mockReturnValue('new_access_token' as any);
+    const signRefreshSpy = vi.spyOn(jwtUtils, 'signRefreshToken').mockReturnValue('new_refresh_token' as any);
+
+    const result = await authService.refreshTokens(token);
+    expect(result.access_token).toBe('new_access_token');
+    expect(result.refresh_token).toBe('new_refresh_token');
+
+    expect(signAccessSpy).toHaveBeenCalledWith(expect.objectContaining({ sub: 'u1', tokenVersion: 7 }));
+    expect(signRefreshSpy).toHaveBeenCalledWith(expect.objectContaining({ sub: 'u1', tokenVersion: 7 }));
+  });
 });
