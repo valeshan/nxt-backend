@@ -18,6 +18,7 @@ model User {
   lastName              String             @default("")
   name                  String?
   profilePicture        String?
+  tokenVersion          Int                @default(0)
   onboardingCompletedAt DateTime?
   createdAt             DateTime           @default(now())
   updatedAt             DateTime           @updatedAt

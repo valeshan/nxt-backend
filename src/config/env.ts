@@ -10,6 +10,7 @@ if (process.env.NODE_ENV === 'development') {
 const envSchema = z.object({
   DATABASE_URL: z.string().min(1),
   JWT_VERIFY_SECRET: z.string().min(1),
+  JWT_REFRESH_SECRET: z.string().min(1),
   TOKEN_ENCRYPTION_KEY: z.string().min(32),
   PORT: z.coerce.number().default(4001),
   NODE_ENV: z.enum(['development', 'production', 'test']).default('development'),

@@ -5,7 +5,7 @@ import prisma from '../infrastructure/prismaClient';
 import { ProcessingStatus, InvoiceSourceType, ReviewStatus, Prisma } from '@prisma/client';
 import { randomUUID } from 'crypto';
 import path from 'path';
-import { getInvoiceFileIfOwned, getLocationIfOwned, validateLocationScope } from '../utils/authorization';
+import { getInvoiceFileIfOwned, getInvoiceIfOwned, getLocationIfOwned, validateLocationScope } from '../utils/authorization';
 
 export const invoiceController = {
   async upload(req: FastifyRequest, reply: FastifyReply) {
@@ -92,11 +92,8 @@ export const invoiceController = {
         return reply.status(401).send({ error: 'Unauthorized' });
       }
       
-      // Verify invoice belongs to org before processing
-      const invoice = await prisma.invoice.findFirst({
-        where: { id, organisationId: auth.organisationId },
-        select: { id: true }
-      });
+      // Verify invoice belongs to org before processing (shared helper for consistency)
+      const invoice = await getInvoiceIfOwned(id, auth.organisationId);
       if (!invoice) {
         return reply.status(404).send({ error: 'Invoice not found' });
       }

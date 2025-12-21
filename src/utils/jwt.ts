@@ -9,6 +9,7 @@ export interface TokenPayload {
   locId?: string;
   tokenType: AuthTokenType;
   roles: string[];
+  tokenVersion: number;
   // Standard JWT claims
   iat?: number;
   exp?: number;
@@ -25,9 +26,13 @@ export function signAccessToken(payload: Omit<TokenPayload, 'iat' | 'exp'>, expi
 }
 
 export function signRefreshToken(payload: Omit<TokenPayload, 'iat' | 'exp'>, expiresIn: string | number = REFRESH_TOKEN_TTL_SECONDS): string {
-  return jwt.sign(payload as object, config.JWT_VERIFY_SECRET, { expiresIn: typeof expiresIn === 'number' ? expiresIn : parseInt(String(expiresIn)) });
+  return jwt.sign(payload as object, config.JWT_REFRESH_SECRET, { expiresIn: typeof expiresIn === 'number' ? expiresIn : parseInt(String(expiresIn)) });
 }
 
 export function verifyToken(token: string): TokenPayload {
   return jwt.verify(token, config.JWT_VERIFY_SECRET) as TokenPayload;
+}
+
+export function verifyRefreshToken(token: string): TokenPayload {
+  return jwt.verify(token, config.JWT_REFRESH_SECRET) as TokenPayload;
 }

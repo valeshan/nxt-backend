@@ -106,6 +106,12 @@ export default async function invoiceRoutes(fastify: FastifyInstance) {
 
   // POST /invoices/upload-session
   app.post('/upload-session', {
+      config: {
+          rateLimit: {
+              max: 10,
+              timeWindow: '1 minute',
+          },
+      },
       schema: {
           body: z.object({
               organisationId: z.string(),

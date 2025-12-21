@@ -41,12 +41,13 @@ describe('Auth Service', () => {
   it('refreshTokens should rotate tokens correctly', async () => {
     const token = 'valid_refresh_token';
     // Update mock to include tokenType: 'login'
-    vi.spyOn(jwtUtils, 'verifyToken').mockReturnValue({ 
+    vi.spyOn(jwtUtils, 'verifyRefreshToken').mockReturnValue({ 
         sub: 'u1', 
         tokenType: 'login', // Changed from type: 'refresh_token_login'
-        roles: [] 
+        roles: [],
+        tokenVersion: 0,
     } as any);
-    vi.mocked(userRepository.findById).mockResolvedValue({ id: 'u1' } as any);
+    vi.mocked(userRepository.findById).mockResolvedValue({ id: 'u1', tokenVersion: 0 } as any);
 
     const result = await authService.refreshTokens(token);
 

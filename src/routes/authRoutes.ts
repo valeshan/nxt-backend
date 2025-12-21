@@ -9,6 +9,12 @@ export default async function authRoutes(fastify: FastifyInstance) {
 
   // Public Routes
   app.post('/register', {
+    config: {
+      rateLimit: {
+        max: 3,
+        timeWindow: '1 minute',
+      },
+    },
     schema: {
       body: RegisterRequest,
     },
@@ -16,18 +22,36 @@ export default async function authRoutes(fastify: FastifyInstance) {
 
   // New Registration with Onboarding Endpoint
   app.post('/register-onboard', {
+    config: {
+      rateLimit: {
+        max: 3,
+        timeWindow: '1 minute',
+      },
+    },
     schema: {
       body: RegisterOnboardRequestSchema,
     }
   }, authController.registerOnboardHandler);
 
   app.post('/login', {
+    config: {
+      rateLimit: {
+        max: 5,
+        timeWindow: '1 minute',
+      },
+    },
     schema: {
       body: LoginRequest,
     },
   }, authController.login);
 
   app.post('/refresh', {
+    config: {
+      rateLimit: {
+        max: 30,
+        timeWindow: '1 minute',
+      },
+    },
     schema: {
       body: RefreshTokenRequest,
     },
@@ -47,10 +71,25 @@ export default async function authRoutes(fastify: FastifyInstance) {
     }, authController.updateProfile);
 
     typedApp.post('/change-password', {
+      config: {
+        rateLimit: {
+          max: 3,
+          timeWindow: '1 minute',
+        },
+      },
       schema: {
         body: ChangePasswordRequest,
       },
     }, authController.changePassword);
+
+    typedApp.post('/logout', {
+      config: {
+        rateLimit: {
+          max: 10,
+          timeWindow: '1 minute',
+        },
+      },
+    }, authController.logout);
 
     typedApp.post('/select-organisation', {
       schema: {

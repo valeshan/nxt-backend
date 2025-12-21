@@ -4,6 +4,7 @@ export const supplierResolutionService = {
   async resolveSupplier(rawName: string, organisationId: string) {
     if (!rawName) return null;
     const normalized = rawName.toLowerCase().trim();
+    const rawNameSafe = rawName.slice(0, 50); // truncate to reduce log noise/PII exposure
 
     // 1. Try exact match on SupplierAlias
     const alias = await prisma.supplierAlias.findUnique({
@@ -17,14 +18,13 @@ export const supplierResolutionService = {
     });
 
     if (alias) {
-        // Structured logging for instrumentation
+        // Structured logging for instrumentation (log interesting cases only)
         console.log(JSON.stringify({
             event: 'supplier_resolve',
             orgId: organisationId,
-            rawName,
+            rawName: rawNameSafe,
             matchType: 'ALIAS',
             supplierId: alias.supplier.id,
-            supplierName: alias.supplier.name,
             confidence: 1.0
         }));
         return { supplier: alias.supplier, confidence: 1.0, matchType: 'ALIAS' as const };
@@ -40,16 +40,7 @@ export const supplierResolutionService = {
     });
 
     if (supplier) {
-        // Structured logging for instrumentation
-        console.log(JSON.stringify({
-            event: 'supplier_resolve',
-            orgId: organisationId,
-            rawName,
-            matchType: 'EXACT',
-            supplierId: supplier.id,
-            supplierName: supplier.name,
-            confidence: 1.0
-        }));
+        // Do not log EXACT matches to reduce noise/cost.
         return { supplier, confidence: 1.0, matchType: 'EXACT' as const };
     }
     
@@ -58,7 +49,7 @@ export const supplierResolutionService = {
     console.log(JSON.stringify({
         event: 'supplier_resolve',
         orgId: organisationId,
-        rawName,
+        rawName: rawNameSafe,
         matchType: 'NO_MATCH',
         confidence: 0.0
     }));

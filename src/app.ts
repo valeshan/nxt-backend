@@ -27,6 +27,9 @@ import { config } from './config/env';
 
 export function buildApp(): FastifyInstance {
   const app = Fastify({
+    // IMPORTANT: Trust proxy headers (X-Forwarded-For) so rate limiting works correctly
+    // behind load balancers / reverse proxies (e.g., Railway, Cloudflare, Nginx).
+    trustProxy: true,
     logger: {
       level: config.LOG_LEVEL,
       transport:

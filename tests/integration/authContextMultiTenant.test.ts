@@ -87,7 +87,8 @@ describe('Multi-Tenant Auth Context Integration', () => {
         orgId: orgA.id,
         locId: locA.id,
         tokenType: 'location',
-        roles: ['owner']
+        roles: ['owner'],
+        tokenVersion: 0,
     });
 
     const response = await app.inject({
@@ -109,7 +110,8 @@ describe('Multi-Tenant Auth Context Integration', () => {
         orgId: orgA.id,
         locId: locA.id,
         tokenType: 'location',
-        roles: ['owner']
+        roles: ['owner'],
+        tokenVersion: 0,
     });
 
     // Attempt to spoof accessing Org B using Org A token + Org B headers
@@ -146,7 +148,8 @@ describe('Multi-Tenant Auth Context Integration', () => {
         sub: userA.id,
         orgId: orgA.id,
         tokenType: 'organisation',
-        roles: ['owner']
+        roles: ['owner'],
+        tokenVersion: 0,
     });
 
     // /supplier-insights/summary requires location context
@@ -166,7 +169,8 @@ describe('Multi-Tenant Auth Context Integration', () => {
         sub: userA.id,
         orgId: orgA.id,
         tokenType: 'organisation',
-        roles: ['owner']
+        roles: ['owner'],
+        tokenVersion: 0,
     });
 
     // /organisations/ requires valid org context
@@ -201,7 +205,8 @@ describe('Multi-Tenant Auth Context Integration', () => {
         orgId: orgA.id,
         locId: locA.id,
         tokenType: 'location',
-        roles: ['owner']
+        roles: ['owner'],
+        tokenVersion: 0,
     });
 
     const response = await app.inject({

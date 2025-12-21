@@ -5,7 +5,7 @@ import { organisationRepository } from '../repositories/organisationRepository';
 import { locationRepository } from '../repositories/locationRepository';
 import { onboardingSessionRepository } from '../repositories/onboardingSessionRepository';
 import { hashPassword, verifyPassword } from '../utils/password';
-import { signAccessToken, signRefreshToken, verifyToken, AuthTokenType, ACCESS_TOKEN_TTL_SECONDS, TokenPayload } from '../utils/jwt';
+import { signAccessToken, signRefreshToken, verifyRefreshToken, verifyToken, AuthTokenType, ACCESS_TOKEN_TTL_SECONDS, TokenPayload } from '../utils/jwt';
 import { Prisma, OrganisationRole, XeroSyncScope } from '@prisma/client';
 import { RegisterOnboardRequestSchema } from '../dtos/authDtos';
 import { z } from 'zod';
@@ -112,9 +112,23 @@ export const authService = {
     }
 
     const passwordHash = await hashPassword(newPassword);
-    await userRepository.updateUser(userId, { passwordHash });
+    // Security: increment tokenVersion on password change to revoke existing refresh tokens.
+    const nextTokenVersion = ((user as any).tokenVersion ?? 0) + 1;
+    await userRepository.updateUser(userId, { passwordHash, tokenVersion: nextTokenVersion } as any);
 
     return { message: 'Password updated successfully' };
+  },
+
+  async logout(userId: string) {
+    const user = await userRepository.findById(userId);
+    if (!user) {
+      // Idempotent logout
+      return { success: true };
+    }
+
+    const nextTokenVersion = ((user as any).tokenVersion ?? 0) + 1;
+    await userRepository.updateUser(userId, { tokenVersion: nextTokenVersion } as any);
+    return { success: true };
   },
 
   /**
@@ -225,9 +239,9 @@ export const authService = {
           organisationId: organisation.id,
           industry: input.industry || null,
           region: input.region ? input.region.trim().toLowerCase() : null, // Normalize region at write time
-        },
+        } as any,
       });
-      console.log('[AuthService] Location created', { id: location.id, name: location.name, industry: location.industry, region: location.region });
+      console.log('[AuthService] Location created', { id: location.id, name: location.name, industry: (location as any).industry, region: (location as any).region });
 
       // 3. Create User
       const user = await tx.user.create({
@@ -286,6 +300,7 @@ export const authService = {
         locId: location.id,
         tokenType: 'location',
         roles: [OrganisationRole.owner],
+        tokenVersion: (user as any).tokenVersion ?? 0,
       });
       const refreshToken = signRefreshToken({
         sub: user.id,
@@ -293,6 +308,7 @@ export const authService = {
         locId: location.id,
         tokenType: 'location',
         roles: [OrganisationRole.owner],
+        tokenVersion: (user as any).tokenVersion ?? 0,
       });
 
       // 8. Update Onboarding Session if present
@@ -389,8 +405,8 @@ export const authService = {
       role: m.role,
     }));
 
-    const accessToken = signAccessToken({ sub: user.id, tokenType: 'login', roles: [] });
-    const refreshToken = signRefreshToken({ sub: user.id, tokenType: 'login', roles: [] });
+    const accessToken = signAccessToken({ sub: user.id, tokenType: 'login', roles: [], tokenVersion: (user as any).tokenVersion ?? 0 });
+    const refreshToken = signRefreshToken({ sub: user.id, tokenType: 'login', roles: [], tokenVersion: (user as any).tokenVersion ?? 0 });
 
     return {
       user_id: user.id,
@@ -407,6 +423,11 @@ export const authService = {
   },
 
   async selectOrganisation(userId: string, organisationId: string) {
+    const user = await userRepository.findById(userId);
+    if (!user) {
+      throw { statusCode: 404, message: 'User not found' };
+    }
+
     const membership = await userOrganisationRepository.findMembership(userId, organisationId);
     if (!membership) {
       throw { statusCode: 403, message: 'Not a member of this organisation' };
@@ -415,8 +436,8 @@ export const authService = {
     const locations = await locationService.listForOrganisation(userId, organisationId);
     
     const roles = [membership.role];
-    const accessToken = signAccessToken({ sub: userId, orgId: organisationId, tokenType: 'organisation', roles });
-    const refreshToken = signRefreshToken({ sub: userId, orgId: organisationId, tokenType: 'organisation', roles });
+    const accessToken = signAccessToken({ sub: userId, orgId: organisationId, tokenType: 'organisation', roles, tokenVersion: (user as any).tokenVersion ?? 0 });
+    const refreshToken = signRefreshToken({ sub: userId, orgId: organisationId, tokenType: 'organisation', roles, tokenVersion: (user as any).tokenVersion ?? 0 });
 
     // Return structure similar to BE1 (implied based on login return + locations)
     return {
@@ -429,6 +450,11 @@ export const authService = {
   },
 
   async selectLocation(userId: string, locationId: string) {
+    const user = await userRepository.findById(userId);
+    if (!user) {
+      throw { statusCode: 404, message: 'User not found' };
+    }
+
     const location = await locationRepository.findById(locationId);
     if (!location) {
       throw { statusCode: 404, message: 'Location not found' };
@@ -448,14 +474,16 @@ export const authService = {
       orgId: location.organisationId, 
       locId: locationId, 
       tokenType: 'location',
-      roles
+      roles,
+      tokenVersion: (user as any).tokenVersion ?? 0
     });
     const refreshToken = signRefreshToken({ 
       sub: userId, 
       orgId: location.organisationId, 
       locId: locationId, 
       tokenType: 'location',
-      roles
+      roles,
+      tokenVersion: (user as any).tokenVersion ?? 0
     });
 
     return {
@@ -476,7 +504,7 @@ export const authService = {
 
     let decoded: TokenPayload;
     try {
-      decoded = verifyToken(token);
+      decoded = verifyRefreshToken(token);
     } catch (err: any) {
       const reason = err.name === 'TokenExpiredError' ? 'expired' : 
                      err.name === 'JsonWebTokenError' ? 'signature_invalid' : 'unknown';
@@ -505,6 +533,20 @@ export const authService = {
     if (!user) {
       console.warn(`[AuthService.refreshTokens] User not found: ${userId}`);
       throw { statusCode: 401, message: 'User not found' };
+    }
+
+    // Token revocation guard:
+    // Do NOT increment tokenVersion on refresh (avoid race conditions with parallel refreshes).
+    // Only increment on logout / password change / security breach.
+    const currentTokenVersion = (user as any).tokenVersion ?? 0;
+    const presentedTokenVersion = typeof (decoded as any).tokenVersion === 'number' ? (decoded as any).tokenVersion : 0;
+    if (presentedTokenVersion !== currentTokenVersion) {
+      console.warn('[AuthService.refreshTokens] tokenVersion mismatch', {
+        userId,
+        presentedTokenVersion,
+        currentTokenVersion
+      });
+      throw { statusCode: 401, message: 'Invalid refresh token' };
     }
 
     let newTokenTokenType: AuthTokenType;
@@ -553,8 +595,8 @@ export const authService = {
       roles = [membership.role];
     }
 
-    const newAccessToken = signAccessToken({ sub: userId, tokenType: newTokenTokenType, roles, ...extraPayload });
-    const newRefreshToken = signRefreshToken({ sub: userId, tokenType: newTokenTokenType, roles, ...extraPayload });
+    const newAccessToken = signAccessToken({ sub: userId, tokenType: newTokenTokenType, roles, tokenVersion: currentTokenVersion, ...extraPayload });
+    const newRefreshToken = signRefreshToken({ sub: userId, tokenType: newTokenTokenType, roles, tokenVersion: currentTokenVersion, ...extraPayload });
 
     console.log(`[AuthService.refreshTokens] Success. Issued new tokens for user ${userId}, expires_in=${ACCESS_TOKEN_TTL_SECONDS}`);
 

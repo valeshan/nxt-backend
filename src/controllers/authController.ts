@@ -99,5 +99,11 @@ export const authController = {
       }
       throw error;
     }
-  }
+  },
+
+  async logout(request: FastifyRequest, reply: FastifyReply) {
+    const userId = request.authContext.userId;
+    const result = await authService.logout(userId);
+    return reply.send(result);
+  },
 };
