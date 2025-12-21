@@ -53,14 +53,22 @@ export class XeroSyncService {
         if (!existingRun) {
             throw new Error(`Sync run ${runId} not found`);
         }
-        // Double check if it's already done/failed? Assuming controller handles state transitions correctly.
-        await prisma.xeroSyncRun.update({
-            where: { id: runId },
+        // DB-level guarded transition: PENDING -> IN_PROGRESS (single-runner semantics)
+        if (existingRun.status !== XeroSyncStatus.PENDING) {
+            // Someone else claimed it or it's already terminal; "skip means skip".
+            return connection;
+        }
+        const claimed = await prisma.xeroSyncRun.updateMany({
+            where: { id: runId, status: XeroSyncStatus.PENDING },
             data: {
                 status: XeroSyncStatus.IN_PROGRESS,
-                startedAt: new Date() // Reset start time? Or keep original creation? Let's update to show actual work start.
+                startedAt: new Date(),
             }
         });
+        if (claimed.count === 0) {
+            // Lost the race
+            return connection;
+        }
     } else {
         // Case B: runId NOT provided (Internal/System call)
         // Concurrency Check
@@ -112,8 +120,9 @@ export class XeroSyncService {
             
             // Update run record to reflect actual scope
             if (currentRunId) {
-                await prisma.xeroSyncRun.update({
-                    where: { id: currentRunId },
+                // Only update active runs; avoid rewriting terminal runs
+                await prisma.xeroSyncRun.updateMany({
+                    where: { id: currentRunId, status: XeroSyncStatus.IN_PROGRESS },
                     data: { scope: XeroSyncScope.FULL }
                 });
             }
@@ -244,17 +253,19 @@ export class XeroSyncService {
         console.log('[XeroSync] Sync completed successfully. Max Modified Date:', maxModifiedDate);
         
         const finishedAt = new Date();
+        let didUpdateRunToSuccess = false;
         
         // Update Run
         if (currentRunId) {
-            await prisma.xeroSyncRun.update({
-                where: { id: currentRunId },
+            const updated = await prisma.xeroSyncRun.updateMany({
+                where: { id: currentRunId, status: XeroSyncStatus.IN_PROGRESS },
                 data: {
                     status: XeroSyncStatus.SUCCESS,
                     finishedAt,
                     rowsProcessed: totalRowsProcessed
                 }
             });
+            didUpdateRunToSuccess = updated.count > 0;
         }
 
         // Update Connection Last Sync
@@ -282,7 +293,7 @@ export class XeroSyncService {
         });
 
         // Notify frontend via Pusher (Success)
-        if (currentRunId) {
+        if (currentRunId && didUpdateRunToSuccess) {
             await pusherService.triggerEvent(
                 pusherService.getOrgChannel(organisationId),
                 'xero-sync-completed',
@@ -303,8 +314,8 @@ export class XeroSyncService {
         
         // 7. Completion - Failure
         if (currentRunId) {
-            await prisma.xeroSyncRun.update({
-                where: { id: currentRunId },
+            const updated = await prisma.xeroSyncRun.updateMany({
+                where: { id: currentRunId, status: XeroSyncStatus.IN_PROGRESS },
                 data: {
                     status: XeroSyncStatus.FAILED,
                     finishedAt: new Date(),
@@ -313,17 +324,19 @@ export class XeroSyncService {
             });
 
             // Notify frontend via Pusher (Failed)
-            await pusherService.triggerEvent(
-                pusherService.getOrgChannel(organisationId),
-                'xero-sync-completed',
-                {
-                    organisationId,
-                    connectionId,
-                    runId: currentRunId,
-                    status: 'FAILED',
-                    errorMessage: error instanceof Error ? error.message : String(error)
-                }
-            );
+            if (updated.count > 0) {
+                await pusherService.triggerEvent(
+                    pusherService.getOrgChannel(organisationId),
+                    'xero-sync-completed',
+                    {
+                        organisationId,
+                        connectionId,
+                        runId: currentRunId,
+                        status: 'FAILED',
+                        errorMessage: error instanceof Error ? error.message : String(error)
+                    }
+                );
+            }
         }
         
         // Re-throw to ensure caller knows it failed (if awaited)

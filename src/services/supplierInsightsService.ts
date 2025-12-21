@@ -9,6 +9,7 @@ import { config } from '../config/env';
 import { NotificationService } from './notificationService';
 import { PriceIncreaseItem } from './emailTemplates/priceIncreaseTemplates';
 import { getProductKeyFromLineItem } from './helpers/productKey';
+import { getOffsetPaginationOrThrow } from '../utils/paginationGuards';
 
 // --- Types & DTOs ---
 
@@ -1251,9 +1252,12 @@ export const supplierInsightsService = {
   },
 
   async getProducts(organisationId: string, locationId: string | undefined, params: GetProductsParams): Promise<PaginatedResult<ProductListItem>> {
-    const page = params.page || 1;
-    const pageSize = params.pageSize || 20;
-    const skip = (page - 1) * pageSize;
+    const { page, limit: pageSize, skip } = getOffsetPaginationOrThrow({
+      page: params.page || 1,
+      limit: params.pageSize || 20,
+      maxLimit: 100,
+      maxOffset: 5000,
+    });
     const last12m = getFullCalendarMonths(12);
 
     // Build Where Clause

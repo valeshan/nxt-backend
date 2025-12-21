@@ -1,6 +1,7 @@
 import { PrismaClient, Prisma } from '@prisma/client';
 import { config } from '../config/env';
 import crypto from 'crypto';
+import { getRequestContext } from './requestContext';
 
 // Prevent multiple instances of Prisma Client in development
 declare global {
@@ -34,10 +35,19 @@ const prisma =
   if (!enabled) return;
 
   if (e.duration > slowMs) {
+    const ctx = getRequestContext();
     const qhash = crypto.createHash('sha256').update(e.query).digest('hex').slice(0, 12);
     // Prisma QueryEvent sometimes includes `target` depending on version.
     const target = (e as any).target ? ` | target=${String((e as any).target)}` : '';
-    console.warn(`[PRISMA SLOW] ${e.duration}ms${target} | qhash=${qhash}`);
+    const req =
+      ctx?.requestId ? ` | req=${ctx.requestId}` : '';
+    const route =
+      ctx?.route ? ` | route=${ctx.method} ${ctx.route}` : '';
+    const tenant =
+      ctx?.organisationId || ctx?.locationId
+        ? ` | org=${ctx.organisationId ?? ''} loc=${ctx.locationId ?? ''}`.trim()
+        : '';
+    console.warn(`[PRISMA SLOW] ${e.duration}ms${target} | qhash=${qhash}${req}${route}${tenant}`);
   }
 });
 

@@ -4,6 +4,7 @@ import { normalizeSupplierName } from '../utils/normalizeSupplierName';
 import { Prisma, SupplierStatus } from '@prisma/client';
 import { supplierInsightsService } from '../services/supplierInsightsService';
 import { MANUAL_COGS_ACCOUNT_CODE } from '../config/constants';
+import { getOffsetPaginationOrThrow } from '../utils/paginationGuards';
 
 export class SupplierController {
   
@@ -49,7 +50,7 @@ export class SupplierController {
   listSuppliers = async (request: FastifyRequest, reply: FastifyReply) => {
     const { organisationId: orgId, locationId } = this.validateOrgAccess(request);
     const { page = 1, limit = 50, search, activityStatus, accountCodes } = request.query as any;
-    const skip = (page - 1) * limit;
+    const { skip, page: safePage, limit: safeLimit } = getOffsetPaginationOrThrow({ page, limit, maxLimit: 100, maxOffset: 5000 });
     
     // Normalize accountCodes to string[]
     let normalizedAccountCodes: string[] | undefined = undefined;
@@ -225,7 +226,7 @@ export class SupplierController {
       prisma.supplier.findMany({
         where,
         skip,
-        take: Number(limit),
+        take: safeLimit,
         orderBy: { name: 'asc' },
         include: {
            _count: { select: { invoices: true } }
@@ -240,7 +241,7 @@ export class SupplierController {
     if (suppliers.length === 0) {
       return reply.send({
         data: [],
-        pagination: { total, page: Number(page), limit: Number(limit) }
+        pagination: { total, page: safePage, limit: safeLimit }
       });
     }
 
@@ -529,7 +530,7 @@ export class SupplierController {
     
     return reply.send({
       data,
-      pagination: { total, page: Number(page), limit: Number(limit) }
+      pagination: { total, page: safePage, limit: safeLimit }
     });
   }
 

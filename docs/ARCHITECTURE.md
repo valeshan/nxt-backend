@@ -78,6 +78,61 @@ Env toggles (defaults):
   - `CREATE INDEX` may briefly block writes (impact depends on table size).
   - If tables grow large, prefer manual `CREATE INDEX CONCURRENTLY` outside a transaction.
 
+## Operational Guardrails (Prod Readiness)
+
+### Health vs Readiness
+
+We expose two endpoints with intentionally different semantics:
+
+- **`GET /health` (liveness)**:
+  - Always returns **200** quickly (no dependency checks)
+  - Includes a `version` field (commit SHA when available)
+  - Intended for Railway / load balancer liveness checks (avoid restart loops if DB/Redis restarts)
+
+- **`GET /ready` (readiness)**:
+  - Checks **DB** (`SELECT 1`) and **Redis** (`PING`) with strict timeouts
+  - Returns **200** when dependencies are healthy
+  - Returns **503** when degraded
+    - `Cache-Control: no-store`
+    - `Retry-After: 5`
+  - Timeouts:
+    - Overall deadline ~2s
+    - Per-dependency deadline ~1.2s
+
+**Note:** In production, Redis is required (`REDIS_URL`), so `/ready` should be used to ensure the instance is actually ready to serve (rate limiting, cron locks, queues).
+
+### Cron Jobs: Single-Instance + Redis Locks
+
+Cron tasks are scheduled in-process (Fastify server) and are protected with **Redis distributed locks** so accidental multi-instance cron enablement does not double-process jobs.
+
+- Each job acquires a lock key like `cron:<jobName>` with a TTL sized to the job’s expected runtime.
+- If lock acquisition fails, **skip means skip** (no retries inside the tick).
+- Lock release uses compare-and-delete semantics to avoid releasing another instance’s lock.
+- Runtime logs include `instanceId` for operational visibility.
+
+### DB-Level Idempotency for Pipelines
+
+We guard state transitions for async pipelines (OCR + Xero sync runs) using DB-level “expected status” semantics:
+
+- Use `updateMany({ where: { id, status: expected }, data: { ... } })`
+- If `count === 0`, treat it as **lost race / already handled** and return early.
+
+This prevents stale workers/retries from overwriting newer status or emitting duplicate completion events.
+
+### Pagination + Date Window Guards
+
+To protect the database from deep scans and oversized responses, list endpoints enforce:
+
+- **Pagination caps**:
+  - `limit <= 100`
+  - `offset (skip) <= 5000`
+- **Date window guards** (where applicable):
+  - `startDate <= endDate`
+  - window length `<= 366 days`
+  - for deep pagination, a date window is required (to avoid “all-time + deep offset” scans)
+
+Implementation lives in `src/utils/paginationGuards.ts`.
+
 ## Security
 - **Authentication**: All API endpoints require a valid JWT signed by BE1.
 - **Token Storage**: Xero tokens (access and refresh) are encrypted at rest using AES-256-GCM with a unique random IV for every write.

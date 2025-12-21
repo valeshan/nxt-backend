@@ -6,6 +6,7 @@ import { imagePreprocessingService } from './ImagePreprocessingService';
 import { InvoiceSourceType, ProcessingStatus, ReviewStatus, SupplierSourceType, SupplierStatus, OcrFailureCategory } from '@prisma/client';
 import { randomUUID } from 'crypto';
 import { MANUAL_COGS_ACCOUNT_CODE } from '../config/constants';
+import { assertDateRangeOrThrow, assertWindowIfDeepPagination, getOffsetPaginationOrThrow, parseDateOrThrow } from '../utils/paginationGuards';
 
 import { getProductKeyFromLineItem } from './helpers/productKey';
 
@@ -198,8 +199,16 @@ export const invoicePipelineService = {
     for (const file of orphanedFiles) {
       if ((file.ocrAttemptCount || 0) < 3) {
         // RETRY: Explicitly reset state for clean retry
-        await prisma.invoiceFile.update({
-          where: { id: file.id },
+        const attemptCount = (file.ocrAttemptCount || 0) + 1;
+        const res = await prisma.invoiceFile.updateMany({
+          where: {
+            id: file.id,
+            deletedAt: null,
+            updatedAt: { lt: staleThreshold },
+            processingStatus: file.processingStatus,
+            ocrAttemptCount: file.ocrAttemptCount || 0,
+            ...(file.processingStatus === ProcessingStatus.OCR_PROCESSING ? { ocrJobId: null } : {}),
+          } as any,
           data: {
             processingStatus: ProcessingStatus.PENDING_OCR,
             ocrAttemptCount: { increment: 1 },
@@ -207,25 +216,45 @@ export const invoicePipelineService = {
             ocrFailureCategory: null,
             ocrFailureDetail: null,
             failureReason: null,
-          }
+            ocrJobId: null,
+          },
         });
+        if (res.count === 0) {
+          // Lost the race / already handled
+          continue;
+        }
         // Let processPendingOcrJobs() pick it up on next tick
-        console.log(`[InvoicePipeline] Reset orphaned file ${file.id} to PENDING_OCR for retry (attempt ${(file.ocrAttemptCount || 0) + 1})`);
+        console.log(`[InvoicePipeline] Reset orphaned file ${file.id} to PENDING_OCR for retry (attempt ${attemptCount})`);
       } else {
         // FAIL: Max attempts reached
-        const updated = await prisma.invoiceFile.update({
-          where: { id: file.id },
+        const res = await prisma.invoiceFile.updateMany({
+          where: {
+            id: file.id,
+            deletedAt: null,
+            updatedAt: { lt: staleThreshold },
+            processingStatus: file.processingStatus,
+            ocrAttemptCount: file.ocrAttemptCount || 0,
+            ...(file.processingStatus === ProcessingStatus.OCR_PROCESSING ? { ocrJobId: null } : {}),
+          } as any,
           data: {
             processingStatus: ProcessingStatus.OCR_FAILED,
             ocrFailureCategory: OcrFailureCategory.PROVIDER_TIMEOUT,
             ocrFailureDetail: 'Processing timed out after multiple attempts',
             failureReason: 'Processing timed out after multiple attempts',
           },
-          select: { organisationId: true, locationId: true, updatedAt: true }
+        });
+        if (res.count === 0) {
+          // Lost the race / already handled
+          continue;
+        }
+
+        const updated = await prisma.invoiceFile.findUnique({
+          where: { id: file.id },
+          select: { organisationId: true, locationId: true, updatedAt: true },
         });
         
         // Send Pusher (non-blocking)
-        if (updated.organisationId) {
+        if (updated?.organisationId) {
           try {
             const channel = pusherService.getOrgChannel(updated.organisationId);
             await pusherService.triggerEvent(channel, 'invoice-status-updated', {
@@ -329,25 +358,47 @@ export const invoicePipelineService = {
       }
 
       // Update attempt tracking before starting OCR
-      await prisma.invoiceFile.update({
-        where: { id: invoiceFileId },
+      const claimed = await prisma.invoiceFile.updateMany({
+        where: {
+          id: invoiceFileId,
+          deletedAt: null,
+          processingStatus: { in: [ProcessingStatus.PENDING_OCR, ProcessingStatus.OCR_FAILED] },
+          ocrAttemptCount: file.ocrAttemptCount || 0,
+        } as any,
         data: {
           ocrAttemptCount: attemptCount,
           lastOcrAttemptAt: new Date(),
           preprocessingFlags: preprocessingFlags,
           processingStatus: ProcessingStatus.OCR_PROCESSING,
-        }
+          // Clear job/failure fields for clean retry
+          ocrJobId: null,
+          ocrFailureCategory: null,
+          ocrFailureDetail: null,
+          failureReason: null,
+        },
       });
+      if (claimed.count === 0) {
+        // Lost the race / already handled
+        return;
+      }
 
       console.log(`[InvoicePipeline] Starting OCR attempt ${attemptCount} for ${invoiceFileId} using ${s3KeyToUse}`);
       const jobId = await ocrService.startAnalysis(s3KeyToUse);
       
-      await prisma.invoiceFile.update({
-        where: { id: invoiceFileId },
-        data: {
-          ocrJobId: jobId,
-        }
+      const setJob = await prisma.invoiceFile.updateMany({
+        where: {
+          id: invoiceFileId,
+          deletedAt: null,
+          processingStatus: ProcessingStatus.OCR_PROCESSING,
+          ocrAttemptCount: attemptCount,
+          ocrJobId: null,
+        } as any,
+        data: { ocrJobId: jobId },
       });
+      if (setJob.count === 0) {
+        // Lost the race / do not overwrite a newer attempt
+        return;
+      }
       
       console.log(`[InvoicePipeline] OCR started for ${invoiceFileId}, JobId: ${jobId}, Attempt: ${attemptCount}`);
     } catch (error: any) {
@@ -364,15 +415,27 @@ export const invoicePipelineService = {
       // 1. Update DB first (critical path)
       let updated;
       try {
-        updated = await prisma.invoiceFile.update({
-          where: { id: invoiceFileId },
+        const res = await prisma.invoiceFile.updateMany({
+          where: {
+            id: invoiceFileId,
+            deletedAt: null,
+            // Never move backwards from terminal states
+            processingStatus: { in: [ProcessingStatus.PENDING_OCR, ProcessingStatus.OCR_PROCESSING] },
+          } as any,
           data: { 
             processingStatus: ProcessingStatus.OCR_FAILED,
             failureReason,
             ocrFailureCategory: classification.category,
             ocrFailureDetail: classification.detail,
           },
-          select: { organisationId: true, locationId: true, updatedAt: true }
+        });
+        if (res.count === 0) {
+          // Lost the race / already handled
+          return;
+        }
+        updated = await prisma.invoiceFile.findUnique({
+          where: { id: invoiceFileId },
+          select: { organisationId: true, locationId: true, updatedAt: true },
         });
       } catch (dbError) {
         console.error(`[InvoicePipeline] Failed to update status for ${invoiceFileId}:`, dbError);
@@ -380,7 +443,7 @@ export const invoicePipelineService = {
       }
 
       // 2. Send Pusher event NON-BLOCKING (wrap in try/catch)
-      if (updated.organisationId) {
+      if (updated?.organisationId) {
         try {
           const channel = pusherService.getOrgChannel(updated.organisationId);
           await pusherService.triggerEvent(channel, 'invoice-status-updated', {
@@ -525,8 +588,14 @@ export const invoicePipelineService = {
                      detectedWords
                    );
 
-                   const updated = await prisma.invoiceFile.update({
-                     where: { id: file.id },
+                   const res = await prisma.invoiceFile.updateMany({
+                     where: {
+                       id: file.id,
+                       deletedAt: null,
+                       processingStatus: ProcessingStatus.OCR_PROCESSING,
+                       ocrJobId: file.ocrJobId,
+                       ocrAttemptCount: file.ocrAttemptCount || 0,
+                     } as any,
                      data: {
                        processingStatus: ProcessingStatus.OCR_FAILED,
                        ocrFailureCategory: classification.category,
@@ -535,8 +604,13 @@ export const invoicePipelineService = {
                        confidenceScore: confidenceScore,
                      },
                    });
+                   if (res.count === 0) return this.enrichStatus(file);
 
-                   return this.enrichStatus(updated);
+                   const updated = await prisma.invoiceFile.findUnique({
+                     where: { id: file.id },
+                     include: { invoice: { include: { lineItems: true, supplier: true } }, ocrResult: true },
+                   });
+                   return this.enrichStatus(updated as any);
                  }
 
                  // Default to OCR date (parsed.date is likely a Date object or ISO string suitable for Prisma)
@@ -613,24 +687,36 @@ export const invoicePipelineService = {
                      
                      if (!organisation) {
                          console.error(`[InvoicePipeline] Organisation ${file.organisationId} not found for file ${file.id}. Skipping invoice creation.`);
-                         await prisma.invoiceFile.update({
-                             where: { id: file.id },
-                             data: {
-                                 processingStatus: ProcessingStatus.OCR_FAILED,
-                                 failureReason: `Organisation ${file.organisationId} not found`
-                             }
+                         await prisma.invoiceFile.updateMany({
+                           where: {
+                             id: file.id,
+                             deletedAt: null,
+                             processingStatus: ProcessingStatus.OCR_PROCESSING,
+                             ocrJobId: file.ocrJobId,
+                             ocrAttemptCount: file.ocrAttemptCount || 0,
+                           } as any,
+                           data: {
+                             processingStatus: ProcessingStatus.OCR_FAILED,
+                             failureReason: `Organisation ${file.organisationId} not found`,
+                           },
                          });
                          return this.enrichStatus(await prisma.invoiceFile.findUnique({ where: { id: file.id } }) as any);
                      }
                      
                      if (!location) {
                          console.error(`[InvoicePipeline] Location ${file.locationId} not found for file ${file.id}. Skipping invoice creation.`);
-                         await prisma.invoiceFile.update({
-                             where: { id: file.id },
-                             data: {
-                                 processingStatus: ProcessingStatus.OCR_FAILED,
-                                 failureReason: `Location ${file.locationId} not found`
-                             }
+                         await prisma.invoiceFile.updateMany({
+                           where: {
+                             id: file.id,
+                             deletedAt: null,
+                             processingStatus: ProcessingStatus.OCR_PROCESSING,
+                             ocrJobId: file.ocrJobId,
+                             ocrAttemptCount: file.ocrAttemptCount || 0,
+                           } as any,
+                           data: {
+                             processingStatus: ProcessingStatus.OCR_FAILED,
+                             failureReason: `Location ${file.locationId} not found`,
+                           },
                          });
                          return this.enrichStatus(await prisma.invoiceFile.findUnique({ where: { id: file.id } }) as any);
                      }
@@ -664,12 +750,18 @@ export const invoicePipelineService = {
                          // Handle foreign key constraint violations
                          if (e.code === 'P2003') {
                              console.error(`[InvoicePipeline] Foreign key constraint violation for file ${file.id}: ${e.meta?.field_name}. Organisation or location may not exist.`);
-                             await prisma.invoiceFile.update({
-                                 where: { id: file.id },
-                                 data: {
-                                     processingStatus: ProcessingStatus.OCR_FAILED,
-                                     failureReason: `Foreign key constraint violation: ${e.meta?.field_name || 'unknown'}`
-                                 }
+                             await prisma.invoiceFile.updateMany({
+                               where: {
+                                 id: file.id,
+                                 deletedAt: null,
+                                 processingStatus: ProcessingStatus.OCR_PROCESSING,
+                                 ocrJobId: file.ocrJobId,
+                                 ocrAttemptCount: file.ocrAttemptCount || 0,
+                               } as any,
+                               data: {
+                                 processingStatus: ProcessingStatus.OCR_FAILED,
+                                 failureReason: `Foreign key constraint violation: ${e.meta?.field_name || 'unknown'}`,
+                               },
                              });
                              return this.enrichStatus(await prisma.invoiceFile.findUnique({ where: { id: file.id } }) as any);
                          }
@@ -686,15 +778,26 @@ export const invoicePipelineService = {
                  }
 
                  // Update File Status and return FRESH enriched object
-                 const updatedFile = await prisma.invoiceFile.update({
-                     where: { id: file.id },
-                     data: {
-                         processingStatus: ProcessingStatus.OCR_COMPLETE,
-                         reviewStatus: reviewStatus,
-                         confidenceScore: parsed.confidenceScore,
-                     },
-                     include: { invoice: { include: { lineItems: true, supplier: true } }, ocrResult: true }
-                 });
+                const res = await prisma.invoiceFile.updateMany({
+                  where: {
+                    id: file.id,
+                    deletedAt: null,
+                    processingStatus: ProcessingStatus.OCR_PROCESSING,
+                    ocrJobId: file.ocrJobId,
+                    ocrAttemptCount: file.ocrAttemptCount || 0,
+                  } as any,
+                  data: {
+                    processingStatus: ProcessingStatus.OCR_COMPLETE,
+                    reviewStatus: reviewStatus,
+                    confidenceScore: parsed.confidenceScore,
+                  },
+                });
+                if (res.count === 0) return this.enrichStatus(file);
+
+                const updatedFile = await prisma.invoiceFile.findUnique({
+                  where: { id: file.id },
+                  include: { invoice: { include: { lineItems: true, supplier: true } }, ocrResult: true }
+                });
                  
                  return this.enrichStatus(updatedFile);
 
@@ -706,17 +809,28 @@ export const invoicePipelineService = {
                     undefined
                   );
 
-                  const updated = await prisma.invoiceFile.update({
-                     where: { id: file.id },
-                     data: { 
-                       processingStatus: ProcessingStatus.OCR_FAILED,
-                       ocrFailureCategory: classification.category,
-                       ocrFailureDetail: classification.detail,
-                       failureReason: `OCR job failed: ${classification.detail}`
-                     }
+                  const res = await prisma.invoiceFile.updateMany({
+                    where: {
+                      id: file.id,
+                      deletedAt: null,
+                      processingStatus: ProcessingStatus.OCR_PROCESSING,
+                      ocrJobId: file.ocrJobId,
+                      ocrAttemptCount: file.ocrAttemptCount || 0,
+                    } as any,
+                    data: { 
+                      processingStatus: ProcessingStatus.OCR_FAILED,
+                      ocrFailureCategory: classification.category,
+                      ocrFailureDetail: classification.detail,
+                      failureReason: `OCR job failed: ${classification.detail}`
+                    }
                   });
-                  // Return enriched status even on failure
-                  return this.enrichStatus(updated);
+                  if (res.count === 0) return this.enrichStatus(file);
+
+                  const updated = await prisma.invoiceFile.findUnique({
+                    where: { id: file.id },
+                    include: { invoice: { include: { lineItems: true, supplier: true } }, ocrResult: true }
+                  });
+                  return this.enrichStatus(updated as any);
              }
         } catch (e) {
             console.error(`Error polling job ${file.ocrJobId}`, e);
@@ -886,7 +1000,8 @@ export const invoicePipelineService = {
                   where: { id: invoice.invoiceFileId },
                   data: { 
                       reviewStatus: ReviewStatus.VERIFIED,
-                      ...(shouldMarkAsManual && { processingStatus: ProcessingStatus.MANUALLY_UPDATED })
+                      // NOTE: Prisma client may be stale in some environments; keep this cast safe.
+                      ...(shouldMarkAsManual && { processingStatus: 'MANUALLY_UPDATED' as any })
                   }
               });
           }
@@ -960,8 +1075,14 @@ export const invoicePipelineService = {
           status?: 'ALL' | 'REVIEWED' | 'PENDING' | 'DELETED';
       }
   ) {
-      const skip = (page - 1) * limit;
+      const { skip: rawSkip, page: safePage, limit: safeLimit } = getOffsetPaginationOrThrow({ page, limit, maxLimit: 100, maxOffset: 5000 });
+
+      const start = parseDateOrThrow(filters?.startDate, 'startDate');
+      const end = parseDateOrThrow(filters?.endDate, 'endDate');
+      assertDateRangeOrThrow({ start, end, maxDays: 366 });
+      assertWindowIfDeepPagination({ skip: rawSkip, hasWindow: Boolean(start || end) });
       
+      const skip = rawSkip;
       const where: any = { locationId };
 
       // Apply Status Filter (Handles deletedAt and reviewStatus)
@@ -991,10 +1112,10 @@ export const invoicePipelineService = {
       }
 
       // Apply Date Range Filter
-      if (filters?.startDate || filters?.endDate) {
+      if (start || end) {
           const dateFilter: any = {};
-          if (filters.startDate) dateFilter.gte = new Date(filters.startDate);
-          if (filters.endDate) dateFilter.lte = new Date(filters.endDate);
+          if (start) dateFilter.gte = start;
+          if (end) dateFilter.lte = end;
 
           // Filter by Invoice Date OR Upload Date to match user intuition
           where.OR = [
@@ -1048,7 +1169,7 @@ export const invoicePipelineService = {
                   ocrResult: true
               },
               orderBy: { createdAt: 'desc' },
-              take: limit,
+              take: safeLimit,
               skip
           }),
           prisma.invoiceFile.count({ where })
@@ -1105,8 +1226,8 @@ export const invoicePipelineService = {
       return {
           items,
           total: count,
-          page,
-          pages: Math.ceil(count / limit)
+          page: safePage,
+          pages: Math.ceil(count / safeLimit)
       };
   },
 

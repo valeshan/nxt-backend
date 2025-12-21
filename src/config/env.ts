@@ -47,6 +47,7 @@ const envSchema = z.object({
   REDIS_URL: z.string().optional(),
   LOG_LEVEL: z.enum(['debug', 'info', 'warn', 'error']).default('info'),
   ENABLE_RATE_LIMIT: z.string().optional().default('true'),
+  CRON_ENABLED: z.string().optional().default('true'),
 
   // Prisma slow query logging (backend)
   // - In production, we do NOT log SQL text or params; only duration + query hash.
@@ -91,4 +92,13 @@ if (!parsed.success) {
   process.exit(1);
 }
 
-export const config = parsed.data;
+const baseConfig = parsed.data;
+
+// Conditional validation:
+// - In production, Redis is required (rate limiting + BullMQ + cron locks).
+if (baseConfig.NODE_ENV === 'production' && !baseConfig.REDIS_URL) {
+  console.error('❌ Invalid environment variables: REDIS_URL is required when NODE_ENV=production');
+  process.exit(1);
+}
+
+export const config = baseConfig;

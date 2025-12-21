@@ -1,28 +1,9 @@
-import { Queue, Worker, QueueEvents, Job } from 'bullmq';
+import { Queue, Worker } from 'bullmq';
 import { config } from '../config/env';
-import Redis, { RedisOptions } from 'ioredis';
+import { getBullMqRedisClient } from '../infrastructure/redis';
 
-// Redis connection configuration for BullMQ
-// We create a factory function or instance that handles the connection options correctly
-const createRedisConnection = () => {
-  const options: RedisOptions = {
-    maxRetriesPerRequest: null, // Required by BullMQ
-  };
-
-  if (config.REDIS_URL) {
-    return new Redis(config.REDIS_URL, options);
-  } else {
-    return new Redis({
-      host: config.REDIS_HOST || 'localhost',
-      port: config.REDIS_PORT || 6379,
-      password: config.REDIS_PASSWORD,
-      ...options
-    });
-  }
-};
-
-// Create a separate connection for the queue to avoid blocking
-const connection = createRedisConnection();
+// Dedicated BullMQ connection (BullMQ requires maxRetriesPerRequest=null).
+const connection = getBullMqRedisClient();
 
 export const INBOUND_QUEUE_NAME = 'inbound-invoices';
 
@@ -72,3 +53,8 @@ export const setupInboundWorker = () => {
 
   return worker;
 };
+
+export async function closeInboundQueue(): Promise<void> {
+  await inboundQueue.close();
+  // BullMQ shares the dedicated Redis connection managed by infrastructure/redis.ts.
+}

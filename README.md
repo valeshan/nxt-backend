@@ -132,6 +132,23 @@ Once local testing is complete, deploy to production following these steps.
 
 **Remember:** Do **not** routinely run this in real production. This is just a one-time exercise to verify the guardrails work correctly.
 
+## Health Checks
+
+We intentionally expose two endpoints:
+
+- **`GET /health` (liveness)**: always returns **200** quickly (no dependency checks). Safe for Railway health checks.
+- **`GET /ready` (readiness)**: checks DB + Redis with strict timeouts.
+  - **200** when ready
+  - **503** when degraded (includes `Retry-After`, `Cache-Control: no-store`)
+
+In production, Redis is required and `/ready` will report degraded if Redis is unavailable.
+
+## Operational Guards (Scale Safety)
+
+- **Cron locks**: cron jobs are protected with Redis distributed locks so only one instance runs each job even if multiple instances are deployed.
+- **Idempotent pipeline transitions**: OCR + Xero sync status transitions are guarded with `updateMany(...expectedStatus...)` and “count==0 => lost race” semantics.
+- **Pagination guards**: list endpoints enforce caps (limit/max offset) and bounded date windows for deep pagination. See `src/utils/paginationGuards.ts`.
+
 
 
 

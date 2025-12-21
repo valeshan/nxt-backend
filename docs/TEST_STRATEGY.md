@@ -31,3 +31,14 @@ Located in `tests/integration/`.
 ## Database for Tests
 Tests expect a running PostgreSQL instance reachable via `DATABASE_URL`. For local development, this is typically the same as dev or a dedicated test DB.
 
+## Quick Smoke Checks (Local)
+
+These are helpful when validating infra hardening changes:
+
+- **Liveness**:
+  - `GET /health` should respond quickly with `{ status: "ok", version }`
+- **Readiness**:
+  - `GET /ready` should return **200** when DB/Redis are healthy
+  - `GET /ready` should return **503** with `Retry-After` when dependencies are degraded or time out
+
+

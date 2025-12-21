@@ -6,7 +6,6 @@ import cookie from '@fastify/cookie';
 import helmet from '@fastify/helmet';
 import rateLimit from '@fastify/rate-limit';
 import compress from '@fastify/compress';
-import Redis from 'ioredis';
 import fastifyRawBody from 'fastify-raw-body';
 import { serializerCompiler, validatorCompiler, ZodTypeProvider } from 'fastify-type-provider-zod';
 import * as Sentry from '@sentry/node';
@@ -24,6 +23,10 @@ import debugRoutes from './routes/debugRoutes';
 import xeroWebhookRoutes from './controllers/xeroWebhookController'; // Assuming we'll create this
 import webhookRoutes from './routes/webhookRoutes';
 import { config } from './config/env';
+import { getRedisClient, pingWithTimeout } from './infrastructure/redis';
+import { runWithRequestContext, getRequestContext } from './infrastructure/requestContext';
+import { randomUUID } from 'crypto';
+import prisma from './infrastructure/prismaClient';
 
 export function buildApp(): FastifyInstance {
   const app = Fastify({
@@ -59,9 +62,9 @@ export function buildApp(): FastifyInstance {
       timeWindow: '1 minute',
     };
 
-    if (config.REDIS_URL) {
-      const client = new Redis(config.REDIS_URL);
-      rateLimitConfig.redis = client;
+    // If Redis is configured, use it for shared rate limiting across instances.
+    if (config.REDIS_URL || config.REDIS_HOST) {
+      rateLimitConfig.redis = getRedisClient();
     }
 
     app.register(rateLimit, rateLimitConfig);
@@ -116,6 +119,57 @@ export function buildApp(): FastifyInstance {
     });
   }
 
+  // Request correlation + summary log (best-effort, always-on)
+  app.addHook('onRequest', (request, reply, done) => {
+    const requestId = String(request.headers['x-request-id'] || randomUUID());
+    // Echo request id for easier correlation across layers
+    reply.header('x-request-id', requestId);
+
+    runWithRequestContext(
+      {
+        requestId,
+        method: request.method,
+        route: request.url, // will be refined in preHandler once routerPath is known
+        startAtMs: Date.now(),
+      },
+      () => done()
+    );
+  });
+
+  // Enrich context once authContext exists and routerPath is resolved
+  app.addHook('preHandler', (request, _reply, done) => {
+    const ctx = getRequestContext();
+    if (ctx) {
+      ctx.route = (request as any).routerPath || request.url;
+      const auth = (request as any).authContext;
+      if (auth) {
+        ctx.organisationId = auth.organisationId ?? undefined;
+        ctx.locationId = auth.locationId ?? undefined;
+      }
+    }
+    done();
+  });
+
+  app.addHook('onResponse', (request, reply, done) => {
+    const ctx = getRequestContext();
+    const durationMs = ctx ? Date.now() - ctx.startAtMs : undefined;
+
+    // Always-on request summary log (no PII)
+    request.log.info(
+      {
+        requestId: ctx?.requestId,
+        method: request.method,
+        route: ctx?.route || (request as any).routerPath || request.url,
+        statusCode: reply.statusCode,
+        durationMs,
+        organisationId: ctx?.organisationId,
+        locationId: ctx?.locationId,
+      },
+      'request.completed'
+    );
+    done();
+  });
+
   // Register Routes
   // Ensure Auth Plugin is registered within routes (as per current pattern)
   
@@ -143,9 +197,114 @@ export function buildApp(): FastifyInstance {
     app.register(debugRoutes);
   }
 
-  // Health Check
+  // Health Check (liveness): always fast, no dependency checks.
   app.get('/health', async () => {
-    return { status: 'ok' };
+    const version =
+      process.env.RAILWAY_GIT_COMMIT_SHA ||
+      process.env.GIT_SHA ||
+      process.env.VERCEL_GIT_COMMIT_SHA ||
+      'unknown';
+    return { status: 'ok', version };
+  });
+
+  // Readiness Check: DB + Redis, with strict timeouts and 503 on degraded.
+  app.get('/ready', async (_request, reply) => {
+    const overallTimeoutMs = 2000;
+    const perDepTimeoutMs = 1200;
+    const retryAfterSeconds = 5;
+
+    const startedAt = Date.now();
+
+    const withTimeout = async <T>(label: string, p: Promise<T>, timeoutMs: number): Promise<{ ok: true; value: T; ms: number } | { ok: false; error: string; ms: number }> => {
+      const t0 = Date.now();
+      try {
+        const value = await Promise.race([
+          p,
+          new Promise<T>((_, reject) => setTimeout(() => reject(new Error(`${label} timeout after ${timeoutMs}ms`)), timeoutMs)),
+        ]);
+        return { ok: true, value, ms: Date.now() - t0 };
+      } catch (e: any) {
+        return { ok: false, error: e?.message || String(e), ms: Date.now() - t0 };
+      }
+    };
+
+    const run = async () => {
+      const dbCheck = withTimeout('db', prisma.$queryRaw`SELECT 1`, perDepTimeoutMs);
+
+      // Redis check is required in production; optional in dev (if not configured, skip).
+      const hasRedisConfig = Boolean(config.REDIS_URL || config.REDIS_HOST);
+      const redisRequired = config.NODE_ENV === 'production';
+      const redisCheck = hasRedisConfig
+        ? withTimeout('redis', (async () => {
+            const res = await pingWithTimeout(getRedisClient(), 1000, 0);
+            if (!res.ok) throw new Error(res.error || 'redis ping failed');
+            return true;
+          })(), perDepTimeoutMs)
+        : Promise.resolve({ ok: redisRequired ? false : true, error: redisRequired ? 'redis not configured' : undefined, ms: 0 } as any);
+
+      const [db, redis] = await Promise.all([dbCheck, redisCheck]);
+
+      const dbOk = db.ok;
+      const redisOk = redis.ok;
+
+      const ok = dbOk && (redisRequired ? redisOk : true);
+
+      const version =
+        process.env.RAILWAY_GIT_COMMIT_SHA ||
+        process.env.GIT_SHA ||
+        process.env.VERCEL_GIT_COMMIT_SHA ||
+        'unknown';
+
+      const body: any = {
+        status: ok ? 'ok' : 'degraded',
+        version,
+        db: dbOk,
+        redis: redisRequired ? redisOk : (hasRedisConfig ? redisOk : null),
+        timingsMs: {
+          db: db.ms,
+          redis: redis.ms,
+        },
+        retryAfterSeconds: ok ? undefined : retryAfterSeconds,
+      };
+
+      if (!dbOk) body.dbError = (db as any).error;
+      if (redisRequired && !redisOk) body.redisError = (redis as any).error;
+
+      if (!ok) {
+        reply.header('Cache-Control', 'no-store');
+        reply.header('Retry-After', String(retryAfterSeconds));
+        return reply.code(503).send(body);
+      }
+
+      return reply.send(body);
+    };
+
+    // Overall deadline: never let /ready hang
+    const result = await Promise.race([
+      run(),
+      new Promise((resolve) => setTimeout(() => {
+        const version =
+          process.env.RAILWAY_GIT_COMMIT_SHA ||
+          process.env.GIT_SHA ||
+          process.env.VERCEL_GIT_COMMIT_SHA ||
+          'unknown';
+        reply.header('Cache-Control', 'no-store');
+        reply.header('Retry-After', String(retryAfterSeconds));
+        resolve(
+          reply.code(503).send({
+            status: 'degraded',
+            version,
+            db: false,
+            redis: false,
+            timingsMs: { total: Date.now() - startedAt },
+            retryAfterSeconds,
+            error: `overall timeout after ${overallTimeoutMs}ms`,
+          })
+        );
+      }, overallTimeoutMs)),
+    ]);
+
+    return result as any;
   });
 
   // Global Error Handler
