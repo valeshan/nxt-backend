@@ -28,9 +28,16 @@ export const authController = {
   },
 
   async login(request: FastifyRequest<{ Body: z.infer<typeof LoginRequest> }>, reply: FastifyReply) {
-    const { email, password } = request.body;
-    const result = await authService.login(email, password);
-    return reply.send(result);
+    try {
+      const { email, password } = request.body;
+      const result = await authService.login(email, password);
+      return reply.send(result);
+    } catch (error: any) {
+      if (error.statusCode) {
+        return reply.code(error.statusCode).send({ message: error.message });
+      }
+      throw error;
+    }
   },
 
   async me(request: FastifyRequest, reply: FastifyReply) {
