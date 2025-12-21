@@ -43,6 +43,9 @@ export default async function locationRoutes(fastify: FastifyInstance) {
           sharedReportEmails: z.array(z.string()),
           createdAt: z.date(),
           updatedAt: z.date(),
+          forwardingStatus: z.enum(['NOT_CONFIGURED', 'PENDING_VERIFICATION', 'VERIFIED']).nullable(),
+          industry: z.enum(['CAFE', 'RESTAURANT', 'BAR', 'BAKERY', 'RETAIL', 'HOTEL', 'CATERING', 'OTHER']).nullable(),
+          region: z.string().nullable(),
           integrations: z.array(z.object({
             type: z.string(),
             name: z.string(),
@@ -64,6 +67,9 @@ export default async function locationRoutes(fastify: FastifyInstance) {
           sharedReportEmails: z.array(z.string()),
           createdAt: z.date(),
           updatedAt: z.date(),
+          forwardingStatus: z.enum(['NOT_CONFIGURED', 'PENDING_VERIFICATION', 'VERIFIED']).nullable(),
+          industry: z.enum(['CAFE', 'RESTAURANT', 'BAR', 'BAKERY', 'RETAIL', 'HOTEL', 'CATERING', 'OTHER']).nullable(),
+          region: z.string().nullable(),
           integrations: z.array(z.object({
             type: z.string(),
             name: z.string(),
@@ -77,7 +83,11 @@ export default async function locationRoutes(fastify: FastifyInstance) {
   app.put('/locations/:id', {
     schema: {
       params: z.object({ id: z.string() }),
-      body: z.object({ name: z.string().min(1) }),
+      body: z.object({ 
+        name: z.string().min(1).optional(),
+        industry: z.enum(['CAFE', 'RESTAURANT', 'BAR', 'BAKERY', 'RETAIL', 'HOTEL', 'CATERING', 'OTHER']).nullable().optional(),
+        region: z.string().nullable().optional(),
+      }),
     },
   }, locationController.update);
 

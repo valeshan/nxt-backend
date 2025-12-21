@@ -42,9 +42,9 @@ export const locationController = {
     return reply.send(result);
   },
 
-  async update(request: FastifyRequest<{ Params: { id: string }, Body: { name: string } }>, reply: FastifyReply) {
+  async update(request: FastifyRequest<{ Params: { id: string }, Body: { name?: string; industry?: string | null; region?: string | null } }>, reply: FastifyReply) {
     const { id } = request.params;
-    const { name } = request.body;
+    const { name, industry, region } = request.body;
     const userId = request.authContext.userId;
     const organisationId = request.authContext.organisationId;
     
@@ -58,7 +58,7 @@ export const locationController = {
       return reply.status(404).send({ error: 'Location not found' });
     }
     
-    const result = await locationService.updateLocation(userId, id, name);
+    const result = await locationService.updateLocation(userId, id, { name, industry, region });
     return reply.send(result);
   },
 

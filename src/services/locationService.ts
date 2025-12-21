@@ -62,11 +62,12 @@ export const locationService = {
 
     return locations.map(loc => ({
       ...loc,
+      forwardingStatus: loc.forwardingStatus, // Already on model
       integrations: integrationsMap[loc.id] || []
     }));
   },
 
-  async updateLocation(userId: string, locationId: string, name: string) {
+  async updateLocation(userId: string, locationId: string, data: { name?: string; industry?: string | null; region?: string | null }) {
     const location = await locationRepository.findById(locationId);
     if (!location) throw { statusCode: 404, message: 'Location not found' };
 
@@ -76,7 +77,12 @@ export const locationService = {
       throw { statusCode: 403, message: 'Insufficient permissions' };
     }
 
-    return locationRepository.update(locationId, { name });
+    const updateData: any = {};
+    if (data.name !== undefined) updateData.name = data.name;
+    if (data.industry !== undefined) updateData.industry = data.industry;
+    if (data.region !== undefined) updateData.region = data.region ? data.region.trim() : null;
+
+    return locationRepository.update(locationId, updateData);
   },
 
   async deleteLocation(params: { userId: string; organisationId: string; locationId: string }) {
