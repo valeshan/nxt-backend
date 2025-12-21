@@ -104,6 +104,19 @@ export function initCronJobs() {
     console.log('[Cron] Price alert scan scheduled (daily at 6 AM).');
   }
 
+  // ProductStats refresh - nightly (prod only)
+  if (config.NODE_ENV === 'production') {
+    schedules.push(
+      cron.schedule('30 2 * * *', async () => {
+        await withRedisLock('refreshProductStatsNightly', 60 * 60_000, async () => {
+          console.log('[Cron] Running nightly ProductStats refresh...');
+          await supplierInsightsService.refreshProductStatsNightly();
+        });
+      })
+    );
+    console.log('[Cron] ProductStats refresh scheduled (daily at 2:30 AM).');
+  }
+
   console.log('[Cron] Cleanup job scheduled (hourly).');
 
   return {

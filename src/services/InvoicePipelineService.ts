@@ -1073,6 +1073,7 @@ export const invoicePipelineService = {
           startDate?: string;
           endDate?: string;
           status?: 'ALL' | 'REVIEWED' | 'PENDING' | 'DELETED';
+          refreshProcessing?: boolean;
       }
   ) {
       const { skip: rawSkip, page: safePage, limit: safeLimit } = getOffsetPaginationOrThrow({ page, limit, maxLimit: 100, maxOffset: 5000 });
@@ -1175,44 +1176,32 @@ export const invoicePipelineService = {
           prisma.invoiceFile.count({ where })
       ]);
       
-      // Check for items that need status updates (OCR_PROCESSING)
-      // We actively poll them so the list reflects the real-time status from AWS
-      const processingItems = items.filter(
-          item => item.processingStatus === ProcessingStatus.OCR_PROCESSING && item.ocrJobId
-      );
+      // Realtime-first: list should be cheap by default.
+      // If explicitly requested, refresh a capped number of processing items.
+      if (filters?.refreshProcessing === true) {
+          const MAX_REFRESH_PER_LIST = 5;
+          const processingItems = items
+              .filter(item => item.processingStatus === ProcessingStatus.OCR_PROCESSING && item.ocrJobId)
+              .slice(0, MAX_REFRESH_PER_LIST);
 
-      if (processingItems.length > 0) {
-          console.log(`[InvoicePipeline] List contains ${processingItems.length} processing items. Refreshing status...`);
-          
-          try {
-              // Run pollProcessing for each in parallel
-              // pollProcessing handles the DB update if status changed
-              const updates = await Promise.allSettled(
-                  processingItems.map(item => this.pollProcessing(item.id))
-              );
+          if (processingItems.length > 0) {
+              console.log(`[InvoicePipeline] refreshProcessing enabled; checking ${processingItems.length} OCR jobs (capped).`);
+              try {
+                  const updates = await Promise.allSettled(
+                      processingItems.map(item => this.pollProcessing(item.id))
+                  );
 
-              // Map updated items back into the list
-              const updatedMap = new Map();
-              updates.forEach((result, index) => {
-                  if (result.status === 'fulfilled' && result.value) {
-                      const originalId = processingItems[index].id;
-                      updatedMap.set(originalId, result.value);
-                  }
-              });
+                  const updatedMap = new Map();
+                  updates.forEach((result, index) => {
+                      if (result.status === 'fulfilled' && result.value) {
+                          updatedMap.set(processingItems[index].id, result.value);
+                      }
+                  });
 
-              items = items.map(item => {
-                  if (updatedMap.has(item.id)) {
-                      // We merge the updated data. 
-                      // Note: pollProcessing returns lineItems/ocrResult which aren't usually in list view,
-                      // but it's fine to include them or we could strip them if payload size is a concern.
-                      // For now, simply replacing is safest to get the new status/invoice data.
-                      return updatedMap.get(item.id);
-                  }
-                  return item;
-              });
-          } catch (e) {
-              console.error("[InvoicePipeline] Error refreshing item statuses in list", e);
-              // Fallback to returning original items if update fails
+                  items = items.map(item => updatedMap.has(item.id) ? (updatedMap.get(item.id) as any) : item);
+              } catch (e) {
+                  console.error("[InvoicePipeline] refreshProcessing failed", e);
+              }
           }
       }
 

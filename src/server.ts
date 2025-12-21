@@ -5,6 +5,7 @@ import { cleanupStuckSyncs } from './utils/cleanup';
 import { initCronJobs } from './jobs/cron';
 import prisma from './infrastructure/prismaClient';
 import { closeInboundQueue, setupInboundWorker } from './services/InboundQueueService';
+import { closeAdminQueue, setupAdminWorker } from './services/AdminProductStatsQueueService';
 import { closeRedisClients, getRedisClient, pingWithTimeout } from './infrastructure/redis';
 import os from 'os';
 
@@ -19,6 +20,7 @@ const start = async () => {
 
   let cronHandle: { stop: () => void } | null = null;
   let inboundWorker: ReturnType<typeof setupInboundWorker> | null = null;
+  let adminWorker: ReturnType<typeof setupAdminWorker> | null = null;
 
   const handleShutdown = async (signal: string) => {
     if (isShuttingDown) return;
@@ -43,6 +45,13 @@ const start = async () => {
       } catch {}
       try {
         await closeInboundQueue();
+      } catch {}
+
+      try {
+        await adminWorker?.close();
+      } catch {}
+      try {
+        await closeAdminQueue();
       } catch {}
 
       await app.close();
@@ -86,6 +95,16 @@ const start = async () => {
     if (config.MAILGUN_PROCESSOR_ENABLED === 'true') {
       inboundWorker = setupInboundWorker();
       console.log(`Mailgun Inbound Worker started instance=${instanceId}`);
+    }
+
+    // Initialize Admin workers (safe-by-default)
+    if (config.ENABLE_ADMIN_ENDPOINTS !== 'true') {
+      app.log.info(`ENABLE_ADMIN_ENDPOINTS=false instance=${instanceId}`);
+    } else if (config.ADMIN_PRODUCT_STATS_WORKER_ENABLED !== 'true') {
+      app.log.info(`ENABLE_ADMIN_ENDPOINTS=true ADMIN_PRODUCT_STATS_WORKER_ENABLED=false instance=${instanceId}`);
+    } else {
+      adminWorker = setupAdminWorker(app.log);
+      console.log(`Admin ProductStats worker started instance=${instanceId}`);
     }
 
     await app.listen({ port: config.PORT, host: '0.0.0.0' });

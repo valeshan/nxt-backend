@@ -58,10 +58,21 @@ export default async function invoiceRoutes(fastify: FastifyInstance) {
               sourceType: z.string().optional(),
               startDate: z.string().optional(),
               endDate: z.string().optional(),
-              status: z.enum(['ALL', 'REVIEWED', 'PENDING', 'DELETED']).optional()
+              status: z.enum(['ALL', 'REVIEWED', 'PENDING', 'DELETED']).optional(),
+              // Realtime-first: list is cheap by default. When true, backend may refresh a capped number of OCR jobs.
+              refreshProcessing: z.coerce.boolean().optional().default(false),
           })
       }
   }, invoiceController.list);
+
+  // POST /invoices/ocr-status/batch (fallback refresh, capped)
+  app.post('/ocr-status/batch', {
+      schema: {
+          body: z.object({
+              invoiceFileIds: z.array(z.string()).max(20),
+          }),
+      },
+  }, invoiceController.batchRefreshOcrStatus);
 
   // DELETE /invoices/:id
   app.delete('/:id', {

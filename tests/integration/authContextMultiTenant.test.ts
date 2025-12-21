@@ -152,12 +152,11 @@ describe('Multi-Tenant Auth Context Integration', () => {
         }
     });
 
-    // The system should IGNORE headers and use the token (Org A)
-    // So it should return Org A's suppliers (200 OK)
-    expect(response.statusCode).toBe(200);
+    // Legacy headers are not supported. In non-production envs (including tests),
+    // we hard-fail fast to prevent accidental coupling.
+    expect(response.statusCode).toBe(400);
     const body = response.json();
-    expect(body.data).toHaveLength(1);
-    expect(body.data[0].id).toBe(supplierA.id); // Should still be Supplier A
+    expect(body.error?.code).toBe('LEGACY_AUTH_HEADERS_NOT_ALLOWED');
   });
 
   it('Test 3: Missing token should return 401', async () => {

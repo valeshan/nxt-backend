@@ -6,6 +6,8 @@ import { ProcessingStatus, InvoiceSourceType, ReviewStatus, Prisma } from '@pris
 import { randomUUID } from 'crypto';
 import path from 'path';
 import { getInvoiceFileIfOwned, getInvoiceIfOwned, getLocationIfOwned, validateLocationScope } from '../utils/authorization';
+import { getRedisClient } from '../infrastructure/redis';
+import { config } from '../config/env';
 
 export const invoiceController = {
   async upload(req: FastifyRequest, reply: FastifyReply) {
@@ -152,14 +154,15 @@ export const invoiceController = {
 
   async list(req: FastifyRequest, reply: FastifyReply) {
       const { locationId } = req.params as { locationId: string };
-      const { page, limit, search, sourceType, startDate, endDate, status } = req.query as { 
+      const { page, limit, search, sourceType, startDate, endDate, status, refreshProcessing } = req.query as { 
           page?: number, 
           limit?: number,
           search?: string,
           sourceType?: string,
           startDate?: string,
           endDate?: string,
-          status?: 'ALL' | 'REVIEWED' | 'PENDING' | 'DELETED'
+          status?: 'ALL' | 'REVIEWED' | 'PENDING' | 'DELETED',
+          refreshProcessing?: boolean,
       };
       const auth = req.authContext;
       
@@ -184,7 +187,8 @@ export const invoiceController = {
               sourceType,
               startDate,
               endDate,
-              status
+              status,
+              refreshProcessing,
           });
           return result;
       } catch (error: any) {
@@ -213,6 +217,112 @@ export const invoiceController = {
               message: 'Failed to retrieve invoices'
           });
       }
+  },
+
+  async batchRefreshOcrStatus(req: FastifyRequest, reply: FastifyReply) {
+      const auth = req.authContext;
+      const { invoiceFileIds } = req.body as { invoiceFileIds: string[] };
+
+      if (!auth?.organisationId) {
+          return reply.status(401).send({ error: 'Unauthorized' });
+      }
+
+      // Enforce location context (this endpoint is intended for list UI in a location)
+      if (auth.tokenType !== 'location' || !auth.locationId) {
+          return reply.status(403).send({ error: 'Location context required' });
+      }
+
+      if (!Array.isArray(invoiceFileIds) || invoiceFileIds.length === 0) {
+          return reply.status(400).send({ error: 'invoiceFileIds must be a non-empty array' });
+      }
+
+      if (invoiceFileIds.length > 20) {
+          return reply.status(400).send({ error: 'invoiceFileIds must have at most 20 items' });
+      }
+
+      // Light rate limit: 30/min per org + location
+      if (config.NODE_ENV === 'production') {
+          try {
+              const redis = getRedisClient();
+              const minute = Math.floor(Date.now() / 60_000);
+              const key = `rl:ocrBatch:${auth.organisationId}:${auth.locationId}:${minute}`;
+              const count = await redis.incr(key);
+              if (count === 1) {
+                  await redis.expire(key, 120);
+              }
+              if (count > 30) {
+                  reply.header('Retry-After', '60');
+                  return reply.status(429).send({ error: { code: 'RATE_LIMITED', message: 'Too many refresh requests. Please try again shortly.' } });
+              }
+          } catch (e) {
+              // Best-effort: do not block if Redis is temporarily unavailable
+          }
+      }
+
+      // Fetch minimal state for ownership + status gating
+      const files = await prisma.invoiceFile.findMany({
+          where: {
+              id: { in: invoiceFileIds },
+              organisationId: auth.organisationId,
+              locationId: auth.locationId,
+              deletedAt: null,
+          } as any,
+          select: {
+              id: true,
+              processingStatus: true,
+              ocrJobId: true,
+              updatedAt: true,
+              reviewStatus: true,
+              ocrFailureCategory: true,
+              ocrFailureDetail: true,
+          },
+      });
+
+      const fileMap = new Map(files.map(f => [f.id, f]));
+
+      const results: Array<any> = [];
+
+      // Process with small bounded concurrency to avoid OCR provider spikes.
+      const toProcess = invoiceFileIds;
+      const concurrency = 5;
+      for (let i = 0; i < toProcess.length; i += concurrency) {
+          const chunk = toProcess.slice(i, i + concurrency);
+          const settled = await Promise.allSettled(chunk.map(async (invoiceFileId) => {
+              const file = fileMap.get(invoiceFileId);
+              if (!file) {
+                  return { invoiceFileId, polled: false, action: 'skipped_not_found' };
+              }
+
+              if (file.processingStatus !== ProcessingStatus.OCR_PROCESSING || !file.ocrJobId) {
+                  return { invoiceFileId, polled: false, action: 'skipped_not_processing', status: file.processingStatus, updatedAt: file.updatedAt };
+              }
+
+              const updated = await invoicePipelineService.pollProcessing(invoiceFileId);
+              return {
+                  invoiceFileId,
+                  polled: true,
+                  action: 'checked',
+                  status: updated.processingStatus,
+                  updatedAt: updated.updatedAt,
+                  reviewStatus: updated.reviewStatus,
+                  invoice: updated.invoice ?? null,
+                  ocrFailureCategory: updated.ocrFailureCategory ?? null,
+                  ocrFailureDetail: updated.ocrFailureDetail ?? null,
+              };
+          }));
+
+          for (let idx = 0; idx < settled.length; idx++) {
+              const invoiceFileId = chunk[idx];
+              const s = settled[idx];
+              if (s.status === 'fulfilled') {
+                  results.push(s.value);
+              } else {
+                  results.push({ invoiceFileId, polled: false, action: 'error', error: 'Refresh failed' });
+              }
+          }
+      }
+
+      return reply.send({ results });
   },
 
   async delete(req: FastifyRequest, reply: FastifyReply) {

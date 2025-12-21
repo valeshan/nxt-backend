@@ -42,6 +42,9 @@ const envSchema = z.object({
   // Feature Flags
   ENABLE_XERO_OCR: z.string().optional().default('false'),
   ENABLE_DIAGNOSTICS: z.string().optional().default('false'),
+  ENABLE_ADMIN_ENDPOINTS: z.string().optional().default('false'),
+  INTERNAL_ADMIN_API_KEY: z.string().optional(),
+  ADMIN_PRODUCT_STATS_WORKER_ENABLED: z.string().optional().default('false'),
 
   // Infrastructure
   REDIS_URL: z.string().optional(),
@@ -98,6 +101,12 @@ const baseConfig = parsed.data;
 // - In production, Redis is required (rate limiting + BullMQ + cron locks).
 if (baseConfig.NODE_ENV === 'production' && !baseConfig.REDIS_URL) {
   console.error('❌ Invalid environment variables: REDIS_URL is required when NODE_ENV=production');
+  process.exit(1);
+}
+
+// Admin endpoints are disabled by default; if enabled in production, require a key.
+if (baseConfig.NODE_ENV === 'production' && baseConfig.ENABLE_ADMIN_ENDPOINTS === 'true' && !baseConfig.INTERNAL_ADMIN_API_KEY) {
+  console.error('❌ Invalid environment variables: INTERNAL_ADMIN_API_KEY is required when ENABLE_ADMIN_ENDPOINTS=true in production');
   process.exit(1);
 }
 

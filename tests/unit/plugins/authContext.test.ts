@@ -3,12 +3,10 @@ import fastify from 'fastify';
 import authContext from '../../../src/plugins/authContext';
 import jwt from 'jsonwebtoken';
 import { config } from '../../../src/config/env';
-import cookie from '@fastify/cookie';
 
 describe('Auth Context Plugin', () => {
   const createTestApp = async () => {
     const app = fastify();
-    await app.register(cookie);
     await app.register(authContext);
     return app;
   };
@@ -46,7 +44,7 @@ describe('Auth Context Plugin', () => {
     });
   });
 
-  it('should return 401 on missing header and cookie', async () => {
+  it('should return 401 on missing Authorization header', async () => {
     const app = await createTestApp();
     app.get('/test', async () => 'ok');
 
@@ -57,7 +55,7 @@ describe('Auth Context Plugin', () => {
 
     expect(res.statusCode).toBe(401);
     expect(res.json()).toEqual({
-      error: { code: 'UNAUTHENTICATED', message: 'Missing or invalid Authorization header/cookie' },
+      error: { code: 'UNAUTHENTICATED', message: 'Missing or invalid Authorization header' },
     });
   });
 

@@ -11,6 +11,7 @@ export async function resetDb() {
   // Truncate all tables (order matters due to foreign keys)
   // Deleting userSettings first because it references user
   await prisma.userSettings.deleteMany();
+  await prisma.productStats.deleteMany();
   
   await prisma.xeroInvoiceLineItem.deleteMany();
   await prisma.invoiceLineItem.deleteMany();

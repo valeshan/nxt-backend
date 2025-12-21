@@ -140,7 +140,9 @@ export default async function supplierInsightsRoutes(fastify: FastifyInstance) {
                   pageSize: z.number(),
                   totalItems: z.number(),
                   totalPages: z.number()
-              })
+              }),
+              // Nightly cache freshness signal (ISO timestamp)
+              statsAsOf: z.string().nullable().optional(),
           })
       }
     }

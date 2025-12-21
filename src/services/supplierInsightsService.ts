@@ -2,6 +2,7 @@ import { PrismaClient, Prisma, OrganisationRole } from '@prisma/client';
 import prisma from '../infrastructure/prismaClient';
 import { getCategoryName } from '../config/categoryMap';
 import { startOfMonth, subMonths, subDays } from 'date-fns';
+import { createHash } from 'crypto';
 import { forecastService } from './forecast/forecastService';
 import { MANUAL_COGS_ACCOUNT_CODE } from '../config/constants';
 import { mergeTimeSeries, TimeSeriesPoint } from '../utils/dataMerging';
@@ -10,6 +11,13 @@ import { NotificationService } from './notificationService';
 import { PriceIncreaseItem } from './emailTemplates/priceIncreaseTemplates';
 import { getProductKeyFromLineItem } from './helpers/productKey';
 import { getOffsetPaginationOrThrow } from '../utils/paginationGuards';
+
+function toAccountCodesHash(accountCodes?: string[]): string {
+  if (!accountCodes || accountCodes.length === 0) return 'all';
+  const normalized = [...new Set(accountCodes.map((c) => String(c).trim()).filter(Boolean))].sort();
+  const hash = createHash('sha1').update(normalized.join(',')).digest('hex');
+  return `cogs:${hash}`;
+}
 
 // --- Types & DTOs ---
 
@@ -96,6 +104,7 @@ export interface PaginatedResult<T> {
     totalItems: number;
     totalPages: number;
   };
+  statsAsOf?: string | null;
 }
 
 export interface AccountDto {
@@ -1251,6 +1260,168 @@ export const supplierInsightsService = {
     return alerts;
   },
 
+  async refreshProductStatsForLocation(
+    organisationId: string,
+    locationId: string,
+    accountCodes?: string[]
+  ): Promise<{ accountCodesHash: string; statsAsOf: Date; count: number }> {
+    const accountCodesHash = toAccountCodesHash(accountCodes);
+    const last12m = getFullCalendarMonths(12);
+    const statsAsOf = new Date();
+
+    const whereInvoiceBase = {
+      organisationId,
+      locationId,
+      deletedAt: null,
+    };
+
+    const xeroProducts = await prisma.product.findMany({
+      where: { organisationId, locationId },
+      select: { id: true, name: true, supplier: { select: { name: true } } },
+    });
+
+    const productIds = xeroProducts.map((p) => p.id);
+    const supersededIds = await getSupersededXeroIds(organisationId, locationId, last12m.start);
+
+    const xeroStats = productIds.length
+      ? await prisma.xeroInvoiceLineItem.groupBy({
+          by: ['productId'],
+          where: {
+            productId: { in: productIds },
+            invoice: {
+              ...whereInvoiceBase,
+              date: { gte: last12m.start, lte: new Date() },
+              status: { in: ['AUTHORISED', 'PAID'] },
+              xeroInvoiceId: { notIn: supersededIds },
+            },
+            ...(accountCodes && accountCodes.length > 0 ? { accountCode: { in: accountCodes } } : {}),
+          } as any,
+          _sum: { lineAmount: true },
+        })
+      : [];
+
+    const xeroSpendMap = new Map<string, number>();
+    xeroStats.forEach((s) => {
+      if (s.productId) xeroSpendMap.set(String(s.productId), s._sum.lineAmount?.toNumber() || 0);
+    });
+
+    const manualStats = await prisma.invoiceLineItem.groupBy({
+      by: ['productCode', 'description', 'invoiceId'],
+      where: {
+        invoice: {
+          ...whereInvoiceBase,
+          date: { gte: last12m.start, lte: new Date() },
+          isVerified: true,
+          invoiceFileId: { not: null },
+          invoiceFile: { reviewStatus: 'VERIFIED', deletedAt: null },
+          deletedAt: null,
+        },
+        ...(accountCodes && accountCodes.length > 0
+          ? {
+              OR: [
+                { accountCode: { in: accountCodes } },
+                ...(accountCodes.includes(MANUAL_COGS_ACCOUNT_CODE) ? [{ accountCode: null }] : []),
+              ],
+            }
+          : {}),
+      } as any,
+      _sum: { lineTotal: true },
+    });
+
+    const manualInvoiceIds = [...new Set(manualStats.map((s) => s.invoiceId))];
+    const manualInvoices = manualInvoiceIds.length
+      ? await prisma.invoice.findMany({
+          where: { id: { in: manualInvoiceIds } },
+          select: { id: true, supplierId: true, supplier: { select: { name: true } } },
+        })
+      : [];
+    const invoiceSupplierMap = new Map(manualInvoices.map((i) => [i.id, i]));
+
+    const mergedMap = new Map<
+      string,
+      { productId: string; productName: string; supplierName: string; spend12m: number; isManual: boolean }
+    >();
+
+    for (const p of xeroProducts) {
+      mergedMap.set(p.id, {
+        productId: p.id,
+        productName: p.name,
+        supplierName: p.supplier?.name || 'Unknown',
+        spend12m: xeroSpendMap.get(p.id) || 0,
+        isManual: false,
+      });
+    }
+
+    for (const stat of manualStats) {
+      const inv = invoiceSupplierMap.get(stat.invoiceId);
+      if (!inv || !inv.supplierId) continue;
+
+      const key = (stat.productCode || stat.description || 'Unknown').trim();
+      const normalizedKey = key.toLowerCase();
+      const compositeKey = `${inv.supplierId}::${normalizedKey}`;
+      const spend = stat._sum.lineTotal?.toNumber() || 0;
+
+      const existing = mergedMap.get(compositeKey);
+      if (existing) {
+        existing.spend12m += spend;
+      } else {
+        const id = `manual:${inv.supplierId}:${Buffer.from(normalizedKey).toString('base64')}`;
+        mergedMap.set(compositeKey, {
+          productId: id,
+          productName: key,
+          supplierName: inv.supplier?.name || 'Unknown',
+          spend12m: spend,
+          isManual: true,
+        });
+      }
+    }
+
+    const rows = Array.from(mergedMap.values())
+      .filter((i) => i.spend12m > 0)
+      .map((i) => ({
+        organisationId,
+        locationId,
+        accountCodesHash,
+        source: i.isManual ? ('MANUAL' as const) : ('XERO' as const),
+        productId: i.productId,
+        productName: i.productName,
+        supplierName: i.supplierName,
+        spend12m: new Prisma.Decimal(i.spend12m),
+        statsAsOf,
+      }));
+
+    await prisma.$transaction(async (tx) => {
+      // Cast to avoid TS tooling drift around Prisma type generation.
+      await (tx as any).productStats.deleteMany({ where: { organisationId, locationId, accountCodesHash } });
+      if (rows.length > 0) {
+        await (tx as any).productStats.createMany({ data: rows });
+      }
+    });
+
+    return { accountCodesHash, statsAsOf, count: rows.length };
+  },
+
+  async refreshProductStatsNightly(): Promise<void> {
+    const locations = await prisma.location.findMany({ select: { id: true, organisationId: true } });
+
+    for (const loc of locations) {
+      try {
+        await this.refreshProductStatsForLocation(loc.organisationId, loc.id, undefined);
+
+        const codes = await prisma.locationAccountConfig.findMany({
+          where: { locationId: loc.id, category: 'COGS' },
+          select: { accountCode: true },
+        });
+        const accountCodes = codes.map((c) => c.accountCode).filter(Boolean);
+        if (accountCodes.length > 0) {
+          await this.refreshProductStatsForLocation(loc.organisationId, loc.id, accountCodes);
+        }
+      } catch (e) {
+        console.error(`[ProductStats] Nightly refresh failed for org=${loc.organisationId} loc=${loc.id}`, e);
+      }
+    }
+  },
+
   async getProducts(organisationId: string, locationId: string | undefined, params: GetProductsParams): Promise<PaginatedResult<ProductListItem>> {
     const { page, limit: pageSize, skip } = getOffsetPaginationOrThrow({
       page: params.page || 1,
@@ -1260,218 +1431,214 @@ export const supplierInsightsService = {
     });
     const last12m = getFullCalendarMonths(12);
 
-    // Build Where Clause
-    const whereClause: Prisma.ProductWhereInput = {
-        organisationId,
-        ...(locationId ? { locationId } : {}),
-    };
-    
-    if (params.search) {
-        whereClause.OR = [
-            { name: { contains: params.search, mode: 'insensitive' } },
-            { productKey: { contains: params.search, mode: 'insensitive' } },
-            { supplier: { name: { contains: params.search, mode: 'insensitive' } } }
-        ];
-    }
-    
-    const whereInvoiceBase = {
-        organisationId,
-        ...(locationId ? { locationId } : {}),
-        deletedAt: null
-    };
-
-    // 1. Fetch All Products & Stats (Xero + Manual)
-    // Note: Sorting by Spend requires fetching all then sorting in memory (or complex UNION).
-    // For now we fetch all candidates and merge.
-
-    // A. Xero Products
-    const xeroProducts = await prisma.product.findMany({
-        where: whereClause,
-        select: { id: true, name: true, productKey: true, supplierId: true, supplier: { select: { name: true } } }
-    });
-    
-    const productIds = xeroProducts.map(p => p.id);
-    
-    // Stats for Xero Products
-    const supersededIds = await getSupersededXeroIds(organisationId, locationId, last12m.start);
-    const xeroStats = await prisma.xeroInvoiceLineItem.groupBy({
-        by: ['productId'],
-        where: {
-            productId: { in: productIds },
-            invoice: {
-                ...whereInvoiceBase,
-                date: { gte: last12m.start, lte: new Date() },
-                status: { in: ['AUTHORISED', 'PAID'] },
-                xeroInvoiceId: { notIn: supersededIds }
-            },
-            ...(params.accountCodes && params.accountCodes.length > 0 ? { accountCode: { in: params.accountCodes } } : {})
-        } as any,
-        _sum: { lineAmount: true }
-    });
-
-    // B. Manual Products (Virtual)
-    // Group by Supplier + Key
-    const manualStats = await prisma.invoiceLineItem.groupBy({
-        by: ['productCode', 'description', 'invoiceId'], 
-        where: {
-            invoice: {
-                ...whereInvoiceBase,
-                date: { gte: last12m.start, lte: new Date() },
-                isVerified: true,
-                invoiceFileId: { not: null },
-                invoiceFile: {
-                    reviewStatus: 'VERIFIED',
-                    deletedAt: null
-                },
-                deletedAt: null
-            },
-            // Account Code filtering for manual items: 
-            // If specific codes requested, filter by them.
-            // Otherwise, include ALL verified manual items (don't restrict to MANUAL_COGS_ACCOUNT_CODE)
-            // This ensures items with null accountCode are included if no filter is applied.
-             ...(params.accountCodes && params.accountCodes.length > 0 
-                ? { 
-                    OR: [
-                        { accountCode: { in: params.accountCodes } },
-                        ...(params.accountCodes.includes(MANUAL_COGS_ACCOUNT_CODE) ? [{ accountCode: null }] : [])
-                    ]
-                  } 
-                : {}),
-             ...(params.search ? {
-                OR: [
-                    { productCode: { contains: params.search, mode: 'insensitive' } },
-                    { description: { contains: params.search, mode: 'insensitive' } },
-                    { invoice: { supplier: { name: { contains: params.search, mode: 'insensitive' } } } }
-                ]
-             } : {})
-        } as any,
-        _sum: { lineTotal: true }
-    });
-
-    // We need supplier info for manual stats. Fetch distinct invoices to get supplierId.
-    // Optimization: query invoiceLineItem with include invoice is heavy if many items.
-    // Instead, we'll fetch supplier map for the invoices involved.
-    const manualInvoiceIds = [...new Set(manualStats.map(s => s.invoiceId))];
-    const manualInvoices = await prisma.invoice.findMany({
-        where: { id: { in: manualInvoiceIds } },
-        select: { id: true, supplierId: true, supplier: { select: { name: true } } }
-    });
-    const invoiceSupplierMap = new Map(manualInvoices.map(i => [i.id, i]));
-
-
-    // Merge Logic
-    const mergedMap = new Map<string, {
+    let statsAsOf: string | null = null;
+    let totalItems = 0;
+    let totalPages = 0;
+    let paginatedItems: Array<{
         productId: string;
         productName: string;
-        supplierId?: string;
         supplierName: string;
+        latestUnitCost: number;
+        lastPriceChangePercent: number;
         spend12m: number;
-        isManual: boolean;
-    }>();
+    }> = [];
 
-    // Helper key gen
-    const getProductKey = (supplierId: string, code: string | null, desc: string | null) => {
-        const key = code || desc || '';
-        return `${supplierId}::${key.trim().toLowerCase()}`;
-    };
-
-    // 1. Process Xero Results
-    const xeroSpendMap = new Map<string, number>();
-    xeroStats.forEach(s => {
-        if (s.productId) xeroSpendMap.set(s.productId, s._sum.lineAmount?.toNumber() || 0);
-    });
-
-    for (const p of xeroProducts) {
-        // For Xero products, we use productId as the primary key in our map to avoid collisions if names change, 
-        // BUT to merge with manual, we might want to check name/code collision?
-        // Plan says: "Insert Xero products first."
-        // If a manual item matches a Xero product key, should we merge? 
-        // Xero products have a stable ID. Manual ones don't. 
-        // We'll rely on the fact that Xero products exist. 
-        // Ideally we map Xero products to their key too to allow merging.
-        // For now, let's just treat them as separate entries unless we want advanced deduping.
-        // The plan says: "Use COALESCE... as unique key per supplier".
-        // Let's generate the key for Xero products too if possible. 
-        // Product table has 'productKey' (often code) and 'name'.
-        // We don't have 'productKey' selected above, let's assume 'name' or fetch key?
-        // Let's stick to: Xero products are the source of truth. Manual items are added if distinct.
-        // Wait, if I have a manual invoice for "Milk" and a Xero product "Milk", I want them combined?
-        // That's complex because one has a UUID and one doesn't. 
-        // Simplest approach: Add Manual items as "Virtual" products.
-        
-        // We use the ID as the map key for Xero items to preserve their identity.
-        mergedMap.set(p.id, {
-            productId: p.id,
-            productName: p.name,
-            supplierId: p.supplierId || undefined,
-            supplierName: p.supplier?.name || 'Unknown',
-            spend12m: xeroSpendMap.get(p.id) || 0,
-            isManual: false
-        });
-    }
-
-    // 2. Process Manual Results
-    for (const stat of manualStats) {
-        const inv = invoiceSupplierMap.get(stat.invoiceId);
-        if (!inv || !inv.supplierId) continue;
-
-        const key = (stat.productCode || stat.description || 'Unknown').trim();
-        const normalizedKey = key.toLowerCase();
-        const compositeKey = `${inv.supplierId}::${normalizedKey}`;
-        const spend = stat._sum.lineTotal?.toNumber() || 0;
-
-        // Check if this "virtual" product corresponds to an existing Xero product?
-        // Hard without efficient lookup. 
-        // We'll store manual items by their composite key.
-        
-        // Check if we already added this manual item (aggregating across invoices)
-        const existingManual = mergedMap.get(compositeKey);
-        if (existingManual) {
-            existingManual.spend12m += spend;
-        } else {
-             // New virtual product
-             // Generate a stable-ish ID: manual:supplierId:base64(key)
-             const id = `manual:${inv.supplierId}:${Buffer.from(normalizedKey).toString('base64')}`;
-             mergedMap.set(compositeKey, {
-                 productId: id,
-                 productName: key,
-                 supplierId: inv.supplierId,
-                 supplierName: inv.supplier?.name || 'Unknown',
-                 spend12m: spend,
-                 isManual: true
-             });
+    if (!locationId) {
+        // Org-wide fallback (used by some tests / internal callers).
+        // The production route is location-scoped and uses ProductStats for DB-driven pagination.
+        const whereClause: Prisma.ProductWhereInput = { organisationId };
+        if (params.search) {
+            whereClause.OR = [
+                { name: { contains: params.search, mode: 'insensitive' } },
+                { productKey: { contains: params.search, mode: 'insensitive' } },
+                { supplier: { name: { contains: params.search, mode: 'insensitive' } } }
+            ];
         }
-    }
 
-    // Convert to Array
-    let items = Array.from(mergedMap.values()).map(i => ({
-        productId: i.productId,
-        productName: i.productName,
-        supplierName: i.supplierName,
-        latestUnitCost: 0,
-        lastPriceChangePercent: 0,
-        spend12m: i.spend12m
-    }));
-    
-    // Filter
-    items = items.filter(i => i.spend12m > 0);
-    
-    // Sort
-    if (params.sortBy === 'productName' || params.sortBy === 'supplierName') {
-        items.sort((a, b) => {
-            const valA = a[params.sortBy as keyof typeof a] as string;
-            const valB = b[params.sortBy as keyof typeof b] as string;
-            return params.sortDirection === 'asc' ? valA.localeCompare(valB) : valB.localeCompare(valA);
+        const whereInvoiceBase = { organisationId, deletedAt: null };
+
+        const xeroProducts = await prisma.product.findMany({
+            where: whereClause,
+            select: { id: true, name: true, productKey: true, supplierId: true, supplier: { select: { name: true } } }
         });
+
+        const productIds = xeroProducts.map(p => p.id);
+        const supersededIds = await getSupersededXeroIds(organisationId, locationId, last12m.start);
+        const xeroStats = await prisma.xeroInvoiceLineItem.groupBy({
+            by: ['productId'],
+            where: {
+                productId: { in: productIds },
+                invoice: {
+                    ...whereInvoiceBase,
+                    date: { gte: last12m.start, lte: new Date() },
+                    status: { in: ['AUTHORISED', 'PAID'] },
+                    xeroInvoiceId: { notIn: supersededIds }
+                },
+                ...(params.accountCodes && params.accountCodes.length > 0 ? { accountCode: { in: params.accountCodes } } : {})
+            } as any,
+            _sum: { lineAmount: true }
+        });
+
+        const manualStats = await prisma.invoiceLineItem.groupBy({
+            by: ['productCode', 'description', 'invoiceId'],
+            where: {
+                invoice: {
+                    ...whereInvoiceBase,
+                    date: { gte: last12m.start, lte: new Date() },
+                    isVerified: true,
+                    invoiceFileId: { not: null },
+                    invoiceFile: { reviewStatus: 'VERIFIED', deletedAt: null },
+                    deletedAt: null
+                },
+                ...(params.accountCodes && params.accountCodes.length > 0
+                    ? {
+                        OR: [
+                            { accountCode: { in: params.accountCodes } },
+                            ...(params.accountCodes.includes(MANUAL_COGS_ACCOUNT_CODE) ? [{ accountCode: null }] : [])
+                        ]
+                      }
+                    : {}),
+                ...(params.search ? {
+                    OR: [
+                        { productCode: { contains: params.search, mode: 'insensitive' } },
+                        { description: { contains: params.search, mode: 'insensitive' } },
+                        { invoice: { supplier: { name: { contains: params.search, mode: 'insensitive' } } } }
+                    ]
+                } : {})
+            } as any,
+            _sum: { lineTotal: true }
+        });
+
+        const manualInvoiceIds = [...new Set(manualStats.map(s => s.invoiceId))];
+        const manualInvoices = await prisma.invoice.findMany({
+            where: { id: { in: manualInvoiceIds } },
+            select: { id: true, supplierId: true, supplier: { select: { name: true } } }
+        });
+        const invoiceSupplierMap = new Map(manualInvoices.map(i => [i.id, i]));
+
+        const mergedMap = new Map<string, {
+            productId: string;
+            productName: string;
+            supplierId?: string;
+            supplierName: string;
+            spend12m: number;
+            isManual: boolean;
+        }>();
+
+        const xeroSpendMap = new Map<string, number>();
+        xeroStats.forEach(s => {
+            if (s.productId) xeroSpendMap.set(s.productId, s._sum.lineAmount?.toNumber() || 0);
+        });
+
+        for (const p of xeroProducts) {
+            mergedMap.set(p.id, {
+                productId: p.id,
+                productName: p.name,
+                supplierId: p.supplierId || undefined,
+                supplierName: p.supplier?.name || 'Unknown',
+                spend12m: xeroSpendMap.get(p.id) || 0,
+                isManual: false
+            });
+        }
+
+        for (const stat of manualStats) {
+            const inv = invoiceSupplierMap.get(stat.invoiceId);
+            if (!inv || !inv.supplierId) continue;
+
+            const key = (stat.productCode || stat.description || 'Unknown').trim();
+            const normalizedKey = key.toLowerCase();
+            const compositeKey = `${inv.supplierId}::${normalizedKey}`;
+            const spend = stat._sum.lineTotal?.toNumber() || 0;
+
+            const existingManual = mergedMap.get(compositeKey);
+            if (existingManual) {
+                existingManual.spend12m += spend;
+            } else {
+                const id = `manual:${inv.supplierId}:${Buffer.from(normalizedKey).toString('base64')}`;
+                mergedMap.set(compositeKey, {
+                    productId: id,
+                    productName: key,
+                    supplierId: inv.supplierId,
+                    supplierName: inv.supplier?.name || 'Unknown',
+                    spend12m: spend,
+                    isManual: true
+                });
+            }
+        }
+
+        let items = Array.from(mergedMap.values()).map(i => ({
+            productId: i.productId,
+            productName: i.productName,
+            supplierName: i.supplierName,
+            latestUnitCost: 0,
+            lastPriceChangePercent: 0,
+            spend12m: i.spend12m
+        }));
+
+        items = items.filter(i => i.spend12m > 0);
+
+        if (params.sortBy === 'productName' || params.sortBy === 'supplierName') {
+            items.sort((a, b) => {
+                const valA = a[params.sortBy as keyof typeof a] as string;
+                const valB = b[params.sortBy as keyof typeof a] as string;
+                return params.sortDirection === 'asc' ? valA.localeCompare(valB) : valB.localeCompare(valA);
+            });
+        } else {
+            items.sort((a, b) => params.sortDirection === 'asc' ? a.spend12m - b.spend12m : b.spend12m - a.spend12m);
+        }
+
+        totalItems = items.length;
+        totalPages = Math.ceil(totalItems / pageSize);
+        paginatedItems = items.slice(skip, skip + pageSize);
     } else {
-         // Default sort by spend desc
-         items.sort((a, b) => params.sortDirection === 'asc' ? a.spend12m - b.spend12m : b.spend12m - a.spend12m);
+        const accountCodesHash = toAccountCodesHash(params.accountCodes);
+
+        // Ensure stats exist (nightly cron fills this; on-demand fallback keeps endpoint working immediately after deploy)
+        const existingCount = await (prisma as any).productStats.count({
+            where: { organisationId, locationId, accountCodesHash }
+        });
+        if (existingCount === 0) {
+            await this.refreshProductStatsForLocation(organisationId, locationId, params.accountCodes);
+        }
+
+        const whereStats: any = {
+            organisationId,
+            locationId,
+            accountCodesHash,
+            ...(params.search ? {
+                OR: [
+                    { productName: { contains: params.search, mode: 'insensitive' } },
+                    { supplierName: { contains: params.search, mode: 'insensitive' } },
+                ]
+            } : {})
+        };
+
+        totalItems = await (prisma as any).productStats.count({ where: whereStats });
+        totalPages = Math.ceil(totalItems / pageSize);
+
+        const sortDirection = params.sortDirection === 'asc' ? 'asc' : 'desc';
+        const statsRows: any[] = await (prisma as any).productStats.findMany({
+            where: whereStats,
+            orderBy: (params.sortBy === 'productName')
+                ? { productName: sortDirection }
+                : (params.sortBy === 'supplierName')
+                    ? { supplierName: sortDirection }
+                    : { spend12m: sortDirection },
+            take: pageSize,
+            skip
+        });
+
+        statsAsOf = statsRows.length > 0 ? statsRows[0].statsAsOf.toISOString() : null;
+
+        paginatedItems = statsRows.map((row: any) => ({
+            productId: row.productId,
+            productName: row.productName,
+            supplierName: row.supplierName,
+            latestUnitCost: 0,
+            lastPriceChangePercent: 0,
+            spend12m: row.spend12m.toNumber()
+        }));
     }
-    
-    // Pagination (In-Memory)
-    const totalItems = items.length;
-    const totalPages = Math.ceil(totalItems / pageSize);
-    const paginatedItems = items.slice(skip, skip + pageSize);
 
     // 1.5 Resolve Missing Suppliers (Only for Xero items that might be missing it)
     // (Manual items always have supplier from invoice)
@@ -1672,7 +1839,8 @@ export const supplierInsightsService = {
     
     return {
         items: hydratedItems,
-        pagination: { page, pageSize, totalItems, totalPages }
+        pagination: { page, pageSize, totalItems, totalPages },
+        statsAsOf,
     };
   },
 

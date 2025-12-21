@@ -1,6 +1,7 @@
 import fp from 'fastify-plugin';
 import { FastifyPluginAsync, FastifyRequest } from 'fastify';
 import { verifyToken } from '../utils/jwt';
+import { config } from '../config/env';
 
 export type AuthContext = {
   userId: string;
@@ -14,23 +15,37 @@ const authContextPlugin: FastifyPluginAsync = async (fastify) => {
   fastify.decorateRequest('authContext', null);
 
   fastify.addHook('onRequest', async (request: FastifyRequest, reply) => {
+    // Legacy headers are not part of the BE2 auth model.
+    // In dev, hard-fail fast if they are present to force cleanup.
+    // In prod, ignore silently to avoid noisy logs and accidental coupling.
+    if (config.NODE_ENV !== 'production') {
+      const hasLegacy =
+        Boolean(request.headers['x-user-id']) ||
+        Boolean(request.headers['x-org-id']) ||
+        Boolean(request.headers['x-location-id']);
+      if (hasLegacy) {
+        return reply.status(400).send({
+          error: {
+            code: 'LEGACY_AUTH_HEADERS_NOT_ALLOWED',
+            message: 'Legacy auth headers (x-user-id/x-org-id/x-location-id) are not supported. Use Authorization: Bearer <token>.',
+          },
+        });
+      }
+    }
+
     const authHeader = request.headers.authorization;
     let token: string | undefined;
 
     // 1. Check Authorization header
     if (authHeader && authHeader.startsWith('Bearer ')) {
       token = authHeader.split(' ')[1];
-    } 
-    // 2. Check access_token cookie (if header missing)
-    else if (request.cookies && request.cookies.access_token) {
-      token = request.cookies.access_token;
     }
 
     if (!token) {
       return reply.status(401).send({
         error: {
           code: 'UNAUTHENTICATED',
-          message: 'Missing or invalid Authorization header/cookie',
+          message: 'Missing or invalid Authorization header',
         },
       });
     }

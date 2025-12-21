@@ -43,6 +43,7 @@ model Organisation {
   suppliers              Supplier[]
   xeroInvoices           XeroInvoice[]
   products               Product[]
+  productStats           ProductStats[]
   xeroSyncRuns           XeroSyncRun[]
   locationAccountConfigs LocationAccountConfig[]
   supplierAliases        SupplierAlias[]
@@ -66,6 +67,7 @@ model Location {
   xeroInvoices      XeroInvoice[]
   accountConfigs    LocationAccountConfig[]
   ocrInvoices       Invoice[]
+  productStats      ProductStats[]
 
   // Routing for inbound emails (optional custom alias)
   mailgunAlias String? @unique
@@ -253,6 +255,38 @@ model Product {
 
   @@unique([organisationId, locationId, productKey])
   @@index([organisationId, locationId])
+}
+
+enum ProductStatsSource {
+  XERO
+  MANUAL
+}
+
+model ProductStats {
+  id              String             @id @default(uuid())
+  organisationId  String
+  locationId      String
+  // Cache key for account-code filters:
+  // - 'all' for unfiltered
+  // - 'cogs:<hash>' for a specific set (sorted) of account codes
+  accountCodesHash String
+  source          ProductStatsSource
+  // For XERO: Product.id
+  // For MANUAL: 'manual:<supplierId>:<base64(normalizedKey)>'
+  productId       String
+  productName     String
+  supplierName    String
+  spend12m        Decimal            @db.Decimal(19, 4)
+  statsAsOf       DateTime
+  createdAt       DateTime           @default(now())
+  updatedAt       DateTime           @updatedAt
+
+  organisation    Organisation       @relation(fields: [organisationId], references: [id])
+  location        Location           @relation(fields: [locationId], references: [id])
+
+  @@unique([organisationId, locationId, accountCodesHash, source, productId])
+  @@index([organisationId, locationId, accountCodesHash])
+  @@index([organisationId, locationId, accountCodesHash, source, spend12m], map: "ProductStats_org_loc_hash_source_spend_idx")
 }
 
 model XeroInvoice {

@@ -2,7 +2,6 @@ import Fastify, { FastifyInstance } from 'fastify';
 import cors from '@fastify/cors';
 import multipart from '@fastify/multipart';
 import formbody from '@fastify/formbody';
-import cookie from '@fastify/cookie';
 import helmet from '@fastify/helmet';
 import rateLimit from '@fastify/rate-limit';
 import compress from '@fastify/compress';
@@ -20,6 +19,7 @@ import supplierInsightsRoutes from './routes/supplierInsightsRoutes';
 import invoiceRoutes from './routes/invoiceRoutes';
 import diagnosticsRoutes from './routes/diagnosticsRoutes';
 import debugRoutes from './routes/debugRoutes';
+import adminRoutes from './routes/adminRoutes';
 import xeroWebhookRoutes from './controllers/xeroWebhookController'; // Assuming we'll create this
 import webhookRoutes from './routes/webhookRoutes';
 import { config } from './config/env';
@@ -98,24 +98,26 @@ export function buildApp(): FastifyInstance {
   app.setValidatorCompiler(validatorCompiler);
   app.setSerializerCompiler(serializerCompiler);
 
-  // Register Cookie Plugin
-  app.register(cookie, {
-    secret: config.JWT_VERIFY_SECRET, // Use a secret for signing cookies if needed
-    parseOptions: {}
-  });
-
   // Register CORS
+  const corsAllowedHeaders = [
+    'Content-Type',
+    'Authorization',
+    'x-xero-signature',
+    'x-request-id',
+  ];
+
   if (config.NODE_ENV !== 'production') {
     app.register(cors, {
       origin: ['http://localhost:3000'],
-      methods: ['GET', 'POST', 'OPTIONS'],
-      allowedHeaders: ['Content-Type', 'Authorization', 'x-user-id', 'x-org-id', 'x-location-id', 'x-xero-signature'],
-      credentials: true, // Allow cookies
+      methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
+      allowedHeaders: corsAllowedHeaders,
+      credentials: false,
     });
   } else {
     app.register(cors, {
       origin: config.FRONTEND_URL ? [config.FRONTEND_URL] : false,
-      credentials: true,
+      allowedHeaders: corsAllowedHeaders,
+      credentials: false,
     });
   }
 
@@ -187,6 +189,10 @@ export function buildApp(): FastifyInstance {
   app.register(supplierInsightsRoutes, { prefix: '/supplier-insights' });
   app.register(invoiceRoutes, { prefix: '/invoices' });
   app.register(diagnosticsRoutes, { prefix: '/diagnostics' });
+  // Admin routes are safe-by-default:
+  // - disabled unless ENABLE_ADMIN_ENDPOINTS=true
+  // - require x-internal-api-key
+  app.register(adminRoutes, { prefix: '/admin' });
   
   // Register Webhook Routes
   // Note: These routes might need special handling for multipart/form-data which is handled by the controller
