@@ -47,7 +47,7 @@ async function enforceCooldownOrThrow(params: { organisationId: string; location
 
   const redis = getRedisClient();
   // Fail closed for admin controls if Redis is unavailable
-  const res = await redis.set(key, '1', 'NX', 'EX', ttlSeconds);
+  const res = await redis.set(key, '1', 'EX', ttlSeconds, 'NX');
   return { ok: res === 'OK', retryAfterSeconds: ttlSeconds };
 }
 
@@ -146,4 +146,5 @@ export default async function adminRoutes(app: FastifyInstance) {
     return reply.send(status);
   });
 }
+
 
