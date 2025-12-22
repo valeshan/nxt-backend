@@ -562,21 +562,219 @@ export const supplierInsightsService = {
         .then((rows: any[]) => new Set(rows.map((r) => r.supplierId).filter(Boolean)).size),
     ]);
 
-    // Tolerances (explicit + small)
-    const spendOk = Math.abs(deltaPct) <= 5;
-    const invoiceDeltaPct =
-      legacyInvoiceCount > 0 ? ((canonicalInvoiceCount - legacyInvoiceCount) / legacyInvoiceCount) * 100 : 0;
-    const invoiceOk = Math.abs(invoiceDeltaPct) <= 5;
+    // Supplier-level spend parity (required before flip)
+    // Legacy: sum Xero lineAmount + manual lineTotal grouped by supplierId
+    const [legacySpendBySupplier, canonicalSpendBySupplier] = await Promise.all([
+      prisma.$queryRaw<
+        Array<{ supplierId: string | null; spend: number }>
+      >(
+        Prisma.sql`
+        WITH legacy_xero AS (
+          SELECT xi."supplierId" AS "supplierId", COALESCE(SUM(xil."lineAmount"), 0)::float8 AS spend
+          FROM "XeroInvoiceLineItem" xil
+          JOIN "XeroInvoice" xi ON xi.id = xil."invoiceId"
+          WHERE xi."organisationId" = ${organisationId}
+            AND xi."locationId" = ${locationId}
+            AND xi."deletedAt" IS NULL
+            AND xi."status" IN ('AUTHORISED','PAID')
+            AND xi."date" >= ${ninetyDaysAgo} AND xi."date" <= ${now}
+            AND xi."xeroInvoiceId" NOT IN (${Prisma.join(supersededIds.length ? supersededIds : [''])})
+          GROUP BY xi."supplierId"
+        ),
+        legacy_manual AS (
+          SELECT i."supplierId" AS "supplierId", COALESCE(SUM(ili."lineTotal"), 0)::float8 AS spend
+          FROM "InvoiceLineItem" ili
+          JOIN "Invoice" i ON i.id = ili."invoiceId"
+          WHERE i."organisationId" = ${organisationId}
+            AND i."locationId" = ${locationId}
+            AND i."deletedAt" IS NULL
+            AND i."isVerified" = true
+            AND i."invoiceFileId" IS NOT NULL
+            AND i."date" >= ${ninetyDaysAgo} AND i."date" <= ${now}
+          GROUP BY i."supplierId"
+        )
+        -- Avoid FULL OUTER JOIN with IS NOT DISTINCT FROM (unsupported for FULL JOIN in Postgres)
+        -- Equivalent result: UNION ALL + aggregate by supplierId (null buckets preserved)
+        , merged AS (
+          SELECT * FROM legacy_xero
+          UNION ALL
+          SELECT * FROM legacy_manual
+        )
+        SELECT "supplierId", SUM(spend)::float8 AS spend
+        FROM merged
+        GROUP BY "supplierId"
+        `
+      ),
+      prisma.$queryRaw<
+        Array<{ supplierId: string | null; spend: number }>
+      >(
+        Prisma.sql`
+        SELECT "supplierId" AS "supplierId",
+               COALESCE(SUM("lineTotal"), 0)::float8 AS spend
+        FROM "CanonicalInvoiceLineItem"
+        WHERE "organisationId" = ${organisationId}
+          AND "locationId" = ${locationId}
+          AND "qualityStatus" = 'OK'
+          AND "canonicalInvoiceId" IN (
+            SELECT id FROM "CanonicalInvoice"
+            WHERE "organisationId" = ${organisationId}
+              AND "locationId" = ${locationId}
+              AND "deletedAt" IS NULL
+              AND "date" >= ${ninetyDaysAgo} AND "date" <= ${now}
+          )
+        GROUP BY "supplierId"
+        `
+      ),
+    ]);
+
+    const legacyBySupplierMap = new Map<string, number>();
+    for (const row of legacySpendBySupplier) legacyBySupplierMap.set(String(row.supplierId ?? 'null'), Number(row.spend || 0));
+
+    const canonicalBySupplierMap = new Map<string, number>();
+    for (const row of canonicalSpendBySupplier) canonicalBySupplierMap.set(String(row.supplierId ?? 'null'), Number(row.spend || 0));
+
+    const supplierDeltaRows: Array<{ supplierId: string | null; legacy: number; canonical: number; deltaPct: number }> = [];
+    for (const [supplierKey, legacySpend] of legacyBySupplierMap.entries()) {
+      const canonicalSpend = canonicalBySupplierMap.get(supplierKey) ?? 0;
+      const pct = legacySpend > 0 ? ((canonicalSpend - legacySpend) / legacySpend) * 100 : 0;
+      supplierDeltaRows.push({
+        supplierId: supplierKey === 'null' ? null : supplierKey,
+        legacy: legacySpend,
+        canonical: canonicalSpend,
+        deltaPct: pct,
+      });
+    }
+    // If canonical has extra supplier buckets not present in legacy, include them too (should be near-zero if everything is consistent)
+    for (const [supplierKey, canonicalSpend] of canonicalBySupplierMap.entries()) {
+      if (legacyBySupplierMap.has(supplierKey)) continue;
+      supplierDeltaRows.push({
+        supplierId: supplierKey === 'null' ? null : supplierKey,
+        legacy: 0,
+        canonical: canonicalSpend,
+        deltaPct: canonicalSpend === 0 ? 0 : 100,
+      });
+    }
+
+    // Top products snapshot (directional): canonical uses grouping key; legacy uses itemCode/productCode/description.
+    const [canonicalTopProducts, legacyTopProducts] = await Promise.all([
+      (prisma as any).canonicalInvoiceLineItem.groupBy({
+        by: ['supplierId', 'normalizedDescription', 'unitCategory'],
+        where: {
+          organisationId,
+          locationId,
+          qualityStatus: 'OK',
+          canonicalInvoice: { deletedAt: null, date: { gte: ninetyDaysAgo, lte: now } },
+        },
+        _sum: { lineTotal: true },
+        orderBy: { _sum: { lineTotal: 'desc' } },
+        take: 20,
+      }),
+      prisma.$queryRaw<
+        Array<{ supplierId: string | null; label: string; spend: number }>
+      >(
+        Prisma.sql`
+        WITH legacy_xero AS (
+          SELECT xi."supplierId" AS "supplierId",
+                 COALESCE(NULLIF(TRIM(xil."itemCode"),''), NULLIF(TRIM(xil."description"),''), 'UNKNOWN') AS label,
+                 COALESCE(SUM(xil."lineAmount"), 0)::float8 AS spend
+          FROM "XeroInvoiceLineItem" xil
+          JOIN "XeroInvoice" xi ON xi.id = xil."invoiceId"
+          WHERE xi."organisationId" = ${organisationId}
+            AND xi."locationId" = ${locationId}
+            AND xi."deletedAt" IS NULL
+            AND xi."status" IN ('AUTHORISED','PAID')
+            AND xi."date" >= ${ninetyDaysAgo} AND xi."date" <= ${now}
+            AND xi."xeroInvoiceId" NOT IN (${Prisma.join(supersededIds.length ? supersededIds : [''])})
+          GROUP BY xi."supplierId", label
+        ),
+        legacy_manual AS (
+          SELECT i."supplierId" AS "supplierId",
+                 COALESCE(NULLIF(TRIM(ili."productCode"),''), NULLIF(TRIM(ili."description"),''), 'UNKNOWN') AS label,
+                 COALESCE(SUM(ili."lineTotal"), 0)::float8 AS spend
+          FROM "InvoiceLineItem" ili
+          JOIN "Invoice" i ON i.id = ili."invoiceId"
+          WHERE i."organisationId" = ${organisationId}
+            AND i."locationId" = ${locationId}
+            AND i."deletedAt" IS NULL
+            AND i."isVerified" = true
+            AND i."invoiceFileId" IS NOT NULL
+            AND i."date" >= ${ninetyDaysAgo} AND i."date" <= ${now}
+          GROUP BY i."supplierId", label
+        ),
+        merged AS (
+          SELECT * FROM legacy_xero
+          UNION ALL
+          SELECT * FROM legacy_manual
+        )
+        SELECT "supplierId", label, SUM(spend)::float8 AS spend
+        FROM merged
+        GROUP BY "supplierId", label
+        ORDER BY spend DESC
+        LIMIT 20
+        `
+      ),
+    ]);
+
+    const canonicalTopProductsNormalized = (canonicalTopProducts || []).map((r: any) => ({
+      supplierId: r.supplierId ?? null,
+      key: `${r.normalizedDescription}::${r.unitCategory}`,
+      spend: Number(r._sum?.lineTotal || 0),
+      normalizedDescription: r.normalizedDescription,
+      unitCategory: r.unitCategory,
+    }));
+
+    // WARN rate (line-level) and "all-warn invoice" count (invoice-level)
+    const [canonicalOkLines, canonicalWarnLines, canonicalInvoicesAllWarn] = await Promise.all([
+      (prisma as any).canonicalInvoiceLineItem.count({
+        where: { organisationId, locationId, qualityStatus: 'OK', canonicalInvoice: { deletedAt: null, date: { gte: ninetyDaysAgo, lte: now } } },
+      }),
+      (prisma as any).canonicalInvoiceLineItem.count({
+        where: { organisationId, locationId, qualityStatus: 'WARN', canonicalInvoice: { deletedAt: null, date: { gte: ninetyDaysAgo, lte: now } } },
+      }),
+      prisma.$queryRaw<Array<{ count: number }>>(
+        Prisma.sql`
+        SELECT COUNT(*)::int AS count
+        FROM "CanonicalInvoice" ci
+        WHERE ci."organisationId" = ${organisationId}
+          AND ci."locationId" = ${locationId}
+          AND ci."deletedAt" IS NULL
+          AND ci."date" >= ${ninetyDaysAgo} AND ci."date" <= ${now}
+          AND NOT EXISTS (
+            SELECT 1 FROM "CanonicalInvoiceLineItem" li
+            WHERE li."canonicalInvoiceId" = ci.id AND li."qualityStatus" = 'OK'
+          )
+        `
+      ).then((rows) => rows?.[0]?.count ?? 0),
+    ]);
+
+    const warnRate = canonicalOkLines + canonicalWarnLines > 0 ? canonicalWarnLines / (canonicalOkLines + canonicalWarnLines) : 0;
+
+    // Tolerances (as per pre-flip checklist)
+    const spendOk = Math.abs(deltaPct) <= 0.5;
     const supplierOk = canonicalSupplierCount <= legacySupplierCount + 1; // allow 1 for unknown bucket edge
+
+    const supplierSpendOk = supplierDeltaRows.every((r) => Math.abs(r.deltaPct) <= 0.5 || r.legacy === 0);
+    const invoiceOk = canonicalInvoiceCount >= legacyInvoiceCount - canonicalInvoicesAllWarn;
 
     const checks = [
       { name: 'spend_last_90d', ok: spendOk, details: { legacySpend90d, canonicalSpend90d, deltaPct } },
       {
+        name: 'spend_last_90d_by_supplier',
+        ok: supplierSpendOk,
+        details: { tolerancePct: 0.5, rows: supplierDeltaRows.sort((a, b) => Math.abs(b.deltaPct) - Math.abs(a.deltaPct)).slice(0, 25) },
+      },
+      {
+        name: 'top_products_snapshot',
+        ok: true,
+        details: { legacyTopProducts, canonicalTopProducts: canonicalTopProductsNormalized },
+      },
+      {
         name: 'invoice_count_last_90d',
         ok: invoiceOk,
-        details: { legacyInvoiceCount, canonicalInvoiceCount, invoiceDeltaPct },
+        details: { legacyInvoiceCount, canonicalInvoiceCount, canonicalInvoicesAllWarn },
       },
       { name: 'supplier_count_last_90d', ok: supplierOk, details: { legacySupplierCount, canonicalSupplierCount } },
+      { name: 'warn_rate_lines', ok: warnRate <= 0.5, details: { warnRate, canonicalOkLines, canonicalWarnLines } },
     ];
 
     return { ok: checks.every((c) => c.ok), checks, totals: { legacySpend90d, canonicalSpend90d, deltaPct } };

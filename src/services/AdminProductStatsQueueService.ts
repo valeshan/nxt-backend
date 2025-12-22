@@ -229,13 +229,22 @@ async function backfillCanonicalForLocation(params: {
   source: 'OCR' | 'XERO' | 'ALL';
   limit: number;
   job: Job;
-}): Promise<{ invoicesProcessed: number; linesProcessed: number; skipped: number }> {
+}): Promise<{
+  invoicesProcessed: number;
+  linesProcessed: number;
+  skipped: number;
+  okLines: number;
+  warnLines: number;
+  warnRate: number;
+}> {
   const { organisationId, locationId, source, limit, job } = params;
 
   const DEFAULT_CURRENCY_CODE = 'AUD';
   let invoicesProcessed = 0;
   let linesProcessed = 0;
   let skipped = 0;
+  let okLines = 0;
+  let warnLines = 0;
 
   const doOcr = source === 'OCR' || source === 'ALL';
   const doXero = source === 'XERO' || source === 'ALL';
@@ -336,6 +345,8 @@ async function backfillCanonicalForLocation(params: {
         }
         invoicesProcessed += 1;
         linesProcessed += lines.length;
+        okLines += lines.filter((l: any) => l.qualityStatus === 'OK').length;
+        warnLines += lines.filter((l: any) => l.qualityStatus === 'WARN').length;
       });
     }
   }
@@ -436,11 +447,14 @@ async function backfillCanonicalForLocation(params: {
 
         invoicesProcessed += 1;
         linesProcessed += lines.length;
+        okLines += lines.filter((l: any) => l.qualityStatus === 'OK').length;
+        warnLines += lines.filter((l: any) => l.qualityStatus === 'WARN').length;
       });
     }
   }
 
-  return { invoicesProcessed, linesProcessed, skipped };
+  const warnRate = okLines + warnLines > 0 ? warnLines / (okLines + warnLines) : 0;
+  return { invoicesProcessed, linesProcessed, skipped, okLines, warnLines, warnRate };
 }
 
 
