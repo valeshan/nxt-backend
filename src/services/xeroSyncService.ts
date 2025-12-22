@@ -9,6 +9,9 @@ import { decryptToken } from '../utils/crypto';
 import { Prisma, XeroSyncScope, XeroSyncStatus, XeroSyncTriggerType, XeroConnection } from '@prisma/client';
 import { getProductKeyFromLineItem } from './helpers/productKey';
 import { xeroInvoiceOcrService } from './xeroInvoiceOcrService';
+import { assertCanonicalInvoiceLegacyLink, canonicalizeLine } from './canonical';
+
+const DEFAULT_CURRENCY_CODE = 'AUD';
 
 const connectionRepo = new XeroConnectionRepository();
 const supplierService = new SupplierService();
@@ -516,6 +519,98 @@ export class XeroSyncService {
             await tx.xeroInvoiceLineItem.createMany({
                 data: lineItemsData,
             });
+        }
+
+        // Sprint A: Dual-write CanonicalInvoice + CanonicalInvoiceLineItem (transactional)
+        // Only possible when we have a resolved locationId (CanonicalInvoice requires it).
+        if (locationId) {
+          try {
+            assertCanonicalInvoiceLegacyLink({
+              source: 'XERO' as any,
+              legacyInvoiceId: null,
+              legacyXeroInvoiceId: xeroInvoice.id,
+            });
+
+            const txAny = tx as any;
+            const headerCurrencyCode = (xeroInvoice.currencyCode || DEFAULT_CURRENCY_CODE).toUpperCase();
+
+            const canonical = await txAny.canonicalInvoice.upsert({
+              where: { legacyXeroInvoiceId: xeroInvoice.id },
+              create: {
+                organisationId,
+                locationId,
+                supplierId: supplier.id,
+                source: 'XERO',
+                legacyInvoiceId: null,
+                legacyXeroInvoiceId: xeroInvoice.id,
+                sourceInvoiceRef: `xeroInvoiceId:${invoice.invoiceID}`,
+                date: xeroInvoice.date ?? null,
+                currencyCode: headerCurrencyCode,
+                deletedAt: xeroInvoice.deletedAt ?? null,
+              } as any,
+              update: {
+                organisationId,
+                locationId,
+                supplierId: supplier.id,
+                source: 'XERO',
+                sourceInvoiceRef: `xeroInvoiceId:${invoice.invoiceID}`,
+                date: xeroInvoice.date ?? undefined,
+                currencyCode: headerCurrencyCode,
+                deletedAt: xeroInvoice.deletedAt ?? null,
+              } as any,
+              select: { id: true, currencyCode: true },
+            });
+
+            // Replace canonical lines on each sync (keeps canonical consistent with Xero truth).
+            await txAny.canonicalInvoiceLineItem.deleteMany({
+              where: { canonicalInvoiceId: canonical.id },
+            });
+
+            const items = (invoice.lineItems || []).map((li, idx) => {
+              const canon = canonicalizeLine({
+                source: 'XERO' as any,
+                rawDescription: li.description || '',
+                productCode: li.itemCode ?? null,
+                quantity: li.quantity ?? null,
+                unitLabel: null,
+                unitPrice: li.unitAmount ?? null,
+                lineTotal: li.lineAmount ?? null,
+                taxAmount: li.taxAmount ?? null,
+                currencyCode: null,
+                headerCurrencyCode: canonical.currencyCode ?? headerCurrencyCode,
+                adjustmentStatus: 'NONE' as any,
+              });
+
+              return {
+                canonicalInvoiceId: canonical.id,
+                organisationId,
+                locationId,
+                supplierId: supplier.id,
+                source: 'XERO',
+                sourceLineRef: `xeroInvoiceId:${invoice.invoiceID}:line:${idx}`,
+                normalizationVersion: 'v1',
+                rawDescription: canon.rawDescription,
+                normalizedDescription: canon.normalizedDescription,
+                productCode: li.itemCode ?? null,
+                quantity: li.quantity ?? null,
+                unitLabel: canon.unitLabel,
+                unitCategory: canon.unitCategory,
+                unitPrice: li.unitAmount ?? null,
+                lineTotal: li.lineAmount ?? null,
+                taxAmount: li.taxAmount ?? null,
+                currencyCode: canon.currencyCode ?? canonical.currencyCode ?? headerCurrencyCode,
+                adjustmentStatus: canon.adjustmentStatus,
+                qualityStatus: canon.qualityStatus,
+                confidenceScore: null,
+              } as any;
+            });
+
+            if (items.length > 0) {
+              await txAny.canonicalInvoiceLineItem.createMany({ data: items });
+            }
+          } catch (e) {
+            console.warn(`[XeroSync] Canonical dual-write failed for xeroInvoiceId=${invoice.invoiceID}:`, e);
+          }
         }
     });
   }

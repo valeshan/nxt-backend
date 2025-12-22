@@ -7,6 +7,7 @@
     "dev": "tsx watch src/server.ts",
     "build": "npx prisma generate && tsc -p tsconfig.build.json",
     "start": "node dist/src/server.js",
+    "pretest": "npx prisma generate",
     "test": "vitest run",
     "prisma:migrate:dev": "NODE_ENV=development prisma migrate dev --schema prisma/schema.dev.prisma",
     "prisma:migrate:reset": "NODE_ENV=development prisma migrate reset --schema prisma/schema.dev.prisma",

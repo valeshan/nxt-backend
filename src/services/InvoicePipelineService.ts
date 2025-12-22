@@ -9,6 +9,7 @@ import { MANUAL_COGS_ACCOUNT_CODE } from '../config/constants';
 import { assertDateRangeOrThrow, assertWindowIfDeepPagination, getOffsetPaginationOrThrow, parseDateOrThrow } from '../utils/paginationGuards';
 
 import { getProductKeyFromLineItem } from './helpers/productKey';
+import { assertCanonicalInvoiceLegacyLink, canonicalizeLine } from './canonical';
 
 export class InvoiceFileNotFoundError extends Error {
   constructor(message: string) {
@@ -27,6 +28,8 @@ export class BulkActionError extends Error {
 }
 
 import { pusherService } from './pusherService';
+
+const DEFAULT_CURRENCY_CODE = 'AUD';
 
 /**
  * Classify OCR failure based on error, confidence, and text detection
@@ -771,6 +774,109 @@ export const invoicePipelineService = {
                      }
                  }
 
+                 // Sprint A: Dual-write CanonicalInvoice + CanonicalInvoiceLineItem (idempotent)
+                 // Do this AFTER ensuring legacy Invoice exists, and do it transactionally for strict FKs.
+                 try {
+                   const legacyInvoice = await prisma.invoice.findUnique({
+                     where: { invoiceFileId: file.id },
+                     select: {
+                       id: true,
+                       organisationId: true,
+                       locationId: true,
+                       supplierId: true,
+                       date: true,
+                       deletedAt: true,
+                     },
+                   });
+
+                   if (legacyInvoice) {
+                     const headerCurrencyCode = (parsed.currency || DEFAULT_CURRENCY_CODE).toUpperCase();
+                     assertCanonicalInvoiceLegacyLink({
+                       source: 'OCR' as any,
+                       legacyInvoiceId: legacyInvoice.id,
+                       legacyXeroInvoiceId: null,
+                     });
+
+                     await prisma.$transaction(async (tx) => {
+                       const txAny = tx as any;
+                       const canonical = await txAny.canonicalInvoice.upsert({
+                         where: { legacyInvoiceId: legacyInvoice.id },
+                         create: {
+                           organisationId: legacyInvoice.organisationId,
+                           locationId: legacyInvoice.locationId,
+                           supplierId: legacyInvoice.supplierId,
+                           source: 'OCR',
+                           legacyInvoiceId: legacyInvoice.id,
+                           legacyXeroInvoiceId: null,
+                           sourceInvoiceRef: `invoiceFileId:${file.id}`,
+                           date: legacyInvoice.date ?? (invoiceDate ? new Date(invoiceDate) : null),
+                           currencyCode: headerCurrencyCode,
+                           deletedAt: legacyInvoice.deletedAt ?? null,
+                         } as any,
+                         update: {
+                           organisationId: legacyInvoice.organisationId,
+                           locationId: legacyInvoice.locationId,
+                           supplierId: legacyInvoice.supplierId,
+                           source: 'OCR',
+                           sourceInvoiceRef: `invoiceFileId:${file.id}`,
+                           date: legacyInvoice.date ?? (invoiceDate ? new Date(invoiceDate) : undefined),
+                           currencyCode: headerCurrencyCode,
+                           deletedAt: legacyInvoice.deletedAt ?? null,
+                         } as any,
+                         select: { id: true, currencyCode: true },
+                       });
+
+                       const canonicalLineData = parsed.lineItems.map((item, idx) => {
+                         const canon = canonicalizeLine({
+                           source: 'OCR' as any,
+                           rawDescription: item.description,
+                           productCode: item.productCode ?? null,
+                           quantity: item.quantity ?? null,
+                           unitPrice: item.unitPrice ?? null,
+                           lineTotal: item.lineTotal ?? null,
+                           taxAmount: null,
+                           currencyCode: null,
+                           headerCurrencyCode: canonical.currencyCode ?? headerCurrencyCode,
+                           adjustmentStatus: 'NONE' as any,
+                         });
+
+                         return {
+                           canonicalInvoiceId: canonical.id,
+                           organisationId: legacyInvoice.organisationId,
+                           locationId: legacyInvoice.locationId,
+                           supplierId: legacyInvoice.supplierId,
+                           source: 'OCR',
+                           sourceLineRef: `invoiceFileId:${file.id}:line:${idx}`,
+                           normalizationVersion: 'v1',
+                           rawDescription: canon.rawDescription,
+                           normalizedDescription: canon.normalizedDescription,
+                           productCode: item.productCode?.trim() || null,
+                           quantity: item.quantity ?? null,
+                           unitLabel: canon.unitLabel,
+                           unitCategory: canon.unitCategory,
+                           unitPrice: item.unitPrice ?? null,
+                           lineTotal: item.lineTotal ?? null,
+                           taxAmount: null,
+                           currencyCode: canon.currencyCode ?? canonical.currencyCode ?? headerCurrencyCode,
+                           adjustmentStatus: canon.adjustmentStatus,
+                           qualityStatus: canon.qualityStatus,
+                           confidenceScore: parsed.confidenceScore ?? null,
+                         } as any;
+                       });
+
+                       if (canonicalLineData.length > 0) {
+                         await txAny.canonicalInvoiceLineItem.createMany({
+                           data: canonicalLineData,
+                           skipDuplicates: true,
+                         });
+                       }
+                     });
+                   }
+                 } catch (e) {
+                   console.warn(`[InvoicePipeline] Canonical dual-write failed for invoiceFileId=${file.id}:`, e);
+                   // Non-blocking for Sprint A (legacy remains source of truth until cutover)
+                 }
+
                  // Determine Review Status
                  let reviewStatus = ReviewStatus.NEEDS_REVIEW;
                  if (parsed.confidenceScore >= 95) {
@@ -987,6 +1093,94 @@ export const invoicePipelineService = {
               },
               include: { supplier: true, lineItems: true }
           });
+
+          // Sprint A: Dual-write canonical (manual-verified truth)
+          // Transactional with invoice edits to satisfy strict FKs.
+          try {
+            assertCanonicalInvoiceLegacyLink({
+              source: 'MANUAL' as any,
+              legacyInvoiceId: updatedInvoice.id,
+              legacyXeroInvoiceId: null,
+            });
+
+            const headerCurrencyCode = DEFAULT_CURRENCY_CODE;
+            const txAny = tx as any;
+            const canonical = await txAny.canonicalInvoice.upsert({
+              where: { legacyInvoiceId: updatedInvoice.id },
+              create: {
+                organisationId: updatedInvoice.organisationId,
+                locationId: updatedInvoice.locationId,
+                supplierId: targetSupplierId ?? null,
+                source: 'MANUAL',
+                legacyInvoiceId: updatedInvoice.id,
+                legacyXeroInvoiceId: null,
+                sourceInvoiceRef: invoice.invoiceFileId ? `invoiceFileId:${invoice.invoiceFileId}` : `invoiceId:${updatedInvoice.id}`,
+                date: updatedInvoice.date ?? null,
+                currencyCode: headerCurrencyCode,
+                deletedAt: null,
+              } as any,
+              update: {
+                organisationId: updatedInvoice.organisationId,
+                locationId: updatedInvoice.locationId,
+                supplierId: targetSupplierId ?? null,
+                source: 'MANUAL',
+                sourceInvoiceRef: invoice.invoiceFileId ? `invoiceFileId:${invoice.invoiceFileId}` : `invoiceId:${updatedInvoice.id}`,
+                date: updatedInvoice.date ?? undefined,
+                currencyCode: headerCurrencyCode,
+                deletedAt: null,
+              } as any,
+              select: { id: true, currencyCode: true },
+            });
+
+            // Replace canonical lines for this invoice on verification (sourceLineRef changes with new InvoiceLineItem IDs).
+            await txAny.canonicalInvoiceLineItem.deleteMany({
+              where: { canonicalInvoiceId: canonical.id },
+            });
+
+            const lineData = (updatedInvoice.lineItems || []).map((li) => {
+              const canon = canonicalizeLine({
+                source: 'MANUAL' as any,
+                rawDescription: li.description,
+                productCode: li.productCode ?? null,
+                quantity: li.quantity ? Number(li.quantity) : null,
+                unitPrice: li.unitPrice ? Number(li.unitPrice) : null,
+                lineTotal: li.lineTotal ? Number(li.lineTotal) : null,
+                taxAmount: null,
+                currencyCode: null,
+                headerCurrencyCode: canonical.currencyCode ?? headerCurrencyCode,
+                adjustmentStatus: 'MODIFIED' as any,
+              });
+
+              return {
+                canonicalInvoiceId: canonical.id,
+                organisationId: updatedInvoice.organisationId,
+                locationId: updatedInvoice.locationId,
+                supplierId: targetSupplierId ?? null,
+                source: 'MANUAL',
+                sourceLineRef: `invoiceId:${updatedInvoice.id}:manual:${li.id}`,
+                normalizationVersion: 'v1',
+                rawDescription: canon.rawDescription,
+                normalizedDescription: canon.normalizedDescription,
+                productCode: li.productCode ?? null,
+                quantity: li.quantity,
+                unitLabel: canon.unitLabel,
+                unitCategory: canon.unitCategory,
+                unitPrice: li.unitPrice,
+                lineTotal: li.lineTotal,
+                taxAmount: null,
+                currencyCode: canon.currencyCode ?? canonical.currencyCode ?? headerCurrencyCode,
+                adjustmentStatus: canon.adjustmentStatus,
+                qualityStatus: canon.qualityStatus,
+                confidenceScore: invoice.invoiceFile?.confidenceScore ?? null,
+              } as any;
+            });
+
+            if (lineData.length > 0) {
+              await txAny.canonicalInvoiceLineItem.createMany({ data: lineData });
+            }
+          } catch (e) {
+            console.warn(`[InvoicePipeline] Canonical dual-write failed during verifyInvoice invoiceId=${invoiceId}:`, e);
+          }
 
           // 6. Update InvoiceFile Status
           if (invoice.invoiceFileId && invoiceFile) {
@@ -1239,19 +1433,26 @@ export const invoicePipelineService = {
 
       // 2. Perform Soft Deletion Transaction
       await prisma.$transaction(async (tx) => {
+          const now = new Date();
           // Soft delete Invoice
           await tx.invoice.update({
               where: { id: invoiceId } as any,
-              data: { deletedAt: new Date() } as any
+              data: { deletedAt: now } as any
           });
 
           // Soft delete InvoiceFile if present
           if (invoiceFileId) {
              await tx.invoiceFile.update({
                  where: { id: invoiceFileId } as any,
-                 data: { deletedAt: new Date() } as any
+                 data: { deletedAt: now } as any
              });
           }
+
+          // Mirror soft-delete to canonical header (chosen default truth)
+          await (tx as any).canonicalInvoice.updateMany({
+            where: { legacyInvoiceId: invoiceId } as any,
+            data: { deletedAt: now } as any,
+          });
 
           // Soft delete XeroInvoice if linked
           if (invoice.sourceType === InvoiceSourceType.XERO && invoice.sourceReference) {
@@ -1268,7 +1469,13 @@ export const invoicePipelineService = {
                   console.log(`[InvoicePipeline] Soft deleting linked XeroInvoice ${xeroInvoice.id}`);
                   await tx.xeroInvoice.update({
                       where: { id: xeroInvoice.id } as any,
-                      data: { deletedAt: new Date() } as any
+                      data: { deletedAt: now } as any
+                  });
+
+                  // Mirror soft-delete to canonical header linked to this XeroInvoice (if any)
+                  await (tx as any).canonicalInvoice.updateMany({
+                    where: { legacyXeroInvoiceId: xeroInvoice.id } as any,
+                    data: { deletedAt: now } as any,
                   });
               }
           }
@@ -1306,17 +1513,24 @@ export const invoicePipelineService = {
 
       // 2. Perform Soft Deletion Transaction
       await prisma.$transaction(async (tx) => {
+          const now = new Date();
           // Soft delete InvoiceFiles
           await tx.invoiceFile.updateMany({
               where: { id: { in: foundFileIds } } as any,
-              data: { deletedAt: new Date() } as any
+              data: { deletedAt: now } as any
           });
 
           // Soft delete Invoices
           if (invoiceIds.length > 0) {
               await tx.invoice.updateMany({
                   where: { id: { in: invoiceIds } } as any,
-                  data: { deletedAt: new Date() } as any
+                  data: { deletedAt: now } as any
+              });
+
+              // Mirror soft-delete to canonical headers for these invoices
+              await (tx as any).canonicalInvoice.updateMany({
+                where: { legacyInvoiceId: { in: invoiceIds } } as any,
+                data: { deletedAt: now } as any,
               });
 
               // Handle XeroInvoices linked to these invoices
@@ -1328,14 +1542,30 @@ export const invoicePipelineService = {
               if (invoicesWithXero.length > 0) {
                   const xeroReferences = invoicesWithXero.map(inv => inv!.sourceReference as string);
                   
+                   // Find affected XeroInvoice IDs so we can mirror soft-delete to canonical too.
+                   const xeroRows = await tx.xeroInvoice.findMany({
+                     where: {
+                       xeroInvoiceId: { in: xeroReferences },
+                       organisationId: organisationId
+                     } as any,
+                     select: { id: true },
+                   });
+
                    await tx.xeroInvoice.updateMany({
                       where: {
                           xeroInvoiceId: { in: xeroReferences },
                           organisationId: organisationId
                       } as any,
-                      data: { deletedAt: new Date() } as any
+                      data: { deletedAt: now } as any
                   });
                   console.log(`[InvoicePipeline] Soft deleted up to ${invoicesWithXero.length} linked XeroInvoices`);
+
+                  if (xeroRows.length > 0) {
+                    await (tx as any).canonicalInvoice.updateMany({
+                      where: { legacyXeroInvoiceId: { in: xeroRows.map(r => r.id) } } as any,
+                      data: { deletedAt: now } as any,
+                    });
+                  }
               }
           }
       });
@@ -1417,6 +1647,12 @@ export const invoicePipelineService = {
               data: { deletedAt: null }
           });
 
+          // Mirror restore to canonical header
+          await (tx as any).canonicalInvoice.updateMany({
+            where: { legacyInvoiceId: invoiceId } as any,
+            data: { deletedAt: null } as any,
+          });
+
           // Restore InvoiceFile if present
           if (invoiceFileId) {
              await tx.invoiceFile.update({
@@ -1440,6 +1676,11 @@ export const invoicePipelineService = {
                   await tx.xeroInvoice.update({
                       where: { id: xeroInvoice.id },
                       data: { deletedAt: null }
+                  });
+
+                  await (tx as any).canonicalInvoice.updateMany({
+                    where: { legacyXeroInvoiceId: xeroInvoice.id } as any,
+                    data: { deletedAt: null } as any,
                   });
               }
           }
@@ -1490,6 +1731,11 @@ export const invoicePipelineService = {
                   data: { deletedAt: null } as any
               });
 
+              await (tx as any).canonicalInvoice.updateMany({
+                where: { legacyInvoiceId: { in: invoiceIds } } as any,
+                data: { deletedAt: null } as any,
+              });
+
               // Handle XeroInvoices linked to these invoices
               const invoicesWithXero = files
                   .map(f => f.invoice)
@@ -1498,6 +1744,15 @@ export const invoicePipelineService = {
               if (invoicesWithXero.length > 0) {
                   const xeroReferences = invoicesWithXero.map(inv => inv!.sourceReference as string);
                   
+                   const xeroRows = await tx.xeroInvoice.findMany({
+                     where: {
+                       xeroInvoiceId: { in: xeroReferences },
+                       organisationId: organisationId,
+                       deletedAt: { not: null }
+                     } as any,
+                     select: { id: true },
+                   });
+
                    await tx.xeroInvoice.updateMany({
                       where: {
                           xeroInvoiceId: { in: xeroReferences },
@@ -1507,6 +1762,13 @@ export const invoicePipelineService = {
                       data: { deletedAt: null } as any
                   });
                   console.log(`[InvoicePipeline] Restored up to ${invoicesWithXero.length} linked XeroInvoices`);
+
+                  if (xeroRows.length > 0) {
+                    await (tx as any).canonicalInvoice.updateMany({
+                      where: { legacyXeroInvoiceId: { in: xeroRows.map(r => r.id) } } as any,
+                      data: { deletedAt: null } as any,
+                    });
+                  }
               }
           }
       });

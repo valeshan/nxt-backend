@@ -42,9 +42,11 @@ const envSchema = z.object({
   // Feature Flags
   ENABLE_XERO_OCR: z.string().optional().default('false'),
   ENABLE_DIAGNOSTICS: z.string().optional().default('false'),
+  USE_CANONICAL_LINES: z.string().optional().default('false'),
   ENABLE_ADMIN_ENDPOINTS: z.string().optional().default('false'),
   INTERNAL_ADMIN_API_KEY: z.string().optional(),
   ADMIN_PRODUCT_STATS_WORKER_ENABLED: z.string().optional().default('false'),
+  ADMIN_CANONICAL_BACKFILL_WORKER_ENABLED: z.string().optional().default('false'),
 
   // Infrastructure
   REDIS_URL: z.string().optional(),

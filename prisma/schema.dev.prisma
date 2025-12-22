@@ -48,6 +48,8 @@ model Organisation {
   locationAccountConfigs LocationAccountConfig[]
   supplierAliases        SupplierAlias[]
   ocrInvoices            Invoice[]
+  canonicalInvoices      CanonicalInvoice[]
+  canonicalLineItems     CanonicalInvoiceLineItem[]
   emailForwardingVerifications EmailForwardingVerification[]
   
   // Data contribution consent
@@ -68,6 +70,8 @@ model Location {
   accountConfigs    LocationAccountConfig[]
   ocrInvoices       Invoice[]
   productStats      ProductStats[]
+  canonicalInvoices  CanonicalInvoice[]
+  canonicalLineItems CanonicalInvoiceLineItem[]
 
   // Routing for inbound emails (optional custom alias)
   mailgunAlias String? @unique
@@ -221,6 +225,8 @@ model Supplier {
   products       Product[]
   aliases        SupplierAlias[]
   ocrInvoices    Invoice[]
+  canonicalInvoices  CanonicalInvoice[]
+  canonicalLineItems CanonicalInvoiceLineItem[]
 
   @@index([organisationId])
   @@index([normalizedName])
@@ -316,6 +322,7 @@ model XeroInvoice {
   createdAt      DateTime              @default(now())
   updatedAt      DateTime              @updatedAt
   deletedAt      DateTime?
+  canonicalInvoice CanonicalInvoice?
 
   @@index([organisationId])
   @@index([supplierId])
@@ -412,6 +419,32 @@ enum InvoiceSourceType {
   UPLOAD
   XERO
   EMAIL
+}
+
+// --- Sprint A: Canonical Data Foundation ---
+// Canonical source (DRY across header + line)
+enum CanonicalSource {
+  OCR
+  XERO
+  MANUAL
+}
+
+enum UnitCategory {
+  WEIGHT
+  VOLUME
+  UNIT
+  UNKNOWN
+}
+
+enum AdjustmentStatus {
+  NONE
+  CREDITED
+  MODIFIED
+}
+
+enum QualityStatus {
+  OK
+  WARN
 }
 
 enum ProcessingStatus {
@@ -527,6 +560,7 @@ model Invoice {
   organisation    Organisation      @relation(fields: [organisationId], references: [id])
   location        Location          @relation(fields: [locationId], references: [id])
   deletedAt       DateTime?
+  canonicalInvoice CanonicalInvoice?
 
   // Indexes (performance)
   @@index([organisationId, locationId, date])
@@ -551,6 +585,82 @@ model InvoiceLineItem {
   @@index([invoiceId])
   // Supplier insights / forecasting often filter by accountCode
   @@index([accountCode])
+}
+
+// Canonical header: derived from legacy invoices; used for defaults + soft-delete mirror
+model CanonicalInvoice {
+  id               String          @id @default(uuid())
+  organisationId   String
+  locationId       String
+  supplierId       String?
+  source           CanonicalSource
+  // Exactly one of these should be set for Sprint A sources (enforced in code).
+  legacyInvoiceId  String?         @unique
+  legacyXeroInvoiceId String?      @unique
+  sourceInvoiceRef String
+  date             DateTime?
+  currencyCode     String?
+  deletedAt        DateTime?
+  createdAt        DateTime        @default(now())
+  updatedAt        DateTime        @updatedAt
+
+  organisation Organisation @relation(fields: [organisationId], references: [id])
+  location     Location     @relation(fields: [locationId], references: [id])
+  supplier     Supplier?    @relation(fields: [supplierId], references: [id])
+
+  legacyInvoice     Invoice?     @relation(fields: [legacyInvoiceId], references: [id], onDelete: Cascade)
+  legacyXeroInvoice XeroInvoice? @relation(fields: [legacyXeroInvoiceId], references: [id], onDelete: Cascade)
+
+  lineItems CanonicalInvoiceLineItem[]
+
+  @@index([organisationId, locationId])
+  @@index([organisationId, locationId, supplierId])
+  @@index([deletedAt])
+}
+
+model CanonicalInvoiceLineItem {
+  id                 String           @id @default(uuid())
+  canonicalInvoiceId  String
+  organisationId      String
+  locationId          String
+  supplierId          String?
+  source              CanonicalSource
+  // Always set for OCR/XERO; MANUAL uses a generated UUID-based ref. (Idempotency guard)
+  sourceLineRef       String
+  normalizationVersion String
+
+  rawDescription       String
+  normalizedDescription String
+  productCode          String?
+
+  quantity     Decimal?     @db.Decimal(19, 4)
+  unitLabel    String?
+  unitCategory UnitCategory
+
+  unitPrice    Decimal?     @db.Decimal(19, 4)
+  lineTotal    Decimal?     @db.Decimal(19, 4)
+  taxAmount    Decimal?     @db.Decimal(19, 4)
+  currencyCode String?
+
+  adjustmentStatus AdjustmentStatus @default(NONE)
+  qualityStatus    QualityStatus    @default(OK)
+
+  confidenceScore Float?
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  canonicalInvoice CanonicalInvoice @relation(fields: [canonicalInvoiceId], references: [id], onDelete: Cascade)
+  organisation     Organisation     @relation(fields: [organisationId], references: [id])
+  location         Location         @relation(fields: [locationId], references: [id])
+  supplier         Supplier?        @relation(fields: [supplierId], references: [id])
+
+  @@unique([canonicalInvoiceId, sourceLineRef])
+  @@index([canonicalInvoiceId])
+  @@index([organisationId, locationId, qualityStatus])
+  @@index([organisationId, locationId, supplierId, qualityStatus], map: "CanonicalLine_org_loc_supplier_qs_idx")
+  @@index([organisationId, locationId, unitCategory, qualityStatus])
+  @@index([organisationId, locationId, normalizationVersion])
+  @@index([organisationId, locationId, supplierId, normalizedDescription, unitCategory], map: "CanonicalLine_grouping_idx")
 }
 
 model PriceAlertHistory {
@@ -672,4 +782,5 @@ model EmailForwardingVerification {
   @@index([organisationId])
   @@index([expiresAt]) // For cleanup jobs
 }
+
 

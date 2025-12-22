@@ -2,13 +2,26 @@ import { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import { z } from 'zod';
 import { config } from '../config/env';
 import { getRedisClient } from '../infrastructure/redis';
-import { enqueueProductStatsRefresh, getAdminJobStatus } from '../services/AdminProductStatsQueueService';
+import { enqueueCanonicalBackfill, enqueueProductStatsRefresh, getAdminJobStatus } from '../services/AdminProductStatsQueueService';
+import { supplierInsightsService } from '../services/supplierInsightsService';
 import { getRequestContext } from '../infrastructure/requestContext';
 import prisma from '../infrastructure/prismaClient';
 
 const refreshBodySchema = z.object({
   organisationId: z.string().min(1),
   locationId: z.string().min(1),
+});
+
+const canonicalParityBodySchema = z.object({
+  organisationId: z.string().min(1),
+  locationId: z.string().min(1),
+});
+
+const canonicalBackfillBodySchema = z.object({
+  organisationId: z.string().min(1),
+  locationId: z.string().min(1),
+  source: z.enum(['OCR', 'XERO', 'ALL']).default('ALL'),
+  limit: z.coerce.number().optional(),
 });
 
 function isAdminEnabled(): boolean {
@@ -126,6 +139,80 @@ export default async function adminRoutes(app: FastifyInstance) {
       },
       'admin.job.enqueued'
     );
+
+    return reply.send({ jobId });
+  });
+
+  // POST /admin/canonical/parity
+  // Computes a small parity checklist between legacy and canonical aggregates for an org+location.
+  app.post('/canonical/parity', async (request: FastifyRequest, reply: FastifyReply) => {
+    if (!isAdminEnabled()) return replyAdminDisabled(reply);
+    if (!requireInternalApiKey(request, reply)) return;
+
+    const parsed = canonicalParityBodySchema.safeParse(request.body);
+    if (!parsed.success) {
+      return reply.status(400).send({ error: { code: 'BAD_REQUEST', message: parsed.error.issues[0]?.message || 'Invalid body' } });
+    }
+
+    const { organisationId, locationId } = parsed.data;
+
+    const ok = await assertOrgAndLocationOrNotFound({ organisationId, locationId }).catch(() => false);
+    if (!ok) {
+      return reply.status(404).send({ error: { code: 'NOT_FOUND', message: 'Not found' } });
+    }
+
+    const report = await supplierInsightsService.getCanonicalParityChecklist(organisationId, locationId);
+    return reply.send({ report });
+  });
+
+  // POST /admin/canonical/backfill
+  // Enqueue a safe incremental backfill job that writes canonical rows for a specific org+location.
+  app.post('/canonical/backfill', async (request: FastifyRequest, reply: FastifyReply) => {
+    if (!isAdminEnabled()) return replyAdminDisabled(reply);
+    if (!requireInternalApiKey(request, reply)) return;
+
+    const parsed = canonicalBackfillBodySchema.safeParse(request.body);
+    if (!parsed.success) {
+      return reply.status(400).send({ error: { code: 'BAD_REQUEST', message: parsed.error.issues[0]?.message || 'Invalid body' } });
+    }
+
+    const { organisationId, locationId, source, limit } = parsed.data;
+
+    const ok = await assertOrgAndLocationOrNotFound({ organisationId, locationId }).catch(() => false);
+    if (!ok) {
+      return reply.status(404).send({ error: { code: 'NOT_FOUND', message: 'Not found' } });
+    }
+
+    // Cooldown: 1 backfill per location per 10 minutes
+    let cooldown;
+    try {
+      const ttlSeconds = 10 * 60;
+      const key = `admin:canonicalBackfill:${organisationId}:${locationId}`;
+      const redis = getRedisClient();
+      const res = await redis.set(key, '1', 'EX', ttlSeconds, 'NX');
+      cooldown = { ok: res === 'OK', retryAfterSeconds: ttlSeconds };
+    } catch (e: any) {
+      request.log.error({ msg: 'admin.canonical.backfill.redis_failed', err: e?.message });
+      return reply.status(503).send({ error: { code: 'REDIS_UNAVAILABLE', message: 'Admin rate limiter unavailable' } });
+    }
+
+    if (!cooldown.ok) {
+      reply.header('Retry-After', String(cooldown.retryAfterSeconds));
+      return reply.status(429).send({
+        error: { code: 'RATE_LIMITED', message: 'Canonical backfill is on cooldown for this location' },
+      });
+    }
+
+    const ctx = getRequestContext();
+    const requestId = ctx?.requestId;
+    const { jobId } = await enqueueCanonicalBackfill({
+      organisationId,
+      locationId,
+      source,
+      limit,
+      triggeredBy: 'internal_api_key',
+      requestId,
+    });
 
     return reply.send({ jobId });
   });

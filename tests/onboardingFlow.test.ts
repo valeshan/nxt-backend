@@ -21,18 +21,22 @@ describe('Onboarding Flow Integration', () => {
 
   beforeEach(async () => {
     // Cleanup DB (order matters due to foreign keys)
-    await prisma.userOrganisation.deleteMany();
-    await prisma.userSettings.deleteMany();
-    await prisma.user.deleteMany();
+    // Note: XeroConnection has an FK to User, so delete Xero tables before users.
     await prisma.xeroInvoiceLineItem.deleteMany();
-    await prisma.invoiceLineItem.deleteMany();
     await prisma.xeroInvoice.deleteMany();
-    await prisma.invoiceOcrResult.deleteMany();
-    await prisma.invoice.deleteMany();         // Must be before location
-    await prisma.invoiceFile.deleteMany();
     await prisma.xeroLocationLink.deleteMany();
     await prisma.xeroSyncRun.deleteMany();
     await prisma.xeroConnection.deleteMany();
+
+    await prisma.invoiceLineItem.deleteMany();
+    await prisma.invoiceOcrResult.deleteMany();
+    await prisma.invoice.deleteMany();         // Must be before location
+    await prisma.invoiceFile.deleteMany();
+
+    await prisma.userOrganisation.deleteMany();
+    await prisma.userSettings.deleteMany();
+    await prisma.user.deleteMany();
+
     await prisma.locationAccountConfig.deleteMany();
     await prisma.supplierAlias.deleteMany();
     await prisma.location.deleteMany();

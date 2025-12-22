@@ -100,11 +100,20 @@ const start = async () => {
     // Initialize Admin workers (safe-by-default)
     if (config.ENABLE_ADMIN_ENDPOINTS !== 'true') {
       app.log.info(`ENABLE_ADMIN_ENDPOINTS=false instance=${instanceId}`);
-    } else if (config.ADMIN_PRODUCT_STATS_WORKER_ENABLED !== 'true') {
-      app.log.info(`ENABLE_ADMIN_ENDPOINTS=true ADMIN_PRODUCT_STATS_WORKER_ENABLED=false instance=${instanceId}`);
     } else {
-      adminWorker = setupAdminWorker(app.log);
-      console.log(`Admin ProductStats worker started instance=${instanceId}`);
+      const productStatsEnabled = config.ADMIN_PRODUCT_STATS_WORKER_ENABLED === 'true';
+      const canonicalBackfillEnabled = config.ADMIN_CANONICAL_BACKFILL_WORKER_ENABLED === 'true';
+
+      if (!productStatsEnabled && !canonicalBackfillEnabled) {
+        app.log.info(
+          `ENABLE_ADMIN_ENDPOINTS=true ADMIN_PRODUCT_STATS_WORKER_ENABLED=false ADMIN_CANONICAL_BACKFILL_WORKER_ENABLED=false instance=${instanceId}`
+        );
+      } else {
+        adminWorker = setupAdminWorker(app.log);
+        console.log(
+          `Admin worker started instance=${instanceId} productStats=${productStatsEnabled} canonicalBackfill=${canonicalBackfillEnabled}`
+        );
+      }
     }
 
     await app.listen({ port: config.PORT, host: '0.0.0.0' });

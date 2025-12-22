@@ -458,6 +458,130 @@ function getManualLineItemWhere(
 // --- Service Functions ---
 
 export const supplierInsightsService = {
+  /**
+   * Canonical parity checklist (fail-closed): compares a few high-signal aggregates between
+   * legacy sources and canonical tables for a specific org+location over the last 90 days.
+   *
+   * Intended for internal validation before enabling USE_CANONICAL_LINES.
+   */
+  async getCanonicalParityChecklist(
+    organisationId: string,
+    locationId: string
+  ): Promise<{
+    ok: boolean;
+    checks: Array<{ name: string; ok: boolean; details: any }>;
+    totals: { legacySpend90d: number; canonicalSpend90d: number; deltaPct: number };
+  }> {
+    const now = new Date();
+    const ninetyDaysAgo = new Date();
+    ninetyDaysAgo.setDate(ninetyDaysAgo.getDate() - 90);
+
+    const supersededIds = await getSupersededXeroIds(organisationId, locationId, ninetyDaysAgo);
+
+    const safeSum = (agg: any) => agg?._sum?.lineAmount?.toNumber?.() || agg?._sum?.lineAmount?.toNumber?.() || 0;
+    const safeSumManual = (agg: any) => agg?._sum?.lineTotal?.toNumber?.() || agg?._sum?.lineTotal?.toNumber?.() || 0;
+
+    // Legacy spend: Xero lineAmount + Manual lineTotal
+    const [legacyXeroAgg, legacyManualAgg] = await Promise.all([
+      prisma.xeroInvoiceLineItem.aggregate({
+        where: {
+          invoice: {
+            organisationId,
+            locationId,
+            date: { gte: ninetyDaysAgo, lte: now },
+            status: { in: ['AUTHORISED', 'PAID'] },
+            deletedAt: null,
+            xeroInvoiceId: { notIn: supersededIds },
+          } as any,
+        },
+        _sum: { lineAmount: true },
+      }),
+      prisma.invoiceLineItem.aggregate({
+        where: {
+          invoice: {
+            organisationId,
+            locationId,
+            date: { gte: ninetyDaysAgo, lte: now },
+            isVerified: true,
+            invoiceFileId: { not: null },
+            invoiceFile: { reviewStatus: 'VERIFIED', deletedAt: null },
+            deletedAt: null,
+          } as any,
+        },
+        _sum: { lineTotal: true },
+      }),
+    ]);
+
+    const legacySpend90d = safeSum(legacyXeroAgg) + safeSumManual(legacyManualAgg);
+
+    // Canonical spend: sum(lineTotal) over OK rows, canonicalInvoice not deleted, date in range.
+    const canonicalSpendAgg = await (prisma as any).canonicalInvoiceLineItem.aggregate({
+      where: {
+        organisationId,
+        locationId,
+        qualityStatus: 'OK',
+        canonicalInvoice: {
+          deletedAt: null,
+          date: { gte: ninetyDaysAgo, lte: now },
+        },
+      },
+      _sum: { lineTotal: true },
+    });
+    const canonicalSpend90d = Number(canonicalSpendAgg?._sum?.lineTotal || 0);
+
+    const deltaPct = legacySpend90d > 0 ? ((canonicalSpend90d - legacySpend90d) / legacySpend90d) * 100 : 0;
+
+    // Counts: invoices + suppliers (high-level sanity)
+    const [legacyInvoiceCount, canonicalInvoiceCount] = await Promise.all([
+      prisma.invoice.count({
+        where: { organisationId, locationId, deletedAt: null, date: { gte: ninetyDaysAgo, lte: now } },
+      }),
+      (prisma as any).canonicalInvoice.count({
+        where: { organisationId, locationId, deletedAt: null, date: { gte: ninetyDaysAgo, lte: now } },
+      }),
+    ]);
+
+    const [legacySupplierCount, canonicalSupplierCount] = await Promise.all([
+      prisma.invoice
+        .findMany({
+          where: {
+            organisationId,
+            locationId,
+            deletedAt: null,
+            date: { gte: ninetyDaysAgo, lte: now },
+            supplierId: { not: null },
+          },
+          select: { supplierId: true },
+        })
+        .then((rows) => new Set(rows.map((r) => r.supplierId).filter(Boolean)).size),
+      (prisma as any).canonicalInvoice
+        .findMany({
+          where: { organisationId, locationId, deletedAt: null, date: { gte: ninetyDaysAgo, lte: now } },
+          select: { supplierId: true },
+        })
+        .then((rows: any[]) => new Set(rows.map((r) => r.supplierId).filter(Boolean)).size),
+    ]);
+
+    // Tolerances (explicit + small)
+    const spendOk = Math.abs(deltaPct) <= 5;
+    const invoiceDeltaPct =
+      legacyInvoiceCount > 0 ? ((canonicalInvoiceCount - legacyInvoiceCount) / legacyInvoiceCount) * 100 : 0;
+    const invoiceOk = Math.abs(invoiceDeltaPct) <= 5;
+    const supplierOk = canonicalSupplierCount <= legacySupplierCount + 1; // allow 1 for unknown bucket edge
+
+    const checks = [
+      { name: 'spend_last_90d', ok: spendOk, details: { legacySpend90d, canonicalSpend90d, deltaPct } },
+      {
+        name: 'invoice_count_last_90d',
+        ok: invoiceOk,
+        details: { legacyInvoiceCount, canonicalInvoiceCount, invoiceDeltaPct },
+      },
+      { name: 'supplier_count_last_90d', ok: supplierOk, details: { legacySupplierCount, canonicalSupplierCount } },
+    ];
+
+    return { ok: checks.every((c) => c.ok), checks, totals: { legacySpend90d, canonicalSpend90d, deltaPct } };
+  },
+
   async getSupplierSpendSummary(organisationId: string, locationId?: string, accountCodes?: string[]): Promise<SpendSummary> {
     // 1. Total Supplier Spend Per Month (Last 90 days / 3)
     const ninetyDaysAgo = new Date();

@@ -106,7 +106,7 @@ describe('Manual Invoice Verification Integration', () => {
         total: 50,
         date: new Date().toISOString(),
         items: [
-            { id: 'temp-1', description: 'Verified Item 1', quantity: 5, lineTotal: 50, productCode: 'PROD-A' }
+            { id: 'temp-1', description: 'Verified Item 1 1kg', quantity: 5, lineTotal: 50, productCode: 'PROD-A' }
         ]
     };
 
@@ -126,10 +126,72 @@ describe('Manual Invoice Verification Integration', () => {
 
     // If schema validation stripped items, this will be 0
     expect(dbLines.length).toBe(1);
-    expect(dbLines[0].description).toBe('Verified Item 1');
+    expect(dbLines[0].description).toBe('Verified Item 1 1kg');
     expect(dbLines[0].quantity?.toNumber()).toBe(5);
     expect(dbLines[0].lineTotal?.toNumber()).toBe(50);
     expect(dbLines[0].accountCode).toBe('Cost of Goods Sold (Manual)');
+
+    // Sprint A: canonical dual-write assertions
+    const canonicalInvoice = await (prisma as any).canonicalInvoice.findUnique({
+      where: { legacyInvoiceId: invoiceId },
+      include: { lineItems: true },
+    });
+    expect(canonicalInvoice).toBeTruthy();
+    expect(canonicalInvoice.source).toBe('MANUAL');
+    expect(canonicalInvoice.deletedAt).toBeNull();
+    expect(canonicalInvoice.organisationId).toBe(orgId);
+    expect(canonicalInvoice.locationId).toBe(locId);
+
+    expect(canonicalInvoice.lineItems.length).toBe(1);
+    expect(canonicalInvoice.lineItems[0].source).toBe('MANUAL');
+    expect(String(canonicalInvoice.lineItems[0].sourceLineRef)).toContain(`invoiceId:${invoiceId}:manual:`);
+    expect(canonicalInvoice.lineItems[0].rawDescription).toBe('Verified Item 1 1kg');
+    expect(canonicalInvoice.lineItems[0].normalizedDescription).toContain('verified item 1');
+
+    // Idempotency: re-verify should not create duplicate canonical lines
+    const res2 = await app.inject({
+      method: 'PATCH',
+      url: `/invoices/${invoiceId}/verify`,
+      headers: { Authorization: `Bearer ${authToken}` },
+      payload
+    });
+    expect(res2.statusCode).toBe(200);
+
+    const canonicalInvoice2 = await (prisma as any).canonicalInvoice.findUnique({
+      where: { legacyInvoiceId: invoiceId },
+      include: { lineItems: true },
+    });
+    expect(canonicalInvoice2.lineItems.length).toBe(1);
+
+    // WARN exclusion sanity: adding a WARN canonical line should not affect canonical spend parity
+    await (prisma as any).canonicalInvoiceLineItem.create({
+      data: {
+        canonicalInvoiceId: canonicalInvoice2.id,
+        organisationId: orgId,
+        locationId: locId,
+        supplierId: canonicalInvoice2.supplierId,
+        source: 'MANUAL',
+        sourceLineRef: `invoiceId:${invoiceId}:manual:warn-line`,
+        normalizationVersion: 'v1',
+        rawDescription: 'Warn Line',
+        normalizedDescription: 'warn line',
+        quantity: 1,
+        unitCategory: 'UNKNOWN',
+        lineTotal: 9999,
+        currencyCode: 'AUD',
+        adjustmentStatus: 'NONE',
+        qualityStatus: 'WARN',
+      },
+    });
+
+    const { supplierInsightsService } = await import('../../src/services/supplierInsightsService');
+    const parity = await supplierInsightsService.getCanonicalParityChecklist(orgId, locId);
+    expect(parity.totals.canonicalSpend90d).toBe(50);
+
+    // Hard delete cascade: deleting legacy invoice should remove canonical header + lines
+    await prisma.invoice.delete({ where: { id: invoiceId } });
+    const afterDelete = await (prisma as any).canonicalInvoice.findUnique({ where: { legacyInvoiceId: invoiceId } });
+    expect(afterDelete).toBeNull();
   }, 30000);
 
   it('should handle empty product codes by normalizing them to null', async () => {
@@ -190,5 +252,52 @@ describe('Manual Invoice Verification Integration', () => {
     expect(product).toBeDefined();
     expect(product.totalSpend).toBe(200);
     expect(product.totalQuantity).toBe(2);
+  }, 30000);
+
+  it('should mirror soft delete + restore onto canonical invoice header', async () => {
+    // 1) Verify (creates canonical)
+    const verifyRes = await app.inject({
+      method: 'PATCH',
+      url: `/invoices/${invoiceId}/verify`,
+      headers: { Authorization: `Bearer ${authToken}` },
+      payload: {
+        supplierName: 'Delete Restore Supplier',
+        total: 10,
+        items: [{ id: 'temp-del', description: 'Milk 1L', quantity: 1, lineTotal: 10, productCode: 'MILK' }],
+      },
+    });
+    expect(verifyRes.statusCode).toBe(200);
+
+    const canonicalBefore = await (prisma as any).canonicalInvoice.findUnique({ where: { legacyInvoiceId: invoiceId } });
+    expect(canonicalBefore).toBeTruthy();
+    expect(canonicalBefore.deletedAt).toBeNull();
+
+    // 2) Soft delete invoice
+    const delRes = await app.inject({
+      method: 'DELETE',
+      url: `/invoices/${invoiceId}`,
+      headers: { Authorization: `Bearer ${authToken}` },
+    });
+    expect(delRes.statusCode).toBe(200);
+
+    const deletedInvoice = await prisma.invoice.findUnique({ where: { id: invoiceId } });
+    expect(deletedInvoice?.deletedAt).toBeTruthy();
+
+    const canonicalDeleted = await (prisma as any).canonicalInvoice.findUnique({ where: { legacyInvoiceId: invoiceId } });
+    expect(canonicalDeleted?.deletedAt).toBeTruthy();
+
+    // 3) Restore invoice
+    const restoreRes = await app.inject({
+      method: 'POST',
+      url: `/invoices/${invoiceId}/restore`,
+      headers: { Authorization: `Bearer ${authToken}` },
+    });
+    expect(restoreRes.statusCode).toBe(200);
+
+    const restoredInvoice = await prisma.invoice.findUnique({ where: { id: invoiceId } });
+    expect(restoredInvoice?.deletedAt).toBeNull();
+
+    const canonicalRestored = await (prisma as any).canonicalInvoice.findUnique({ where: { legacyInvoiceId: invoiceId } });
+    expect(canonicalRestored?.deletedAt).toBeNull();
   }, 30000);
 });
