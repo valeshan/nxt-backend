@@ -12,6 +12,7 @@
     "prisma:migrate:dev": "NODE_ENV=development prisma migrate dev --schema prisma/schema.dev.prisma",
     "prisma:migrate:reset": "NODE_ENV=development prisma migrate reset --schema prisma/schema.dev.prisma",
     "prisma:migrate:deploy": "NODE_ENV=production prisma migrate deploy",
+    "prisma:migrate:deploy:safe": "NODE_ENV=production bash scripts/safe-migrate-deploy.sh",
     "check:db-safety": "tsx scripts/check-db-safety.ts",
     "lint": "eslint . --ext .ts",
     "format": "prettier --write ."
