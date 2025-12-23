@@ -611,6 +611,18 @@ export class XeroService {
       const appUrl = appUrlRaw.replace(/\/$/, '');
       const redirectUri = `${appUrl}/xero/callback`;
 
+      // Debug-friendly (no secrets): helps diagnose prod config mismatches.
+      console.log('[XeroService] completeConnect config', {
+        hasClientId: !!clientId,
+        hasClientSecret: !!clientSecret,
+        appUrl,
+        redirectUri,
+        hasCode: !!params.code,
+        codeLength: params.code?.length,
+        hasState: !!params.state,
+        stateLength: params.state?.length,
+      });
+
       const xero = new XeroClient({
         clientId,
         clientSecret,
@@ -709,7 +721,17 @@ export class XeroService {
       return { success: true, tenantName: tenant.tenantName || '', linkedLocations };
 
     } catch (error) {
-        console.error(error);
+        // Preserve as much context as possible for controller-level error shaping.
+        console.error('[XeroService] completeConnect failed', {
+          message: (error as any)?.message,
+          name: (error as any)?.name,
+          stack: (error as any)?.stack,
+          // xero-node/openid-client often attach response details
+          status: (error as any)?.response?.status,
+          statusCode: (error as any)?.statusCode,
+          data: (error as any)?.response?.data,
+          body: (error as any)?.body,
+        });
         throw error;
     } finally {
       await prisma.xeroAuthSession.delete({ where: { id: session.id } }).catch(() => {});

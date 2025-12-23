@@ -185,10 +185,29 @@ export class XeroController {
        const isBadRequest =
          msg === 'Invalid session' || msg === 'Session expired' || msg === 'Organisation mismatch';
 
+       // Helpful hinting for the most common production misconfigurations.
+       const lower = String(msg).toLowerCase();
+       const hint =
+         lower.includes('redirect') || lower.includes('redirect_uri') || lower.includes('invalid redirect')
+           ? 'Check that backend APP_URL matches your dashboard origin and that the Xero app redirect URI includes https://dashboard.thenxt.ai/xero/callback.'
+           : lower.includes('client credentials') || lower.includes('credentials')
+             ? 'Check XERO_CLIENT_ID and XERO_CLIENT_SECRET are set in the backend runtime environment.'
+             : lower.includes('invalid_grant')
+               ? 'Xero returned invalid_grant. This is usually caused by redirect URI mismatch or a reused/expired code. Try reconnecting; if it persists, verify APP_URL and Xero redirect URI settings.'
+               : undefined;
+
+       // Request id for support/debug correlation (the BE sets x-request-id header)
+       const requestId =
+         (reply.getHeader('x-request-id') as string | undefined) ||
+         (request.headers['x-request-id'] as string | undefined) ||
+         (request as any).id;
+
        return reply.status(isBadRequest ? 400 : 502).send({
          error: {
            code: 'XERO_CONNECT_FAILED',
            message: msg,
+           hint,
+           requestId,
          },
        });
      }
