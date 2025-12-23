@@ -115,6 +115,28 @@ describe('Admin ProductStats endpoints (safe-by-default)', () => {
     expect(second.statusCode).toBe(429);
   });
 
+  it('can bypass cooldown in non-production when explicitly enabled + requested', async () => {
+    process.env.ADMIN_BYPASS_RATE_LIMIT = 'true';
+    const app = await build();
+
+    const first = await app.inject({
+      method: 'POST',
+      url: '/admin/product-stats/refresh',
+      headers: { 'x-internal-api-key': 'test-admin-key', 'x-admin-bypass-rate-limit': 'true' },
+      payload: { organisationId: 'org', locationId: 'loc' },
+    });
+    expect(first.statusCode).toBe(200);
+
+    // Second call would normally be rate-limited by our Redis mock, but bypass should ignore it.
+    const second = await app.inject({
+      method: 'POST',
+      url: '/admin/product-stats/refresh',
+      headers: { 'x-internal-api-key': 'test-admin-key', 'x-admin-bypass-rate-limit': 'true' },
+      payload: { organisationId: 'org', locationId: 'loc' },
+    });
+    expect(second.statusCode).toBe(200);
+  });
+
   it('returns job status from /admin/jobs/:jobId', async () => {
     const app = await build();
     const res = await app.inject({
@@ -127,5 +149,19 @@ describe('Admin ProductStats endpoints (safe-by-default)', () => {
     expect(body.jobId).toBe('job-123');
     expect(body.state).toBe('waiting');
   });
+
+  it('returns job status from /admin/jobs?jobId=... (query param fallback)', async () => {
+    const app = await build();
+    const res = await app.inject({
+      method: 'GET',
+      url: '/admin/jobs?jobId=canonicalBackfill%7Corg%7Cloc%7CALL%7C123',
+      headers: { 'x-internal-api-key': 'test-admin-key' },
+    });
+    expect(res.statusCode).toBe(200);
+    const body = res.json();
+    // mocked getAdminJobStatus echoes the jobId passed into it; query route decodes once.
+    expect(body.jobId).toBe('canonicalBackfill|org|loc|ALL|123');
+  });
 });
+
 

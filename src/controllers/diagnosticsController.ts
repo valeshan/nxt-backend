@@ -4,6 +4,8 @@ import { XeroSyncService } from '../services/xeroSyncService';
 import { pusherService } from '../services/pusherService';
 import { config } from '../config/env';
 import { XeroSyncScope, XeroSyncStatus, XeroSyncTriggerType } from '@prisma/client';
+import { isCanonicalLinesEnabledForOrg } from '../utils/canonicalFlags';
+import { supplierInsightsService } from '../services/supplierInsightsService';
 
 const xeroSyncService = new XeroSyncService();
 
@@ -33,13 +35,15 @@ export class DiagnosticsController {
 
   getSnapshot = async (request: FastifyRequest, reply: FastifyReply) => {
     this.validateAccess(request);
-    const { organisationId } = request.authContext;
+    const { organisationId, tokenType, locationId } = request.authContext;
 
     if (!organisationId) {
       const error: any = new Error('Not found');
       error.statusCode = 404;
       throw error;
     }
+
+    const includeCanonicalParity = Boolean((request.query as any)?.includeCanonicalParity);
 
     const [
       supplierCount,
@@ -68,6 +72,76 @@ export class DiagnosticsController {
         orderBy: { startedAt: 'desc' }
       })
     ]);
+
+    // Canonical diagnostics (scoped rollout + operational checks)
+    const enabledForOrg = isCanonicalLinesEnabledForOrg(organisationId);
+    let canonicalOperationalOk = true;
+    let canonicalOperationalError: string | null = null;
+    let canonicalInvoiceCount = 0;
+    let canonicalLineCount = 0;
+    let warnRate: number | null = null;
+    let lastWriteAt: string | null = null;
+    let lastInvoiceDate: string | null = null;
+
+    try {
+      const canonicalInvoiceWhere: any = {
+        organisationId,
+        deletedAt: null,
+        ...(tokenType === 'location' && locationId ? { locationId } : {}),
+      };
+
+      const canonicalLineWhere: any = {
+        organisationId,
+        ...(tokenType === 'location' && locationId ? { locationId } : {}),
+        canonicalInvoice: { deletedAt: null },
+      };
+
+      const [invAgg, linesCount, okLines, warnLines] = await Promise.all([
+        (prisma as any).canonicalInvoice.aggregate({
+          where: canonicalInvoiceWhere,
+          _max: { updatedAt: true, date: true },
+        }),
+        (prisma as any).canonicalInvoiceLineItem.count({ where: canonicalLineWhere }),
+        (prisma as any).canonicalInvoiceLineItem.count({ where: { ...canonicalLineWhere, qualityStatus: 'OK' } }),
+        (prisma as any).canonicalInvoiceLineItem.count({ where: { ...canonicalLineWhere, qualityStatus: 'WARN' } }),
+      ]);
+
+      canonicalInvoiceCount = await (prisma as any).canonicalInvoice.count({ where: canonicalInvoiceWhere });
+      canonicalLineCount = Number(linesCount || 0);
+
+      const denom = Number(okLines || 0) + Number(warnLines || 0);
+      warnRate = denom > 0 ? Number(warnLines || 0) / denom : null;
+
+      lastWriteAt = invAgg?._max?.updatedAt ? new Date(invAgg._max.updatedAt).toISOString() : null;
+      lastInvoiceDate = invAgg?._max?.date ? new Date(invAgg._max.date).toISOString() : null;
+    } catch (e: any) {
+      canonicalOperationalOk = false;
+      canonicalOperationalError = e?.message || String(e);
+    }
+
+    // Optional parity (on-demand only)
+    let parity: any = null;
+    if (includeCanonicalParity) {
+      const checkedAt = new Date().toISOString();
+      if (tokenType === 'location' && locationId) {
+        const report = await supplierInsightsService.getCanonicalParityChecklist(organisationId, locationId);
+        parity = {
+          ok: report.ok,
+          checkedAt,
+          organisationId,
+          locationId,
+          report,
+        };
+      } else {
+        parity = {
+          ok: false,
+          checkedAt,
+          organisationId,
+          locationId: null,
+          report: { ok: false, error: 'Parity requires a location-context token (select a location first).' },
+        };
+      }
+    }
 
     // DTO Mapping: Convert all Date fields to ISO strings
     const responseDto = {
@@ -102,7 +176,16 @@ export class DiagnosticsController {
           rowsProcessed: latestSyncRun.rowsProcessed,
           errorMessage: latestSyncRun.errorMessage
         } : null
-      }
+      },
+      canonical: {
+        enabledForOrg,
+        operational: { ok: canonicalOperationalOk, error: canonicalOperationalError },
+        counts: { invoices: canonicalInvoiceCount, lines: canonicalLineCount },
+        warnRate,
+        lastWriteAt,
+        lastInvoiceDate,
+        parity,
+      },
     };
 
     return reply.status(200).send(responseDto);

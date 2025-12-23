@@ -19,6 +19,16 @@ export type ParsedInvoice = {
   currency?: string;
   lineItems: Array<{
     description: string;
+    /**
+     * Original QUANTITY cell text from Textract (if present). Useful for audit/debug and
+     * for extracting unit tokens like "8.42 KILO" / "2.00 UNIT".
+     */
+    rawQuantityText?: string;
+    /**
+     * Normalized unit token extracted from QUANTITY cell (or other line fields where available).
+     * Examples: "KG", "KILO", "UNIT", "CRTN", "L", "LT", "ML"
+     */
+    unitLabel?: string;
     quantity?: number;
     unitPrice?: number;
     lineTotal?: number;
@@ -26,6 +36,57 @@ export type ParsedInvoice = {
   }>;
   confidenceScore: number;
 };
+
+const UNIT_TOKEN_RE = /^\s*\d+(?:\.\d+)?\s*([A-Za-z]{1,10})\s*$/;
+const UNIT_ALLOW = new Set([
+  // Weight
+  'KG',
+  'KILO',
+  'KILOS',
+  'KILOGRAM',
+  'KILOGRAMS',
+  'G',
+  'GM',
+  'GRAM',
+  'GRAMS',
+  'GR',
+  // Volume
+  'L',
+  'LT',
+  'LITRE',
+  'LITRES',
+  'LITER',
+  'LITERS',
+  'ML',
+  'MILLILITRE',
+  'MILLILITRES',
+  'MILLILITER',
+  'MILLILITERS',
+  // Unit-ish
+  'UNIT',
+  'UNITS',
+  'EA',
+  'EACH',
+  'BOX',
+  'CARTON',
+  'CRTN',
+  'CTN',
+  'PACK',
+  'PK',
+  'BAG',
+  'TRAY',
+  'TUB',
+  'ROLL',
+  'BOTTLE',
+]);
+
+function extractUnitLabelFromQuantityText(text?: string): string | undefined {
+  if (!text) return undefined;
+  const m = String(text).match(UNIT_TOKEN_RE);
+  if (!m) return undefined;
+  const token = String(m[1]).toUpperCase();
+  return UNIT_ALLOW.has(token) ? token : undefined;
+}
 
 export const ocrService = {
   async startAnalysis(s3Key: string) {
@@ -105,9 +166,13 @@ export const ocrService = {
         const description = getLineField('ITEM') || getLineField('EXPENSE_ROW') || '';
         if (!description) continue;
 
+        const rawQuantityText = getLineField('QUANTITY');
+
         lineItems.push({
           description,
-          quantity: parseMoney(getLineField('QUANTITY')),
+          rawQuantityText,
+          unitLabel: extractUnitLabelFromQuantityText(rawQuantityText),
+          quantity: parseMoney(rawQuantityText),
           unitPrice: parseMoney(getLineField('UNIT_PRICE')),
           lineTotal: parseMoney(getLineField('PRICE')), // Usually 'PRICE' in Textract Expense
           productCode: getLineField('PRODUCT_CODE'),

@@ -3,6 +3,7 @@ import { getBullMqRedisClient } from '../infrastructure/redis';
 import { supplierInsightsService } from './supplierInsightsService';
 import prisma from '../infrastructure/prismaClient';
 import { canonicalizeLine, assertCanonicalInvoiceLegacyLink } from './canonical';
+import { ocrService } from './OcrService';
 
 export const ADMIN_QUEUE_NAME = 'admin-jobs';
 
@@ -41,7 +42,8 @@ export async function enqueueProductStatsRefresh(data: Omit<ProductStatsRefreshJ
   // Deterministic-ish jobId to dedupe retries/deploy races, but still allow re-enqueue after cooldown:
   // one job per (org,location) per 10-minute bucket.
   const bucket = Math.floor(Date.now() / (10 * 60_000));
-  const jobId = `productStatsRefresh:${data.organisationId}:${data.locationId}:${bucket}`;
+  // BullMQ rejects custom IDs that contain ":".
+  const jobId = `productStatsRefresh|${data.organisationId}|${data.locationId}|${bucket}`;
   const job = await adminQueue.add(
     'product-stats-refresh',
     {
@@ -57,7 +59,8 @@ export async function enqueueCanonicalBackfill(
   data: Omit<CanonicalBackfillJobData, 'requestedAt'> & { requestedAt?: string }
 ) {
   const bucket = Math.floor(Date.now() / (10 * 60_000));
-  const jobId = `canonicalBackfill:${data.organisationId}:${data.locationId}:${data.source}:${bucket}`;
+  // BullMQ rejects custom IDs that contain ":".
+  const jobId = `canonicalBackfill|${data.organisationId}|${data.locationId}|${data.source}|${bucket}`;
   const job = await adminQueue.add(
     'canonical-backfill',
     {
@@ -257,7 +260,7 @@ async function backfillCanonicalForLocation(params: {
         deletedAt: null,
         canonicalInvoice: null,
       } as any,
-      include: { lineItems: true, invoiceFile: true },
+      include: { lineItems: true, invoiceFile: { include: { ocrResult: true } } },
       take: limit,
       orderBy: { createdAt: 'asc' },
     });
@@ -300,20 +303,49 @@ async function backfillCanonicalForLocation(params: {
         // Replace any existing lines to keep backfill deterministic.
         await txAny.canonicalInvoiceLineItem.deleteMany({ where: { canonicalInvoiceId: canonical.id } });
 
-        const lines = (inv.lineItems || []).map((li: any) => {
+        const parsedFromOcr = !inv.isVerified && inv.invoiceFile?.ocrResult?.rawResultJson
+          ? ocrService.parseTextractOutput(inv.invoiceFile.ocrResult.rawResultJson)
+          : null;
+
+        const ocrLineItems = parsedFromOcr?.lineItems || null;
+        const legacyLineItems = inv.lineItems || [];
+
+        const sourceLineItems = inv.isVerified
+          ? legacyLineItems.map((li: any) => ({
+              description: li.description,
+              quantity: li.quantity ? Number(li.quantity) : null,
+              unitPrice: li.unitPrice ? Number(li.unitPrice) : null,
+              lineTotal: li.lineTotal ? Number(li.lineTotal) : null,
+              productCode: li.productCode ?? null,
+              unitLabel: null,
+              sourceLineRef: `invoiceId:${inv.id}:manual:${li.id}`,
+              confidenceScore: inv.invoiceFile?.confidenceScore ?? null,
+            }))
+          : (ocrLineItems || []).map((li: any, idx: number) => ({
+              description: li.description,
+              quantity: li.quantity ?? null,
+              unitPrice: li.unitPrice ?? null,
+              lineTotal: li.lineTotal ?? null,
+              productCode: li.productCode ?? null,
+              unitLabel: li.unitLabel ?? null,
+              sourceLineRef: inv.invoiceFileId ? `invoiceFileId:${inv.invoiceFileId}:line:${idx}` : `invoiceId:${inv.id}:line:${idx}`,
+              confidenceScore: inv.invoiceFile?.confidenceScore ?? null,
+            }));
+
+        const lines = sourceLineItems.map((li: any) => {
           const canon = canonicalizeLine({
             source: inv.isVerified ? ('MANUAL' as any) : ('OCR' as any),
             rawDescription: li.description,
             productCode: li.productCode ?? null,
-            quantity: li.quantity ? Number(li.quantity) : null,
-            unitLabel: null,
-            unitPrice: li.unitPrice ? Number(li.unitPrice) : null,
-            lineTotal: li.lineTotal ? Number(li.lineTotal) : null,
+            quantity: li.quantity ?? null,
+            unitLabel: li.unitLabel ?? null,
+            unitPrice: li.unitPrice ?? null,
+            lineTotal: li.lineTotal ?? null,
             taxAmount: null,
             currencyCode: null,
             headerCurrencyCode: canonical.currencyCode ?? DEFAULT_CURRENCY_CODE,
             adjustmentStatus: inv.isVerified ? ('MODIFIED' as any) : ('NONE' as any),
-            confidenceScore: inv.invoiceFile?.confidenceScore ?? null,
+            confidenceScore: li.confidenceScore ?? null,
           });
 
           return {
@@ -322,21 +354,21 @@ async function backfillCanonicalForLocation(params: {
             locationId: inv.locationId,
             supplierId: inv.supplierId ?? null,
             source: inv.isVerified ? 'MANUAL' : 'OCR',
-            sourceLineRef: `invoiceId:${inv.id}:manual:${li.id}`,
+            sourceLineRef: li.sourceLineRef,
             normalizationVersion: 'v1',
             rawDescription: canon.rawDescription,
             normalizedDescription: canon.normalizedDescription,
             productCode: li.productCode ?? null,
-            quantity: li.quantity,
+            quantity: li.quantity ?? null,
             unitLabel: canon.unitLabel,
             unitCategory: canon.unitCategory,
-            unitPrice: li.unitPrice,
-            lineTotal: li.lineTotal,
+            unitPrice: li.unitPrice ?? null,
+            lineTotal: li.lineTotal ?? null,
             taxAmount: null,
             currencyCode: canon.currencyCode ?? canonical.currencyCode ?? DEFAULT_CURRENCY_CODE,
             adjustmentStatus: canon.adjustmentStatus,
             qualityStatus: canon.qualityStatus,
-            confidenceScore: inv.invoiceFile?.confidenceScore ?? null,
+            confidenceScore: li.confidenceScore ?? null,
           } as any;
         });
 

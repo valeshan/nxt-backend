@@ -43,10 +43,15 @@ const envSchema = z.object({
   ENABLE_XERO_OCR: z.string().optional().default('false'),
   ENABLE_DIAGNOSTICS: z.string().optional().default('false'),
   USE_CANONICAL_LINES: z.string().optional().default('false'),
+  // Optional org allowlist to scope canonical analytics rollout (comma-separated organisation IDs).
+  // When empty/unset, USE_CANONICAL_LINES applies globally.
+  CANONICAL_LINES_ORG_ALLOWLIST: z.string().optional().default(''),
   ENABLE_ADMIN_ENDPOINTS: z.string().optional().default('false'),
   INTERNAL_ADMIN_API_KEY: z.string().optional(),
   ADMIN_PRODUCT_STATS_WORKER_ENABLED: z.string().optional().default('false'),
   ADMIN_CANONICAL_BACKFILL_WORKER_ENABLED: z.string().optional().default('false'),
+  // Dev-only escape hatch for admin cooldowns (must also send request header)
+  ADMIN_BYPASS_RATE_LIMIT: z.string().optional().default('false'),
 
   // Infrastructure
   REDIS_URL: z.string().optional(),
@@ -109,6 +114,12 @@ if (baseConfig.NODE_ENV === 'production' && !baseConfig.REDIS_URL) {
 // Admin endpoints are disabled by default; if enabled in production, require a key.
 if (baseConfig.NODE_ENV === 'production' && baseConfig.ENABLE_ADMIN_ENDPOINTS === 'true' && !baseConfig.INTERNAL_ADMIN_API_KEY) {
   console.error('❌ Invalid environment variables: INTERNAL_ADMIN_API_KEY is required when ENABLE_ADMIN_ENDPOINTS=true in production');
+  process.exit(1);
+}
+
+// Never allow bypassing admin cooldowns in production.
+if (baseConfig.NODE_ENV === 'production' && baseConfig.ADMIN_BYPASS_RATE_LIMIT === 'true') {
+  console.error('❌ Invalid environment variables: ADMIN_BYPASS_RATE_LIMIT must not be true when NODE_ENV=production');
   process.exit(1);
 }
 

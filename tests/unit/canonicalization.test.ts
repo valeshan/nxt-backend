@@ -18,6 +18,20 @@ describe('canonicalizeLine', () => {
     expect(res.currencyCode).toBe('AUD');
   });
 
+  it('treats count-only integer quantities as UNIT when no unit hints exist', () => {
+    const res = canonicalizeLine({
+      source: 'OCR' as any,
+      rawDescription: 'Pringles (Cheese)',
+      quantity: 90,
+      lineTotal: 450,
+      currencyCode: 'AUD',
+    });
+
+    expect(res.unitLabel).toBe('UNIT');
+    expect(res.unitCategory).toBe(UnitCategory.UNIT);
+    expect(res.qualityStatus).toBe('OK');
+  });
+
   it('does not attempt pack parsing (2 x 2.5kg) and can default unit UNKNOWN', () => {
     const res = canonicalizeLine({
       source: 'OCR' as any,

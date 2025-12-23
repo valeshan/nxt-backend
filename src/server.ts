@@ -108,8 +108,8 @@ const start = async () => {
         app.log.info(
           `ENABLE_ADMIN_ENDPOINTS=true ADMIN_PRODUCT_STATS_WORKER_ENABLED=false ADMIN_CANONICAL_BACKFILL_WORKER_ENABLED=false instance=${instanceId}`
         );
-      } else {
-        adminWorker = setupAdminWorker(app.log);
+    } else {
+      adminWorker = setupAdminWorker(app.log);
         console.log(
           `Admin worker started instance=${instanceId} productStats=${productStatsEnabled} canonicalBackfill=${canonicalBackfillEnabled}`
         );

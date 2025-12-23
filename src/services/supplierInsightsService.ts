@@ -11,6 +11,7 @@ import { NotificationService } from './notificationService';
 import { PriceIncreaseItem } from './emailTemplates/priceIncreaseTemplates';
 import { getProductKeyFromLineItem } from './helpers/productKey';
 import { getOffsetPaginationOrThrow } from '../utils/paginationGuards';
+import { isCanonicalLinesEnabledForOrg } from '../utils/canonicalFlags';
 
 function toAccountCodesHash(accountCodes?: string[]): string {
   if (!accountCodes || accountCodes.length === 0) return 'all';
@@ -459,6 +460,16 @@ function getManualLineItemWhere(
 
 export const supplierInsightsService = {
   /**
+   * Feature gate for canonical analytics (scoped rollout).
+   *
+   * Global gate: USE_CANONICAL_LINES=true
+   * Optional scope gate: CANONICAL_LINES_ORG_ALLOWLIST contains org id
+   */
+  isCanonicalAnalyticsEnabled(organisationId: string): boolean {
+    return isCanonicalLinesEnabledForOrg(organisationId);
+  },
+
+  /**
    * Canonical parity checklist (fail-closed): compares a few high-signal aggregates between
    * legacy sources and canonical tables for a specific org+location over the last 90 days.
    *
@@ -577,7 +588,9 @@ export const supplierInsightsService = {
             AND xi."locationId" = ${locationId}
             AND xi."deletedAt" IS NULL
             AND xi."status" IN ('AUTHORISED','PAID')
-            AND xi."date" >= ${ninetyDaysAgo} AND xi."date" <= ${now}
+            -- Dates are stored as timestamp (no tz). Compare against UTC-normalized boundaries.
+            AND xi."date" >= (${ninetyDaysAgo} AT TIME ZONE 'UTC')
+            AND xi."date" <= (${now} AT TIME ZONE 'UTC')
             AND xi."xeroInvoiceId" NOT IN (${Prisma.join(supersededIds.length ? supersededIds : [''])})
           GROUP BY xi."supplierId"
         ),
@@ -585,12 +598,16 @@ export const supplierInsightsService = {
           SELECT i."supplierId" AS "supplierId", COALESCE(SUM(ili."lineTotal"), 0)::float8 AS spend
           FROM "InvoiceLineItem" ili
           JOIN "Invoice" i ON i.id = ili."invoiceId"
+          JOIN "InvoiceFile" f ON f.id = i."invoiceFileId"
           WHERE i."organisationId" = ${organisationId}
             AND i."locationId" = ${locationId}
             AND i."deletedAt" IS NULL
             AND i."isVerified" = true
             AND i."invoiceFileId" IS NOT NULL
-            AND i."date" >= ${ninetyDaysAgo} AND i."date" <= ${now}
+            AND f."reviewStatus" = 'VERIFIED'
+            AND f."deletedAt" IS NULL
+            AND i."date" >= (${ninetyDaysAgo} AT TIME ZONE 'UTC')
+            AND i."date" <= (${now} AT TIME ZONE 'UTC')
           GROUP BY i."supplierId"
         )
         -- Avoid FULL OUTER JOIN with IS NOT DISTINCT FROM (unsupported for FULL JOIN in Postgres)
@@ -620,7 +637,8 @@ export const supplierInsightsService = {
             WHERE "organisationId" = ${organisationId}
               AND "locationId" = ${locationId}
               AND "deletedAt" IS NULL
-              AND "date" >= ${ninetyDaysAgo} AND "date" <= ${now}
+              AND "date" >= (${ninetyDaysAgo} AT TIME ZONE 'UTC')
+              AND "date" <= (${now} AT TIME ZONE 'UTC')
           )
         GROUP BY "supplierId"
         `
@@ -683,7 +701,8 @@ export const supplierInsightsService = {
             AND xi."locationId" = ${locationId}
             AND xi."deletedAt" IS NULL
             AND xi."status" IN ('AUTHORISED','PAID')
-            AND xi."date" >= ${ninetyDaysAgo} AND xi."date" <= ${now}
+            AND xi."date" >= (${ninetyDaysAgo} AT TIME ZONE 'UTC')
+            AND xi."date" <= (${now} AT TIME ZONE 'UTC')
             AND xi."xeroInvoiceId" NOT IN (${Prisma.join(supersededIds.length ? supersededIds : [''])})
           GROUP BY xi."supplierId", label
         ),
@@ -693,12 +712,16 @@ export const supplierInsightsService = {
                  COALESCE(SUM(ili."lineTotal"), 0)::float8 AS spend
           FROM "InvoiceLineItem" ili
           JOIN "Invoice" i ON i.id = ili."invoiceId"
+          JOIN "InvoiceFile" f ON f.id = i."invoiceFileId"
           WHERE i."organisationId" = ${organisationId}
             AND i."locationId" = ${locationId}
             AND i."deletedAt" IS NULL
             AND i."isVerified" = true
             AND i."invoiceFileId" IS NOT NULL
-            AND i."date" >= ${ninetyDaysAgo} AND i."date" <= ${now}
+            AND f."reviewStatus" = 'VERIFIED'
+            AND f."deletedAt" IS NULL
+            AND i."date" >= (${ninetyDaysAgo} AT TIME ZONE 'UTC')
+            AND i."date" <= (${now} AT TIME ZONE 'UTC')
           GROUP BY i."supplierId", label
         ),
         merged AS (

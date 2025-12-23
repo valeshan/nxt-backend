@@ -17,6 +17,9 @@ export default async function diagnosticsRoutes(fastify: FastifyInstance) {
       '/snapshot',
       {
         schema: {
+          querystring: z.object({
+            includeCanonicalParity: z.coerce.boolean().optional().default(false),
+          }),
           response: {
             200: z.object({
               meta: z.object({
@@ -43,7 +46,30 @@ export default async function diagnosticsRoutes(fastify: FastifyInstance) {
                       rowsProcessed: z.number().nullable(),
                       errorMessage: z.string().nullable()
                   }).nullable()
-              })
+              }),
+              canonical: z.object({
+                enabledForOrg: z.boolean(),
+                operational: z.object({
+                  ok: z.boolean(),
+                  error: z.string().nullable(),
+                }),
+                counts: z.object({
+                  invoices: z.number(),
+                  lines: z.number(),
+                }),
+                warnRate: z.number().nullable(),
+                lastWriteAt: z.string().nullable(),
+                lastInvoiceDate: z.string().nullable(),
+                parity: z
+                  .object({
+                    ok: z.boolean(),
+                    checkedAt: z.string(),
+                    organisationId: z.string(),
+                    locationId: z.string().nullable(),
+                    report: z.unknown(),
+                  })
+                  .nullable(),
+              }),
             })
           }
         }

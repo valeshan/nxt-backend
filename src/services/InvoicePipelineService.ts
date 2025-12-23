@@ -832,6 +832,7 @@ export const invoicePipelineService = {
                            rawDescription: item.description,
                            productCode: item.productCode ?? null,
                            quantity: item.quantity ?? null,
+                           unitLabel: (item as any).unitLabel ?? null,
                            unitPrice: item.unitPrice ?? null,
                            lineTotal: item.lineTotal ?? null,
                            taxAmount: null,

@@ -24,8 +24,23 @@ const canonicalBackfillBodySchema = z.object({
   limit: z.coerce.number().optional(),
 });
 
+const jobStatusQuerySchema = z.object({
+  jobId: z.string().min(1),
+});
+
 function isAdminEnabled(): boolean {
   return (config.ENABLE_ADMIN_ENDPOINTS || 'false') === 'true';
+}
+
+function canBypassAdminCooldown(req: FastifyRequest): boolean {
+  // Explicitly gated:
+  // - must be enabled via env
+  // - must be non-production
+  // - must be explicitly requested via header (prevents accidental bypass)
+  if ((config.ADMIN_BYPASS_RATE_LIMIT || 'false') !== 'true') return false;
+  if (config.NODE_ENV === 'production') return false;
+  const v = String(req.headers['x-admin-bypass-rate-limit'] || '').toLowerCase();
+  return v === 'true' || v === '1' || v === 'yes';
 }
 
 function replyAdminDisabled(reply: FastifyReply) {
@@ -105,7 +120,7 @@ export default async function adminRoutes(app: FastifyInstance) {
 
     let cooldown;
     try {
-      cooldown = await enforceCooldownOrThrow({ organisationId, locationId });
+      cooldown = canBypassAdminCooldown(request) ? { ok: true, retryAfterSeconds: 0 } : await enforceCooldownOrThrow({ organisationId, locationId });
     } catch (e: any) {
       request.log.error({ msg: 'admin.productStats.refresh.redis_failed', err: e?.message });
       return reply.status(503).send({ error: { code: 'REDIS_UNAVAILABLE', message: 'Admin rate limiter unavailable' } });
@@ -188,9 +203,13 @@ export default async function adminRoutes(app: FastifyInstance) {
     try {
       const ttlSeconds = 10 * 60;
       const key = `admin:canonicalBackfill:${organisationId}:${locationId}`;
-      const redis = getRedisClient();
-      const res = await redis.set(key, '1', 'EX', ttlSeconds, 'NX');
-      cooldown = { ok: res === 'OK', retryAfterSeconds: ttlSeconds };
+      if (canBypassAdminCooldown(request)) {
+        cooldown = { ok: true, retryAfterSeconds: 0 };
+      } else {
+        const redis = getRedisClient();
+        const res = await redis.set(key, '1', 'EX', ttlSeconds, 'NX');
+        cooldown = { ok: res === 'OK', retryAfterSeconds: ttlSeconds };
+      }
     } catch (e: any) {
       request.log.error({ msg: 'admin.canonical.backfill.redis_failed', err: e?.message });
       return reply.status(503).send({ error: { code: 'REDIS_UNAVAILABLE', message: 'Admin rate limiter unavailable' } });
@@ -224,6 +243,35 @@ export default async function adminRoutes(app: FastifyInstance) {
 
     const jobId = String((request.params as any).jobId || '');
     if (!jobId) return reply.status(400).send({ error: { code: 'BAD_REQUEST', message: 'jobId is required' } });
+
+    const status = await getAdminJobStatus(jobId);
+    if (!status.exists) {
+      return reply.status(404).send({ error: { code: 'NOT_FOUND', message: 'Job not found' } });
+    }
+
+    return reply.send(status);
+  });
+
+  // GET /admin/jobs?jobId=...
+  // Workaround: some routers/proxies reject certain percent-encoded characters in path params (e.g. %7C),
+  // causing Fastify to treat the route as missing. Query params are more robust for these IDs.
+  app.get('/jobs', async (request: FastifyRequest, reply: FastifyReply) => {
+    if (!isAdminEnabled()) return replyAdminDisabled(reply);
+    if (!requireInternalApiKey(request, reply)) return;
+
+    const parsed = jobStatusQuerySchema.safeParse(request.query);
+    if (!parsed.success) {
+      return reply.status(400).send({ error: { code: 'BAD_REQUEST', message: parsed.error.issues[0]?.message || 'Invalid query' } });
+    }
+
+    const rawJobId = parsed.data.jobId;
+    // Allow callers to pass an already-encoded jobId (best-effort decode).
+    let jobId = rawJobId;
+    try {
+      jobId = decodeURIComponent(rawJobId);
+    } catch {
+      // ignore
+    }
 
     const status = await getAdminJobStatus(jobId);
     if (!status.exists) {

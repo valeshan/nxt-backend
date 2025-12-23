@@ -11,7 +11,19 @@ export function canonicalizeLine(
   const rawDescription = String(input.rawDescription ?? '');
   const normalizedDescription = normalizeDescription(rawDescription);
 
-  const unitLabel = canonicalizeUnitLabel(input.unitLabel, rawDescription);
+  let unitLabel = canonicalizeUnitLabel(input.unitLabel, rawDescription);
+  const qty = input.quantity ?? null;
+
+  // Sprint A: handle count-only invoices (no explicit unit tokens anywhere).
+  // If the quantity is an integer and there are no weight/volume hints in the description, treat as UNIT.
+  // This keeps aggregation unit-safe while avoiding 100% WARN on typical "Quantity" columns.
+  // Note: do NOT rely on \b before the token because "2.5KG" has no word boundary between digit and letter.
+  const hasWeightOrVolumeHint = /(KG|KILO|KILOGRAM|KILOGRAMS|G|GM|GRAM|GRAMS|L|LT|LITRE|LITRES|LITER|LITERS|ML)\b/i.test(
+    rawDescription
+  );
+  if (!unitLabel && qty !== null && Number.isFinite(qty) && Number.isInteger(qty) && !hasWeightOrVolumeHint) {
+    unitLabel = 'UNIT';
+  }
   const unitCategory = mapUnitCategory(unitLabel);
 
   const currencyCode = normalizeCurrencyCode(input.currencyCode);
