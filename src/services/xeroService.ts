@@ -558,13 +558,23 @@ export class XeroService {
       },
     });
 
-    const clientId = config.XERO_CLIENT_ID;
-    const appUrl = process.env.APP_URL || config.FRONTEND_URL;
+    const clientId = config.XERO_CLIENT_ID || process.env.XERO_CLIENT_ID;
+    const appUrlRaw = process.env.APP_URL || config.FRONTEND_URL;
+
+    if (!clientId) {
+      throw new Error('Xero client id not configured');
+    }
+    if (!appUrlRaw) {
+      throw new Error('APP_URL / FRONTEND_URL not configured');
+    }
+
+    // Normalize trailing slash to avoid double-slash redirects
+    const appUrl = appUrlRaw.replace(/\/$/, '');
     const redirectUri = `${appUrl}/xero/callback`;
     const scopes = 'offline_access accounting.settings.read accounting.transactions.read accounting.attachments.read';
     const state = session.id;
 
-    const url = `https://login.xero.com/identity/connect/authorize?response_type=code&client_id=${clientId}&redirect_uri=${encodeURIComponent(redirectUri)}&scope=${encodeURIComponent(scopes)}&state=${state}`;
+    const url = `https://login.xero.com/identity/connect/authorize?response_type=code&client_id=${clientId}&redirect_uri=${encodeURIComponent(redirectUri)}&scope=${encodeURIComponent(scopes)}&state=${encodeURIComponent(state)}`;
 
     return { redirectUrl: url };
   }
@@ -589,18 +599,29 @@ export class XeroService {
     try {
       const clientId = config.XERO_CLIENT_ID || process.env.XERO_CLIENT_ID;
       const clientSecret = config.XERO_CLIENT_SECRET || process.env.XERO_CLIENT_SECRET;
-      const appUrl = process.env.APP_URL || config.FRONTEND_URL;
+      const appUrlRaw = process.env.APP_URL || config.FRONTEND_URL;
+
+      if (!clientId || !clientSecret) {
+        throw new Error('Xero client credentials not configured');
+      }
+      if (!appUrlRaw) {
+        throw new Error('APP_URL / FRONTEND_URL not configured');
+      }
+
+      const appUrl = appUrlRaw.replace(/\/$/, '');
       const redirectUri = `${appUrl}/xero/callback`;
 
       const xero = new XeroClient({
-        clientId: clientId || '',
-        clientSecret: clientSecret || '',
+        clientId,
+        clientSecret,
         redirectUris: [redirectUri],
         scopes: 'offline_access accounting.settings.read accounting.transactions.read accounting.attachments.read'.split(' '),
         state: params.state,
       });
 
-      const tokenSet = await xero.apiCallback(`${(redirectUri || '')}?code=${params.code}&state=${params.state}`);
+      // IMPORTANT: encode code/state; OAuth codes can contain characters that break query parsing otherwise
+      const callbackUrl = `${redirectUri}?code=${encodeURIComponent(params.code)}&state=${encodeURIComponent(params.state)}`;
+      const tokenSet = await xero.apiCallback(callbackUrl);
       
       if (!tokenSet || !tokenSet.access_token || !tokenSet.refresh_token) {
            throw new Error('Failed to receive tokens');

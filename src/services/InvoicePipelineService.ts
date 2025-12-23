@@ -852,6 +852,10 @@ export const invoicePipelineService = {
                            rawDescription: canon.rawDescription,
                            normalizedDescription: canon.normalizedDescription,
                            productCode: item.productCode?.trim() || null,
+                         rawQuantityText: (item as any).rawQuantityText ?? null,
+                         rawUnitText: (item as any).unitLabel ?? null,
+                         rawDeliveredText: (item as any).rawDeliveredText ?? null,
+                         rawSizeText: (item as any).rawSizeText ?? null,
                            quantity: item.quantity ?? null,
                            unitLabel: canon.unitLabel,
                            unitCategory: canon.unitCategory,
@@ -861,6 +865,7 @@ export const invoicePipelineService = {
                            currencyCode: canon.currencyCode ?? canonical.currencyCode ?? headerCurrencyCode,
                            adjustmentStatus: canon.adjustmentStatus,
                            qualityStatus: canon.qualityStatus,
+                         warnReasons: canon.qualityWarnReasons ?? [],
                            confidenceScore: parsed.confidenceScore ?? null,
                          } as any;
                        });
@@ -1163,6 +1168,11 @@ export const invoicePipelineService = {
                 rawDescription: canon.rawDescription,
                 normalizedDescription: canon.normalizedDescription,
                 productCode: li.productCode ?? null,
+                rawQuantityText:
+                  li.quantity !== null && li.quantity !== undefined ? String(li.quantity) : null,
+                rawUnitText: null,
+                rawDeliveredText: null,
+                rawSizeText: null,
                 quantity: li.quantity,
                 unitLabel: canon.unitLabel,
                 unitCategory: canon.unitCategory,
@@ -1172,6 +1182,7 @@ export const invoicePipelineService = {
                 currencyCode: canon.currencyCode ?? canonical.currencyCode ?? headerCurrencyCode,
                 adjustmentStatus: canon.adjustmentStatus,
                 qualityStatus: canon.qualityStatus,
+                warnReasons: canon.qualityWarnReasons ?? [],
                 confidenceScore: invoice.invoiceFile?.confidenceScore ?? null,
               } as any;
             });

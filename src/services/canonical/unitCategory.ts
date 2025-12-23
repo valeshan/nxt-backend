@@ -26,17 +26,20 @@ const SYNONYMS: Record<string, string> = {
 };
 
 /**
- * Bounded extraction: only extract when the description contains a simple numeric+unit token
- * like "2kg", "2 kg", "500ml". This avoids pack-size parsing ("2 x 2.5kg") which is deferred.
+ * Bounded extraction: only extract when the description contains a numeric+unit token
+ * like "2kg", "2 kg", "500ml", "3 LT", or "4x5KG" (matches the inner "5KG").
+ *
+ * We only need the unit category (WEIGHT/VOLUME/UNIT) for canonical quality gates; parsing pack math
+ * is out of scope here, but detecting the unit token is safe and improves coverage.
  */
-const SIMPLE_UNIT_IN_DESC = /\b\d+(?:\.\d+)?\s?(KG|G|L|ML)\b/i;
-const PACK_PATTERN = /\b\d+\s*x\s*\d+(?:\.\d+)?\s?(KG|G|L|ML)\b/i;
+// Capture common unit tokens (including "KILO" / "KILOGRAM") that appear glued to numbers (e.g. "12KILO").
+// We canonicalize via `canonicalizeUnitLabel()` -> `SYNONYMS`, so we can be liberal here.
+const UNIT_TOKEN_IN_DESC =
+  /\d+(?:\.\d+)?\s?(KG|KGS|KILO|KILOS|KILOGRAM|KILOGRAMS|G|GM|GRAM|GRAMS|L|LT|LTR|LITRE|LITRES|LITER|LITERS|ML|MILLILITRE|MILLILITRES|MILLILITER|MILLILITERS)\b/i;
 
 export function extractUnitLabelFromDescription(description: string): string | null {
   const text = String(description || '');
-  // Explicitly avoid pack parsing in Sprint A.
-  if (PACK_PATTERN.test(text)) return null;
-  const match = text.match(SIMPLE_UNIT_IN_DESC);
+  const match = text.match(UNIT_TOKEN_IN_DESC);
   if (!match) return null;
   return normalizeUnitLabel(match[1]);
 }

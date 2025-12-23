@@ -58,6 +58,12 @@ export default async function diagnosticsRoutes(fastify: FastifyInstance) {
                   lines: z.number(),
                 }),
                 warnRate: z.number().nullable(),
+                warnReasonsBreakdown: z
+                  .object({
+                    totalWarnLines: z.number(),
+                    byReason: z.record(z.number()),
+                  })
+                  .nullable(),
                 lastWriteAt: z.string().nullable(),
                 lastInvoiceDate: z.string().nullable(),
                 parity: z

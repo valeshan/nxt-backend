@@ -1,4 +1,5 @@
 import { Queue, Worker, Job } from 'bullmq';
+import { Prisma } from '@prisma/client';
 import { getBullMqRedisClient } from '../infrastructure/redis';
 import { supplierInsightsService } from './supplierInsightsService';
 import prisma from '../infrastructure/prismaClient';
@@ -60,7 +61,9 @@ export async function enqueueCanonicalBackfill(
 ) {
   const bucket = Math.floor(Date.now() / (10 * 60_000));
   // BullMQ rejects custom IDs that contain ":".
-  const jobId = `canonicalBackfill|${data.organisationId}|${data.locationId}|${data.source}|${bucket}`;
+  // Prefer requestId (unique per HTTP request) to allow immediate retries while still being deterministic per request.
+  const dedupeKey = data.requestId ? `req-${data.requestId}` : String(bucket);
+  const jobId = `canonicalBackfill|${data.organisationId}|${data.locationId}|${data.source}|${dedupeKey}`;
   const job = await adminQueue.add(
     'canonical-backfill',
     {
@@ -253,12 +256,53 @@ async function backfillCanonicalForLocation(params: {
   const doXero = source === 'XERO' || source === 'ALL';
 
   if (doOcr) {
+    // Repair case: canonical header exists but line items are missing (often caused by earlier dual-write failures).
+    // We detect these deterministically via SQL (Prisma relation filters can be finicky across schema changes).
+    const repairOcrInvoiceIds = await prisma.$queryRaw<Array<{ legacyInvoiceId: string }>>(
+      Prisma.sql`
+        SELECT ci."legacyInvoiceId" as "legacyInvoiceId"
+        FROM "CanonicalInvoice" ci
+        LEFT JOIN "CanonicalInvoiceLineItem" li ON li."canonicalInvoiceId" = ci."id"
+        WHERE ci."organisationId" = ${organisationId}
+          AND ci."locationId" = ${locationId}
+          AND ci."deletedAt" IS NULL
+          AND ci."legacyInvoiceId" IS NOT NULL
+        GROUP BY ci."legacyInvoiceId"
+        HAVING COUNT(li."id") = 0
+        LIMIT ${limit}
+      `
+    );
+
+    // Rebuild case: canonical lines exist but are WARN due to UNKNOWN_UNIT_CATEGORY.
+    // This allows targeted reprocessing after canonicalization rule improvements without forcing a full rewrite.
+    const rebuildUnknownUnitOcrInvoiceIds = await prisma.$queryRaw<Array<{ legacyInvoiceId: string }>>(
+      Prisma.sql`
+        SELECT DISTINCT ci."legacyInvoiceId" as "legacyInvoiceId"
+        FROM "CanonicalInvoice" ci
+        JOIN "CanonicalInvoiceLineItem" li ON li."canonicalInvoiceId" = ci."id"
+        WHERE ci."organisationId" = ${organisationId}
+          AND ci."locationId" = ${locationId}
+          AND ci."deletedAt" IS NULL
+          AND ci."legacyInvoiceId" IS NOT NULL
+          AND li."qualityStatus" = 'WARN'
+          AND 'UNKNOWN_UNIT_CATEGORY' = ANY(li."warnReasons")
+        LIMIT ${limit}
+      `
+    );
+
     const invoices = await prisma.invoice.findMany({
       where: {
         organisationId,
         locationId,
         deletedAt: null,
-        canonicalInvoice: null,
+        OR: [
+          // Normal case: no canonical header yet
+          { canonicalInvoice: null as any },
+          // Repair case: header exists but lines are missing
+          { id: { in: repairOcrInvoiceIds.map((r) => r.legacyInvoiceId) } },
+          // Rebuild case: canonical lines exist but are WARN due to unknown unit category
+          { id: { in: rebuildUnknownUnitOcrInvoiceIds.map((r) => r.legacyInvoiceId) } },
+        ],
       } as any,
       include: { lineItems: true, invoiceFile: { include: { ocrResult: true } } },
       take: limit,
@@ -313,6 +357,10 @@ async function backfillCanonicalForLocation(params: {
         const sourceLineItems = inv.isVerified
           ? legacyLineItems.map((li: any) => ({
               description: li.description,
+              rawQuantityText: li.quantity !== null && li.quantity !== undefined ? String(li.quantity) : null,
+              rawUnitText: null,
+              rawDeliveredText: null,
+              rawSizeText: null,
               quantity: li.quantity ? Number(li.quantity) : null,
               unitPrice: li.unitPrice ? Number(li.unitPrice) : null,
               lineTotal: li.lineTotal ? Number(li.lineTotal) : null,
@@ -323,6 +371,10 @@ async function backfillCanonicalForLocation(params: {
             }))
           : (ocrLineItems || []).map((li: any, idx: number) => ({
               description: li.description,
+              rawQuantityText: li.rawQuantityText ?? null,
+              rawUnitText: li.unitLabel ?? null,
+              rawDeliveredText: li.rawDeliveredText ?? null,
+              rawSizeText: li.rawSizeText ?? null,
               quantity: li.quantity ?? null,
               unitPrice: li.unitPrice ?? null,
               lineTotal: li.lineTotal ?? null,
@@ -359,6 +411,10 @@ async function backfillCanonicalForLocation(params: {
             rawDescription: canon.rawDescription,
             normalizedDescription: canon.normalizedDescription,
             productCode: li.productCode ?? null,
+            rawQuantityText: li.rawQuantityText ?? null,
+            rawUnitText: li.rawUnitText ?? null,
+            rawDeliveredText: li.rawDeliveredText ?? null,
+            rawSizeText: li.rawSizeText ?? null,
             quantity: li.quantity ?? null,
             unitLabel: canon.unitLabel,
             unitCategory: canon.unitCategory,
@@ -368,6 +424,7 @@ async function backfillCanonicalForLocation(params: {
             currencyCode: canon.currencyCode ?? canonical.currencyCode ?? DEFAULT_CURRENCY_CODE,
             adjustmentStatus: canon.adjustmentStatus,
             qualityStatus: canon.qualityStatus,
+            warnReasons: canon.qualityWarnReasons ?? [],
             confidenceScore: li.confidenceScore ?? null,
           } as any;
         });
@@ -384,12 +441,46 @@ async function backfillCanonicalForLocation(params: {
   }
 
   if (doXero) {
+    const repairXeroInvoiceIds = await prisma.$queryRaw<Array<{ legacyXeroInvoiceId: string }>>(
+      Prisma.sql`
+        SELECT ci."legacyXeroInvoiceId" as "legacyXeroInvoiceId"
+        FROM "CanonicalInvoice" ci
+        LEFT JOIN "CanonicalInvoiceLineItem" li ON li."canonicalInvoiceId" = ci."id"
+        WHERE ci."organisationId" = ${organisationId}
+          AND ci."locationId" = ${locationId}
+          AND ci."deletedAt" IS NULL
+          AND ci."legacyXeroInvoiceId" IS NOT NULL
+        GROUP BY ci."legacyXeroInvoiceId"
+        HAVING COUNT(li."id") = 0
+        LIMIT ${limit}
+      `
+    );
+
+    const rebuildUnknownUnitXeroInvoiceIds = await prisma.$queryRaw<Array<{ legacyXeroInvoiceId: string }>>(
+      Prisma.sql`
+        SELECT DISTINCT ci."legacyXeroInvoiceId" as "legacyXeroInvoiceId"
+        FROM "CanonicalInvoice" ci
+        JOIN "CanonicalInvoiceLineItem" li ON li."canonicalInvoiceId" = ci."id"
+        WHERE ci."organisationId" = ${organisationId}
+          AND ci."locationId" = ${locationId}
+          AND ci."deletedAt" IS NULL
+          AND ci."legacyXeroInvoiceId" IS NOT NULL
+          AND li."qualityStatus" = 'WARN'
+          AND 'UNKNOWN_UNIT_CATEGORY' = ANY(li."warnReasons")
+        LIMIT ${limit}
+      `
+    );
+
     const xeroInvoices = await prisma.xeroInvoice.findMany({
       where: {
         organisationId,
         locationId,
         deletedAt: null,
-        canonicalInvoice: null,
+        OR: [
+          { canonicalInvoice: null as any },
+          { id: { in: repairXeroInvoiceIds.map((r) => r.legacyXeroInvoiceId) } },
+          { id: { in: rebuildUnknownUnitXeroInvoiceIds.map((r) => r.legacyXeroInvoiceId) } },
+        ],
       } as any,
       include: { lineItems: true },
       take: limit,
@@ -460,6 +551,10 @@ async function backfillCanonicalForLocation(params: {
             rawDescription: canon.rawDescription,
             normalizedDescription: canon.normalizedDescription,
             productCode: li.itemCode ?? null,
+            rawQuantityText: li.quantity !== null && li.quantity !== undefined ? String(li.quantity) : null,
+            rawUnitText: null,
+            rawDeliveredText: null,
+            rawSizeText: null,
             quantity: li.quantity,
             unitLabel: canon.unitLabel,
             unitCategory: canon.unitCategory,
@@ -469,6 +564,7 @@ async function backfillCanonicalForLocation(params: {
             currencyCode: canon.currencyCode ?? canonical.currencyCode ?? headerCurrencyCode,
             adjustmentStatus: canon.adjustmentStatus,
             qualityStatus: canon.qualityStatus,
+            warnReasons: canon.qualityWarnReasons ?? [],
             confidenceScore: null,
           } as any;
         });

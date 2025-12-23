@@ -633,6 +633,12 @@ model CanonicalInvoiceLineItem {
   normalizedDescription String
   productCode          String?
 
+  // Sprint B: preserve raw unit/quantity signals for audit/debug and improved unit extraction.
+  rawQuantityText  String?
+  rawUnitText      String?
+  rawDeliveredText String?
+  rawSizeText      String?
+
   quantity     Decimal?     @db.Decimal(19, 4)
   unitLabel    String?
   unitCategory UnitCategory
@@ -644,6 +650,7 @@ model CanonicalInvoiceLineItem {
 
   adjustmentStatus AdjustmentStatus @default(NONE)
   qualityStatus    QualityStatus    @default(OK)
+  warnReasons     String[]         @default([])
 
   confidenceScore Float?
   createdAt       DateTime @default(now())

@@ -482,10 +482,32 @@ export const supplierInsightsService = {
     ok: boolean;
     checks: Array<{ name: string; ok: boolean; details: any }>;
     totals: { legacySpend90d: number; canonicalSpend90d: number; deltaPct: number };
+    meta: {
+      checkedAt: string;
+      window: { startUtc: string; endUtc: string; days: number };
+      excludes: { canonical: { qualityStatus: string[] }; legacy: { manualRequiresVerified: boolean; xeroStatuses: string[] } };
+      tolerances: { spendDeltaPct: number; supplierDeltaPct: number };
+    };
+    explanation: string;
   }> {
     const now = new Date();
     const ninetyDaysAgo = new Date();
     ninetyDaysAgo.setDate(ninetyDaysAgo.getDate() - 90);
+
+    const checkedAt = now.toISOString();
+    const meta = {
+      checkedAt,
+      window: { startUtc: ninetyDaysAgo.toISOString(), endUtc: now.toISOString(), days: 90 },
+      excludes: {
+        canonical: { qualityStatus: ['WARN'] },
+        legacy: { manualRequiresVerified: true, xeroStatuses: ['AUTHORISED', 'PAID'] },
+      },
+      tolerances: { spendDeltaPct: 0.5, supplierDeltaPct: 0.5 },
+    };
+    const explanation =
+      'Legacy spend = Xero lineAmount (AUTHORISED/PAID, not deleted, not superseded) + manual verified lineTotal (invoiceFile VERIFIED). ' +
+      'Canonical spend = sum(lineTotal) from CanonicalInvoiceLineItem with qualityStatus=OK on non-deleted CanonicalInvoice rows. ' +
+      'All comparisons use the same 90-day invoice date window.';
 
     const supersededIds = await getSupersededXeroIds(organisationId, locationId, ninetyDaysAgo);
 
@@ -772,6 +794,28 @@ export const supplierInsightsService = {
 
     const warnRate = canonicalOkLines + canonicalWarnLines > 0 ? canonicalWarnLines / (canonicalOkLines + canonicalWarnLines) : 0;
 
+    // WARN reason breakdown (why lines are excluded)
+    const warnReasonRows = await prisma.$queryRaw<Array<{ reason: string; count: number }>>(
+      Prisma.sql`
+        SELECT reason, COUNT(*)::int AS count
+        FROM (
+          SELECT unnest(li."warnReasons") AS reason
+          FROM "CanonicalInvoiceLineItem" li
+          JOIN "CanonicalInvoice" ci ON ci.id = li."canonicalInvoiceId"
+          WHERE li."organisationId" = ${organisationId}
+            AND li."locationId" = ${locationId}
+            AND li."qualityStatus" = 'WARN'
+            AND ci."deletedAt" IS NULL
+            AND ci."date" >= (${ninetyDaysAgo} AT TIME ZONE 'UTC')
+            AND ci."date" <= (${now} AT TIME ZONE 'UTC')
+        ) t
+        GROUP BY reason
+        ORDER BY count DESC
+      `
+    );
+    const warnReasonsByReason: Record<string, number> = {};
+    for (const r of warnReasonRows || []) warnReasonsByReason[String(r.reason)] = Number((r as any).count || 0);
+
     // Tolerances (as per pre-flip checklist)
     const spendOk = Math.abs(deltaPct) <= 0.5;
     const supplierOk = canonicalSupplierCount <= legacySupplierCount + 1; // allow 1 for unknown bucket edge
@@ -798,9 +842,10 @@ export const supplierInsightsService = {
       },
       { name: 'supplier_count_last_90d', ok: supplierOk, details: { legacySupplierCount, canonicalSupplierCount } },
       { name: 'warn_rate_lines', ok: warnRate <= 0.5, details: { warnRate, canonicalOkLines, canonicalWarnLines } },
+      { name: 'warn_reasons', ok: true, details: { byReason: warnReasonsByReason } },
     ];
 
-    return { ok: checks.every((c) => c.ok), checks, totals: { legacySpend90d, canonicalSpend90d, deltaPct } };
+    return { ok: checks.every((c) => c.ok), checks, totals: { legacySpend90d, canonicalSpend90d, deltaPct }, meta, explanation };
   },
 
   async getSupplierSpendSummary(organisationId: string, locationId?: string, accountCodes?: string[]): Promise<SpendSummary> {

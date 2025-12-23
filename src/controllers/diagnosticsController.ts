@@ -3,7 +3,7 @@ import prisma from '../infrastructure/prismaClient';
 import { XeroSyncService } from '../services/xeroSyncService';
 import { pusherService } from '../services/pusherService';
 import { config } from '../config/env';
-import { XeroSyncScope, XeroSyncStatus, XeroSyncTriggerType } from '@prisma/client';
+import { Prisma, XeroSyncScope, XeroSyncStatus, XeroSyncTriggerType } from '@prisma/client';
 import { isCanonicalLinesEnabledForOrg } from '../utils/canonicalFlags';
 import { supplierInsightsService } from '../services/supplierInsightsService';
 
@@ -80,6 +80,7 @@ export class DiagnosticsController {
     let canonicalInvoiceCount = 0;
     let canonicalLineCount = 0;
     let warnRate: number | null = null;
+    let warnReasonsBreakdown: { totalWarnLines: number; byReason: Record<string, number> } | null = null;
     let lastWriteAt: string | null = null;
     let lastInvoiceDate: string | null = null;
 
@@ -114,6 +115,29 @@ export class DiagnosticsController {
 
       lastWriteAt = invAgg?._max?.updatedAt ? new Date(invAgg._max.updatedAt).toISOString() : null;
       lastInvoiceDate = invAgg?._max?.date ? new Date(invAgg._max.date).toISOString() : null;
+
+      // WARN breakdown by reason (from persisted warnReasons array)
+      const locFilter =
+        tokenType === 'location' && locationId ? Prisma.sql`AND li."locationId" = ${locationId}` : Prisma.empty;
+      const warnReasonRows = await prisma.$queryRaw<Array<{ reason: string; count: number }>>(
+        Prisma.sql`
+          SELECT reason, COUNT(*)::int AS count
+          FROM (
+            SELECT unnest(li."warnReasons") AS reason
+            FROM "CanonicalInvoiceLineItem" li
+            JOIN "CanonicalInvoice" ci ON ci.id = li."canonicalInvoiceId"
+            WHERE li."organisationId" = ${organisationId}
+              ${locFilter}
+              AND li."qualityStatus" = 'WARN'
+              AND ci."deletedAt" IS NULL
+          ) t
+          GROUP BY reason
+          ORDER BY count DESC
+        `
+      );
+      const byReason: Record<string, number> = {};
+      for (const r of warnReasonRows || []) byReason[String(r.reason)] = Number((r as any).count || 0);
+      warnReasonsBreakdown = { totalWarnLines: Number(warnLines || 0), byReason };
     } catch (e: any) {
       canonicalOperationalOk = false;
       canonicalOperationalError = e?.message || String(e);
@@ -182,6 +206,7 @@ export class DiagnosticsController {
         operational: { ok: canonicalOperationalOk, error: canonicalOperationalError },
         counts: { invoices: canonicalInvoiceCount, lines: canonicalLineCount },
         warnRate,
+        warnReasonsBreakdown,
         lastWriteAt,
         lastInvoiceDate,
         parity,

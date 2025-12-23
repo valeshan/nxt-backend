@@ -25,6 +25,12 @@ export type ParsedInvoice = {
      */
     rawQuantityText?: string;
     /**
+     * Optional line fields that sometimes contain unit-bearing tokens even when QUANTITY is numeric-only.
+     * These are preserved for audit/debug and used as additional unit extraction sources.
+     */
+    rawDeliveredText?: string;
+    rawSizeText?: string;
+    /**
      * Normalized unit token extracted from QUANTITY cell (or other line fields where available).
      * Examples: "KG", "KILO", "UNIT", "CRTN", "L", "LT", "ML"
      */
@@ -80,7 +86,7 @@ const UNIT_ALLOW = new Set([
   'BOTTLE',
 ]);
 
-function extractUnitLabelFromQuantityText(text?: string): string | undefined {
+function extractUnitLabelFromText(text?: string): string | undefined {
   if (!text) return undefined;
   const m = String(text).match(UNIT_TOKEN_RE);
   if (!m) return undefined;
@@ -167,12 +173,21 @@ export const ocrService = {
         if (!description) continue;
 
         const rawQuantityText = getLineField('QUANTITY');
+        const rawDeliveredText = getLineField('DELIVERED') || getLineField('DELIVERY');
+        const rawSizeText = getLineField('SIZE') || getLineField('PACK_SIZE');
+
+        const extractedUnit =
+          extractUnitLabelFromText(rawQuantityText) ??
+          extractUnitLabelFromText(rawDeliveredText) ??
+          extractUnitLabelFromText(rawSizeText);
 
         lineItems.push({
           description,
           rawQuantityText,
-          unitLabel: extractUnitLabelFromQuantityText(rawQuantityText),
-          quantity: parseMoney(rawQuantityText),
+          rawDeliveredText,
+          rawSizeText,
+          unitLabel: extractedUnit,
+          quantity: parseMoney(rawQuantityText ?? rawDeliveredText),
           unitPrice: parseMoney(getLineField('UNIT_PRICE')),
           lineTotal: parseMoney(getLineField('PRICE')), // Usually 'PRICE' in Textract Expense
           productCode: getLineField('PRODUCT_CODE'),

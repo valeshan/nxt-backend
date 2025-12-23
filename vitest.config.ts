@@ -5,6 +5,7 @@ export default defineConfig({
     globals: true,
     environment: 'node',
     setupFiles: ['dotenv/config', './tests/setupEnv.ts'],
+    globalSetup: ['./tests/globalSetup.ts'],
     fileParallelism: false, // Disable parallel execution of test files to avoid DB conflicts
   },
 });

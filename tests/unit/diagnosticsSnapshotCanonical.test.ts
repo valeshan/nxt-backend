@@ -15,6 +15,7 @@ vi.mock('../../src/services/supplierInsightsService', () => {
 vi.mock('../../src/infrastructure/prismaClient', () => {
   return {
     default: {
+      $queryRaw: async () => [],
       supplier: {
         count: async () => 2,
       },

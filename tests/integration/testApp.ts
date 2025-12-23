@@ -12,6 +12,8 @@ export async function resetDb() {
   // Deleting userSettings first because it references user
   await prisma.userSettings.deleteMany();
   await prisma.productStats.deleteMany();
+  await (prisma as any).canonicalInvoiceLineItem.deleteMany();
+  await (prisma as any).canonicalInvoice.deleteMany();
   
   await prisma.xeroInvoiceLineItem.deleteMany();
   await prisma.invoiceLineItem.deleteMany();

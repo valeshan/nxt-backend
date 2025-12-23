@@ -592,6 +592,10 @@ export class XeroSyncService {
                 rawDescription: canon.rawDescription,
                 normalizedDescription: canon.normalizedDescription,
                 productCode: li.itemCode ?? null,
+                rawQuantityText: li.quantity !== null && li.quantity !== undefined ? String(li.quantity) : null,
+                rawUnitText: null,
+                rawDeliveredText: null,
+                rawSizeText: null,
                 quantity: li.quantity ?? null,
                 unitLabel: canon.unitLabel,
                 unitCategory: canon.unitCategory,
@@ -601,6 +605,7 @@ export class XeroSyncService {
                 currencyCode: canon.currencyCode ?? canonical.currencyCode ?? headerCurrencyCode,
                 adjustmentStatus: canon.adjustmentStatus,
                 qualityStatus: canon.qualityStatus,
+                warnReasons: canon.qualityWarnReasons ?? [],
                 confidenceScore: null,
               } as any;
             });

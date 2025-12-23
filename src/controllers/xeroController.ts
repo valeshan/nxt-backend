@@ -156,28 +156,42 @@ export class XeroController {
          return reply.status(403).send({ error: { code: 'FORBIDDEN', message: 'Organisation context required' } });
      }
 
-     const result = await xeroService.completeConnect({
-         code: request.body.code,
-         state: request.body.state,
-         organisationId,
-         userId
-     });
-     
-     // Trigger async backfill sync for the connection
-     // We don't await this to keep the UI response fast
-     if (result.linkedLocations && result.linkedLocations.length > 0) {
-         const connectionId = result.linkedLocations[0].xeroConnectionId;
-         console.log(`[XeroController] Triggering initial backfill sync for org ${organisationId} connection ${connectionId}`);
-         // Using syncConnection instead of deprecated syncInvoices
-         // Defaulting to INCREMENTAL which upgrades to FULL if needed
-         xeroSyncService.syncConnection({
-             connectionId, 
-             organisationId, 
-             scope: XeroSyncScope.INCREMENTAL // Will upgrade to FULL if never synced
-         }).catch(err => console.error(`[XeroController] Initial sync failed for org ${organisationId}`, err));
-     }
+     try {
+       const result = await xeroService.completeConnect({
+           code: request.body.code,
+           state: request.body.state,
+           organisationId,
+           userId
+       });
+       
+       // Trigger async backfill sync for the connection
+       // We don't await this to keep the UI response fast
+       if (result.linkedLocations && result.linkedLocations.length > 0) {
+           const connectionId = result.linkedLocations[0].xeroConnectionId;
+           console.log(`[XeroController] Triggering initial backfill sync for org ${organisationId} connection ${connectionId}`);
+           // Using syncConnection instead of deprecated syncInvoices
+           // Defaulting to INCREMENTAL which upgrades to FULL if needed
+           xeroSyncService.syncConnection({
+               connectionId, 
+               organisationId, 
+               scope: XeroSyncScope.INCREMENTAL // Will upgrade to FULL if never synced
+           }).catch(err => console.error(`[XeroController] Initial sync failed for org ${organisationId}`, err));
+       }
 
-     return reply.status(200).send(result);
+       return reply.status(200).send(result);
+     } catch (err: any) {
+       request.log.error({ err }, '[Xero] complete-connect failed');
+       const msg = err?.message || 'Failed to connect Xero';
+       const isBadRequest =
+         msg === 'Invalid session' || msg === 'Session expired' || msg === 'Organisation mismatch';
+
+       return reply.status(isBadRequest ? 400 : 502).send({
+         error: {
+           code: 'XERO_CONNECT_FAILED',
+           message: msg,
+         },
+       });
+     }
   }
 
   syncConnectionHandler = async (
