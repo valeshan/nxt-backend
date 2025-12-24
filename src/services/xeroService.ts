@@ -652,40 +652,51 @@ export class XeroService {
         : new Date(Date.now() + 30 * 60 * 1000);
 
       // Upsert XeroConnection
-      const existingConnection = await prisma.xeroConnection.findFirst({
-          where: {
-              organisationId: params.organisationId,
-              xeroTenantId: tenant.tenantId,
-          }
+      // NOTE: xeroTenantId has a UNIQUE constraint globally, so we must check by tenantId alone first.
+      const existingConnection = await prisma.xeroConnection.findUnique({
+        where: { xeroTenantId: tenant.tenantId },
       });
 
       let connection;
       if (existingConnection) {
-          connection = await prisma.xeroConnection.update({
-              where: { id: existingConnection.id },
-              data: {
-                  tenantName: tenant.tenantName || 'Xero Organisation',
-                  accessToken: accessTokenEncrypted,
-                  refreshToken: refreshTokenEncrypted,
-                  expiresAt: expiresAt,
-                  xeroCode: params.code,
-                  xeroState: params.state,
-              }
-          });
+        // If the connection belongs to a DIFFERENT organisation, we need to decide:
+        // Option A: Error out (strict: one Xero tenant = one org)
+        // Option B: Transfer ownership to the new org (flexible: user can re-link)
+        // We'll go with Option B for better UX – user might be re-linking or changed orgs.
+        if (existingConnection.organisationId !== params.organisationId) {
+          console.log(
+            `[XeroService] Transferring Xero connection ${existingConnection.id} from org ${existingConnection.organisationId} to ${params.organisationId}`
+          );
+        }
+
+        connection = await prisma.xeroConnection.update({
+          where: { id: existingConnection.id },
+          data: {
+            // Update org ownership in case it changed
+            organisationId: params.organisationId,
+            userId: params.userId,
+            tenantName: tenant.tenantName || 'Xero Organisation',
+            accessToken: accessTokenEncrypted,
+            refreshToken: refreshTokenEncrypted,
+            expiresAt: expiresAt,
+            xeroCode: params.code,
+            xeroState: params.state,
+          },
+        });
       } else {
-          connection = await prisma.xeroConnection.create({
-              data: {
-                  organisationId: params.organisationId,
-                  userId: params.userId,
-                  xeroTenantId: tenant.tenantId,
-                  tenantName: tenant.tenantName || 'Xero Organisation',
-                  accessToken: accessTokenEncrypted,
-                  refreshToken: refreshTokenEncrypted,
-                  expiresAt: expiresAt,
-                  xeroCode: params.code,
-                  xeroState: params.state,
-              }
-          });
+        connection = await prisma.xeroConnection.create({
+          data: {
+            organisationId: params.organisationId,
+            userId: params.userId,
+            xeroTenantId: tenant.tenantId,
+            tenantName: tenant.tenantName || 'Xero Organisation',
+            accessToken: accessTokenEncrypted,
+            refreshToken: refreshTokenEncrypted,
+            expiresAt: expiresAt,
+            xeroCode: params.code,
+            xeroState: params.state,
+          },
+        });
       }
 
       // Upsert XeroLocationLinks
