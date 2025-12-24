@@ -98,5 +98,28 @@ export default async function xeroRoutes(fastify: FastifyInstance) {
       },
       xeroController.syncConnectionHandler
     );
+
+    // Disconnect Xero - delete all connections for the organisation
+    // Frontend calls: DELETE /xero/organization/:organizationId
+    typedApp.delete(
+      '/organization/:organizationId',
+      {
+        schema: {
+          params: z.object({ organizationId: z.string().uuid() }),
+        },
+      },
+      xeroController.disconnectHandler
+    );
+
+    // Alternative: disconnect specific connection
+    typedApp.delete(
+      '/connections/:connectionId',
+      {
+        schema: {
+          params: z.object({ connectionId: z.string().uuid() }),
+        },
+      },
+      xeroController.disconnectHandler
+    );
   });
 }

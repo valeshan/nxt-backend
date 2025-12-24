@@ -663,7 +663,8 @@ export class XeroService {
         // Option A: Error out (strict: one Xero tenant = one org)
         // Option B: Transfer ownership to the new org (flexible: user can re-link)
         // We'll go with Option B for better UX – user might be re-linking or changed orgs.
-        if (existingConnection.organisationId !== params.organisationId) {
+        const isTransfer = existingConnection.organisationId !== params.organisationId;
+        if (isTransfer) {
           console.log(
             `[XeroService] Transferring Xero connection ${existingConnection.id} from org ${existingConnection.organisationId} to ${params.organisationId}`
           );
@@ -683,6 +684,15 @@ export class XeroService {
             xeroState: params.state,
           },
         });
+
+        // Clean up old location links when re-connecting (especially important for org transfers).
+        // This ensures that stale links from a previous org/session don't cause ambiguous location mapping.
+        const deletedLinks = await prisma.xeroLocationLink.deleteMany({
+          where: { xeroConnectionId: connection.id },
+        });
+        if (deletedLinks.count > 0) {
+          console.log(`[XeroService] Removed ${deletedLinks.count} old location links for connection ${connection.id}`);
+        }
       } else {
         connection = await prisma.xeroConnection.create({
           data: {
@@ -699,34 +709,18 @@ export class XeroService {
         });
       }
 
-      // Upsert XeroLocationLinks
+      // Create fresh XeroLocationLinks for this session's locations
       const linkedLocations = [];
       for (const locationId of session.locationIds) {
-           const existingLink = await prisma.xeroLocationLink.findFirst({
-               where: {
-                   xeroConnectionId: connection.id,
-                   locationId: locationId,
-               }
-           });
-           
-           if (!existingLink) {
-               const link = await prisma.xeroLocationLink.create({
-                   data: {
-                       xeroConnectionId: connection.id,
-                       organisationId: params.organisationId,
-                       locationId: locationId,
-                   },
-                   include: { location: true }
-               });
-               linkedLocations.push(link);
-           } else {
-               // Fetch existing link with location included for consistency
-               const link = await prisma.xeroLocationLink.findUnique({
-                   where: { id: existingLink.id },
-                   include: { location: true }
-               });
-               linkedLocations.push(link);
-           }
+        const link = await prisma.xeroLocationLink.create({
+          data: {
+            xeroConnectionId: connection.id,
+            organisationId: params.organisationId,
+            locationId: locationId,
+          },
+          include: { location: true },
+        });
+        linkedLocations.push(link);
       }
 
       return { success: true, tenantName: tenant.tenantName || '', linkedLocations };
@@ -747,5 +741,98 @@ export class XeroService {
     } finally {
       await prisma.xeroAuthSession.delete({ where: { id: session.id } }).catch(() => {});
     }
+  }
+
+  /**
+   * Disconnect Xero integration for an organisation.
+   * 
+   * This will:
+   * 1. Delete all XeroLocationLinks for the connection(s)
+   * 2. Delete the XeroConnection record(s)
+   * 3. Cancel any pending/in-progress sync runs
+   * 4. Optionally soft-delete synced invoices (preserves historical data)
+   * 
+   * @param params.organisationId - The organisation to disconnect
+   * @param params.connectionId - Optional specific connection ID (if omitted, disconnects all)
+   * @param params.deleteInvoices - Whether to soft-delete synced invoices (default: false)
+   */
+  async disconnect(params: {
+    organisationId: string;
+    connectionId?: string;
+    deleteInvoices?: boolean;
+  }): Promise<{ success: true; deletedConnections: number; deletedLocationLinks: number; cancelledSyncRuns: number }> {
+    const { organisationId, connectionId, deleteInvoices = false } = params;
+
+    console.log(`[XeroService] Disconnecting Xero for org ${organisationId}${connectionId ? `, connection ${connectionId}` : ' (all connections)'}`);
+
+    // Find connections to delete
+    const whereClause: any = { organisationId };
+    if (connectionId) {
+      whereClause.id = connectionId;
+    }
+
+    const connections = await prisma.xeroConnection.findMany({
+      where: whereClause,
+      select: { id: true, xeroTenantId: true, tenantName: true },
+    });
+
+    if (connections.length === 0) {
+      throw new Error('Connection not found');
+    }
+
+    const connectionIds = connections.map((c) => c.id);
+
+    // Use a transaction to ensure consistency
+    const result = await prisma.$transaction(async (tx) => {
+      // 1. Cancel any pending/in-progress sync runs
+      const cancelledRuns = await tx.xeroSyncRun.updateMany({
+        where: {
+          xeroConnectionId: { in: connectionIds },
+          status: { in: ['PENDING', 'IN_PROGRESS'] },
+        },
+        data: {
+          status: 'FAILED',
+          finishedAt: new Date(),
+          errorMessage: 'Cancelled: Xero integration disconnected',
+        },
+      });
+      console.log(`[XeroService] Cancelled ${cancelledRuns.count} sync runs`);
+
+      // 2. Delete location links
+      const deletedLinks = await tx.xeroLocationLink.deleteMany({
+        where: { xeroConnectionId: { in: connectionIds } },
+      });
+      console.log(`[XeroService] Deleted ${deletedLinks.count} location links`);
+
+      // 3. Optionally soft-delete synced invoices
+      if (deleteInvoices) {
+        const now = new Date();
+        const softDeletedInvoices = await tx.xeroInvoice.updateMany({
+          where: {
+            organisationId,
+            xeroTenantId: { in: connections.map((c) => c.xeroTenantId) },
+            deletedAt: null,
+          },
+          data: { deletedAt: now },
+        });
+        console.log(`[XeroService] Soft-deleted ${softDeletedInvoices.count} invoices`);
+      }
+
+      // 4. Delete the connections
+      const deletedConnections = await tx.xeroConnection.deleteMany({
+        where: { id: { in: connectionIds } },
+      });
+      console.log(`[XeroService] Deleted ${deletedConnections.count} connections`);
+
+      return {
+        deletedConnections: deletedConnections.count,
+        deletedLocationLinks: deletedLinks.count,
+        cancelledSyncRuns: cancelledRuns.count,
+      };
+    });
+
+    console.log(`[XeroService] Disconnect complete for org ${organisationId}:`, result);
+
+    return { success: true, ...result };
   }
 }

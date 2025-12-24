@@ -213,6 +213,52 @@ export class XeroController {
      }
   }
 
+  /**
+   * Disconnect a Xero integration for the current organisation.
+   * This removes the connection and all location links.
+   * Synced invoice data is preserved (soft-delete) for historical reference.
+   * 
+   * Supports two URL patterns:
+   * - DELETE /xero/organization/:organizationId (frontend legacy)
+   * - DELETE /xero/connections/:connectionId (specific connection)
+   */
+  disconnectHandler = async (
+    request: FastifyRequest<{ Params: { connectionId?: string; organizationId?: string } }>,
+    reply: FastifyReply
+  ) => {
+    const { organisationId: authOrgId } = request.authContext;
+    if (!authOrgId) {
+      return reply.status(403).send({ error: { code: 'FORBIDDEN', message: 'Organisation context required' } });
+    }
+
+    // If organizationId is in params (from /organization/:organizationId route), validate it matches auth context
+    const targetOrgId = request.params.organizationId;
+    if (targetOrgId && targetOrgId !== authOrgId) {
+      return reply.status(403).send({ error: { code: 'FORBIDDEN', message: 'Cannot disconnect Xero for another organisation' } });
+    }
+
+    try {
+      const result = await xeroService.disconnect({
+        organisationId: authOrgId,
+        connectionId: request.params.connectionId, // Optional: specific connection
+      });
+
+      return reply.status(200).send(result);
+    } catch (err: any) {
+      request.log.error({ err }, '[Xero] disconnect failed');
+      
+      if (err.message === 'Connection not found') {
+        return reply.status(404).send({
+          error: { code: 'NOT_FOUND', message: 'No Xero connection found for this organisation' },
+        });
+      }
+
+      return reply.status(500).send({
+        error: { code: 'DISCONNECT_FAILED', message: err.message || 'Failed to disconnect Xero' },
+      });
+    }
+  };
+
   syncConnectionHandler = async (
     request: FastifyRequest<{ Params: { connectionId: string }; Body: { scope?: string; triggerSource?: string } }>,
     reply: FastifyReply
