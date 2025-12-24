@@ -760,7 +760,7 @@ export class XeroService {
     organisationId: string;
     connectionId?: string;
     deleteInvoices?: boolean;
-  }): Promise<{ success: true; deletedConnections: number; deletedLocationLinks: number; cancelledSyncRuns: number }> {
+  }): Promise<{ success: true; deletedConnections: number; deletedLocationLinks: number; deletedSyncRuns: number }> {
     const { organisationId, connectionId, deleteInvoices = false } = params;
 
     console.log(`[XeroService] Disconnecting Xero for org ${organisationId}${connectionId ? `, connection ${connectionId}` : ' (all connections)'}`);
@@ -784,19 +784,11 @@ export class XeroService {
 
     // Use a transaction to ensure consistency
     const result = await prisma.$transaction(async (tx) => {
-      // 1. Cancel any pending/in-progress sync runs
-      const cancelledRuns = await tx.xeroSyncRun.updateMany({
-        where: {
-          xeroConnectionId: { in: connectionIds },
-          status: { in: ['PENDING', 'IN_PROGRESS'] },
-        },
-        data: {
-          status: 'FAILED',
-          finishedAt: new Date(),
-          errorMessage: 'Cancelled: Xero integration disconnected',
-        },
+      // 1. Delete all sync runs for this connection (required due to FK constraint)
+      const deletedRuns = await tx.xeroSyncRun.deleteMany({
+        where: { xeroConnectionId: { in: connectionIds } },
       });
-      console.log(`[XeroService] Cancelled ${cancelledRuns.count} sync runs`);
+      console.log(`[XeroService] Deleted ${deletedRuns.count} sync runs`);
 
       // 2. Delete location links
       const deletedLinks = await tx.xeroLocationLink.deleteMany({
@@ -827,7 +819,7 @@ export class XeroService {
       return {
         deletedConnections: deletedConnections.count,
         deletedLocationLinks: deletedLinks.count,
-        cancelledSyncRuns: cancelledRuns.count,
+        deletedSyncRuns: deletedRuns.count,
       };
     });
 
