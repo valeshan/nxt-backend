@@ -1,5 +1,6 @@
 import { TextractClient, StartExpenseAnalysisCommand, GetExpenseAnalysisCommand, JobStatus } from '@aws-sdk/client-textract';
 import { config } from '../config/env';
+import { parseMoneyLike } from '../utils/numberParsing';
 
 const textractClient = new TextractClient({
   region: config.AWS_REGION,
@@ -39,6 +40,7 @@ export type ParsedInvoice = {
     unitPrice?: number;
     lineTotal?: number;
     productCode?: string;
+    numericParseWarnReasons?: string[];
   }>;
   confidenceScore: number;
 };
@@ -144,17 +146,28 @@ export const ocrService = {
         if (isNaN(date.getTime())) date = undefined;
     }
 
-    const parseMoney = (str?: string) => {
+    // Money parsing (locale-aware) - do NOT use for quantity parsing.
+    const parseMoneyField = (str: string | undefined, kind: Parameters<typeof parseMoneyLike>[1]['kind']) => {
+        if (!str) return { value: undefined as number | undefined, warnReasons: [] as string[] };
+        const r = parseMoneyLike(str, { kind });
+        if (r.value === null) {
+            const mapped = r.reason === 'INVALID_FORMAT' ? 'INVALID_MONEY_FORMAT' : r.reason;
+            return { value: undefined, warnReasons: mapped ? [mapped] : [] };
+        }
+        return { value: r.value, warnReasons: [] };
+    };
+
+    // Quantity parsing remains loose (can handle "8.42 KILO", "2 UNIT")
+    const parseQuantityLoose = (str?: string) => {
         if (!str) return undefined;
-        // Remove currency symbols and normalize
         const clean = str.replace(/[^0-9.-]/g, '');
         const val = parseFloat(clean);
         return isNaN(val) ? undefined : val;
     };
 
-    const total = parseMoney(totalStr);
-    const tax = parseMoney(taxStr);
-    const subtotal = parseMoney(subtotalStr);
+    const total = parseMoneyField(totalStr, 'OTHER').value;
+    const tax = parseMoneyField(taxStr, 'TAX').value;
+    const subtotal = parseMoneyField(subtotalStr, 'OTHER').value;
 
     // Average confidence of summary fields
     const confidences = summaryFields.map((f: any) => f.ValueDetection?.Confidence || 0);
@@ -181,16 +194,20 @@ export const ocrService = {
           extractUnitLabelFromText(rawDeliveredText) ??
           extractUnitLabelFromText(rawSizeText);
 
+        const unitPriceParsed = parseMoneyField(getLineField('UNIT_PRICE'), 'UNIT_PRICE');
+        const lineTotalParsed = parseMoneyField(getLineField('PRICE'), 'LINE_TOTAL');
+
         lineItems.push({
           description,
           rawQuantityText,
           rawDeliveredText,
           rawSizeText,
           unitLabel: extractedUnit,
-          quantity: parseMoney(rawQuantityText ?? rawDeliveredText),
-          unitPrice: parseMoney(getLineField('UNIT_PRICE')),
-          lineTotal: parseMoney(getLineField('PRICE')), // Usually 'PRICE' in Textract Expense
+          quantity: parseQuantityLoose(rawQuantityText ?? rawDeliveredText),
+          unitPrice: unitPriceParsed.value,
+          lineTotal: lineTotalParsed.value, // Usually 'PRICE' in Textract Expense
           productCode: getLineField('PRODUCT_CODE'),
+          numericParseWarnReasons: [...unitPriceParsed.warnReasons, ...lineTotalParsed.warnReasons],
         });
       }
     }

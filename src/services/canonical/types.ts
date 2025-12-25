@@ -12,6 +12,11 @@ export type CanonicalizedLineInput = {
   currencyCode?: string | null;
   adjustmentStatus?: AdjustmentStatus;
   confidenceScore?: number | null;
+  /**
+   * Optional parse warnings from upstream ingestion (e.g. OCR locale parsing).
+   * These are surfaced as canonical warnReasons for trust/analytics exclusion.
+   */
+  numericParseWarnReasons?: string[] | null;
 };
 
 export type CanonicalizedLineOutput = {

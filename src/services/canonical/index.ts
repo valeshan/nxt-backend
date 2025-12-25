@@ -39,6 +39,8 @@ export function canonicalizeLine(
 
   const adjustmentStatus = input.adjustmentStatus ?? AdjustmentStatus.NONE;
 
+  const numericParseWarnReasons = (input.numericParseWarnReasons || []).filter(Boolean);
+
   const { qualityStatus, warnReasons } = computeQualityStatus({
     quantity: qty,
     unitCategory,
@@ -47,7 +49,8 @@ export function canonicalizeLine(
     adjustmentStatus,
     currencyCode,
     headerCurrencyCode,
-    numericParseFailed: false,
+    numericParseFailed: numericParseWarnReasons.length > 0,
+    numericParseWarnReasons,
   });
 
   return {

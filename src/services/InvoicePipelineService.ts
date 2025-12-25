@@ -129,6 +129,281 @@ function countDetectedWords(parsed: any): number {
 }
 
 export const invoicePipelineService = {
+  /**
+   * Line-item quality summary for trust + analytics inclusion (price monitoring).
+   *
+   * Definitions:
+   * - "included" lines are qualityStatus=OK (included in analytics)
+   * - "excluded" lines are qualityStatus=WARN (currently excluded from analytics)
+   * - Spend is "merchandise spend only": sum(max(0, lineTotal)) using integer cents
+   */
+  async computeLineItemQualitySummary(legacyInvoiceId: string) {
+      const prismaAny = prisma as any;
+
+      const canonical = await prismaAny.canonicalInvoice.findUnique({
+          where: { legacyInvoiceId },
+          select: {
+              lineItems: {
+                  select: {
+                      qualityStatus: true,
+                      warnReasons: true,
+                      lineTotal: true,
+                  },
+              },
+          },
+      });
+
+      if (!canonical) return null;
+
+      const lines = (canonical.lineItems || []) as Array<{
+          qualityStatus: 'OK' | 'WARN';
+          warnReasons: string[] | null;
+          lineTotal: any;
+      }>;
+
+      const toNumber = (v: any): number => {
+          if (v === null || v === undefined) return 0;
+          if (typeof v === 'number') return v;
+          if (typeof v?.toNumber === 'function') return v.toNumber();
+          return Number(v);
+      };
+
+      const toMerchCents = (lineTotal: any): number => {
+          const n = toNumber(lineTotal);
+          if (!Number.isFinite(n)) return 0;
+          return Math.max(0, Math.round(n * 100));
+      };
+
+      const totalCount = lines.length;
+      const includedCount = lines.filter((l) => l.qualityStatus === 'OK').length;
+      const excludedLines = lines.filter((l) => l.qualityStatus === 'WARN');
+      const excludedCount = excludedLines.length;
+
+      const excludedReasons = Array.from(
+          new Set(excludedLines.flatMap((l) => l.warnReasons || []))
+      ).sort();
+
+      const totalSpendCents = lines.reduce((sum, l) => sum + toMerchCents(l.lineTotal), 0);
+      const excludedSpendCents = excludedLines.reduce((sum, l) => sum + toMerchCents(l.lineTotal), 0);
+
+      const totalSpend = totalSpendCents / 100;
+      const excludedSpend = excludedSpendCents / 100;
+      const excludedSpendPct =
+          totalSpendCents > 0 ? Math.round((excludedSpendCents / totalSpendCents) * 10000) / 100 : null; // percent, 2dp
+
+      return {
+          totalCount,
+          includedCount,
+          excludedCount,
+          excludedReasons,
+          totalSpend,
+          excludedSpend,
+          excludedSpendPct,
+      };
+  },
+
+  /**
+   * Per-line issues for the Invoice Review Modal.
+   *
+   * Purpose: allow the UI to highlight which specific invoice line item(s) are excluded from analytics.
+   *
+   * Mapping strategy:
+   * - For MANUAL canonical lines, sourceLineRef encodes the legacy invoiceLineItem id (stable mapping).
+   * - For OCR canonical lines, sourceLineRef encodes an index "line:{idx}" scoped to invoiceFileId. We map idx
+   *   to the legacy invoice line items ordered by createdAt ASC (creation order from OCR ingestion).
+   */
+  async computeLineItemQualityIssues(params: { legacyInvoiceId: string; invoiceFileId?: string | null }) {
+      const prismaAny = prisma as any;
+
+      const canonical = await prismaAny.canonicalInvoice.findUnique({
+          where: { legacyInvoiceId: params.legacyInvoiceId },
+          select: {
+              lineItems: {
+                  select: {
+                      qualityStatus: true,
+                      warnReasons: true,
+                      sourceLineRef: true,
+                  },
+              },
+          },
+      });
+
+      if (!canonical) return null;
+
+      const excludedCanonicalLines = (canonical.lineItems || []).filter(
+          (l: any) => l?.qualityStatus === 'WARN'
+      ) as Array<{ warnReasons: string[] | null; sourceLineRef: string | null }>;
+
+      if (excludedCanonicalLines.length === 0) return [];
+
+      // Fetch legacy line items in a stable order for OCR idx mapping.
+      const legacyInvoice = await prismaAny.invoice.findUnique({
+          where: { id: params.legacyInvoiceId },
+          select: {
+              lineItems: {
+                  orderBy: { createdAt: 'asc' },
+                  select: { id: true },
+              },
+          },
+      });
+
+      const legacyLineItems = (legacyInvoice?.lineItems || []) as Array<{ id: string }>;
+
+      const issues: Array<{ invoiceLineItemId: string; reasons: string[] }> = [];
+
+      for (const l of excludedCanonicalLines) {
+          const reasons = Array.from(new Set((l.warnReasons || []).filter(Boolean)));
+          const ref = l.sourceLineRef || '';
+
+          // MANUAL path: invoiceId:{invoiceId}:manual:{invoiceLineItemId}
+          const manualMatch = ref.match(/:manual:([^:]+)$/);
+          if (manualMatch?.[1]) {
+              issues.push({ invoiceLineItemId: manualMatch[1], reasons });
+              continue;
+          }
+
+          // OCR path: invoiceFileId:{fileId}:line:{idx}
+          const idxMatch = ref.match(/:line:(\d+)$/);
+          const idx = idxMatch ? Number(idxMatch[1]) : NaN;
+          if (
+              Number.isFinite(idx) &&
+              idx >= 0 &&
+              params.invoiceFileId &&
+              ref.startsWith(`invoiceFileId:${params.invoiceFileId}:line:`)
+          ) {
+              const legacyLine = legacyLineItems[idx];
+              if (legacyLine?.id) {
+                  issues.push({ invoiceLineItemId: legacyLine.id, reasons });
+              }
+          }
+      }
+
+      return issues;
+  },
+
+  /**
+   * Compute reconciliation and analytics exclusion summary for a legacy (OCR/MANUAL) invoice
+   * using canonical line items.
+   *
+   * Notes:
+   * - excludedCount represents lines excluded from analytics (currently equivalent to qualityStatus=WARN)
+   * - all monetary math is done server-side and summed in integer cents to reduce float drift
+   */
+  async computeReconciliationSummary(params: {
+      invoiceId: string;
+      documentSubtotal: number | null | undefined;
+      documentTotal: number | null | undefined;
+      documentTax: number | null | undefined;
+  }) {
+      const prismaAny = prisma as any;
+
+      // Only select the minimal fields required for the summary (performance + payload).
+      const canonical = await prismaAny.canonicalInvoice.findUnique({
+          where: { legacyInvoiceId: params.invoiceId },
+          select: {
+              lineItems: {
+                  select: {
+                      qualityStatus: true,
+                      warnReasons: true,
+                      lineTotal: true,
+                  }
+              }
+          }
+      });
+
+      if (!canonical) return null;
+
+      const lines = (canonical.lineItems || []) as Array<{
+          qualityStatus: 'OK' | 'WARN';
+          warnReasons: string[] | null;
+          lineTotal: any;
+      }>;
+
+      const totalCount = lines.length;
+      const warnLines = lines.filter((l) => l.qualityStatus === 'WARN');
+
+      // excludedCount = lines excluded from analytics (currently = WARN qualityStatus)
+      const excludedCount = warnLines.length;
+
+      // Guard null warnReasons, sort for stable UI
+      const excludedReasons = Array.from(
+          new Set(warnLines.flatMap((l) => l.warnReasons || []))
+      ).sort();
+
+      const toNumber = (v: any): number => {
+          if (v === null || v === undefined) return 0;
+          if (typeof v === 'number') return v;
+          if (typeof v?.toNumber === 'function') return v.toNumber();
+          return Number(v);
+      };
+
+      // Sum in integer cents to avoid floating point drift across many lines.
+      const sumCents = lines.reduce((sum, l) => sum + Math.round(toNumber(l.lineTotal) * 100), 0);
+      const sumLineTotal = sumCents / 100;
+
+      // Inputs (document-level fields):
+      const documentSubtotalMissing =
+          params.documentSubtotal === null || params.documentSubtotal === undefined;
+      const documentTotalMissing =
+          params.documentTotal === null || params.documentTotal === undefined;
+
+      const docSubtotal = documentSubtotalMissing ? null : toNumber(params.documentSubtotal);
+      const docTotal = documentTotalMissing ? null : toNumber(params.documentTotal);
+      const docTax =
+          params.documentTax === null || params.documentTax === undefined ? null : toNumber(params.documentTax);
+
+      // Adjustments awareness: taxes/discounts/fees are not products and must not invalidate subtotal parity.
+      // We treat "adjustmentsPresent" as:
+      // - explicit tax > 0
+      // - OR subtotal and total differ by > 1 cent
+      const adjustmentsValue =
+          docSubtotal !== null && docTotal !== null ? Math.round((docTotal - docSubtotal) * 100) / 100 : null;
+      const adjustmentsPresent =
+          (docTax !== null && Math.abs(docTax) > 0.01) ||
+          (adjustmentsValue !== null && Math.abs(adjustmentsValue) > 0.01);
+
+      // Primary reconciliation: line item sum vs document subtotal
+      let deltaSubtotalValue: number | null = null;
+      if (docSubtotal !== null) {
+          const docSubtotalCents = Math.round(docSubtotal * 100);
+          deltaSubtotalValue = (sumCents - docSubtotalCents) / 100;
+      }
+
+      let deltaSubtotalPct: number | null = null;
+      if (docSubtotal !== null && docSubtotal !== 0 && deltaSubtotalValue !== null) {
+          deltaSubtotalPct = Math.round((deltaSubtotalValue / docSubtotal) * 10000) / 100;
+      }
+
+      // Secondary/reference delta: line item sum vs document grand total (informational only)
+      let deltaTotalValue: number | null = null;
+      if (docTotal !== null) {
+          const docTotalCents = Math.round(docTotal * 100);
+          deltaTotalValue = (sumCents - docTotalCents) / 100;
+      }
+
+      let deltaTotalPct: number | null = null;
+      if (docTotal !== null && docTotal !== 0 && deltaTotalValue !== null) {
+          deltaTotalPct = Math.round((deltaTotalValue / docTotal) * 10000) / 100;
+      }
+
+      return {
+          totalCount,
+          excludedCount,
+          excludedReasons,
+          sumLineTotal,
+          documentSubtotal: docSubtotal,
+          documentTotal: docTotal,
+          documentTax: docTax,
+          adjustmentsPresent,
+          adjustmentsValue,
+          documentSubtotalMissing,
+          deltaSubtotalValue,
+          deltaSubtotalPct,
+          deltaTotalValue,
+          deltaTotalPct,
+      };
+  },
+
   async processPendingOcrJobs() {
       // 1. Find all files that are currently processing
       const processingFiles = await prisma.invoiceFile.findMany({
@@ -839,6 +1114,7 @@ export const invoicePipelineService = {
                            currencyCode: null,
                            headerCurrencyCode: canonical.currencyCode ?? headerCurrencyCode,
                            adjustmentStatus: 'NONE' as any,
+                           numericParseWarnReasons: (item as any).numericParseWarnReasons ?? [],
                          });
 
                          return {
@@ -966,9 +1242,28 @@ export const invoicePipelineService = {
             console.error('Error generating presigned URL', e);
           }
       }
+
+      // Canonical line-item quality summary (trust + analytics inclusion).
+      // If canonical is not ready/available yet, summary will be null and FE should HIDE the banner.
+      let lineItemQualitySummary = null;
+      if (file.invoice?.id) {
+          lineItemQualitySummary = await this.computeLineItemQualitySummary(file.invoice.id);
+      }
+
+      // Per-line issues for row-level highlighting in the Invoice Review Modal.
+      // If canonical is not ready/available yet, issues will be null (UI should treat as no row highlights).
+      let lineItemQualityIssues = null;
+      if (file.invoice?.id) {
+          lineItemQualityIssues = await this.computeLineItemQualityIssues({
+              legacyInvoiceId: file.invoice.id,
+              invoiceFileId: file.id,
+          });
+      }
       return {
           ...file,
           presignedUrl,
+          lineItemQualitySummary,
+          lineItemQualityIssues,
       };
   },
 

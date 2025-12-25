@@ -21,6 +21,7 @@ export type QualityInput = {
   currencyCode: string | null;
   headerCurrencyCode: string | null;
   numericParseFailed?: boolean;
+  numericParseWarnReasons?: string[] | null;
 };
 
 export function computeQualityStatus(input: QualityInput): { qualityStatus: QualityStatus; warnReasons: string[] } {
@@ -30,7 +31,11 @@ export function computeQualityStatus(input: QualityInput): { qualityStatus: Qual
   const lineTotal = input.lineTotal ?? null;
   const unitPrice = input.unitPrice ?? null;
 
-  if (input.numericParseFailed) warnReasons.push('FAILED_NUMERIC_PARSE');
+  const parseWarns = (input.numericParseWarnReasons || []).filter(Boolean);
+  if (input.numericParseFailed || parseWarns.length > 0) warnReasons.push('FAILED_NUMERIC_PARSE');
+  for (const r of parseWarns) {
+    if (!warnReasons.includes(r)) warnReasons.push(r);
+  }
 
   if (qty !== null && qty <= 0) warnReasons.push('NON_POSITIVE_QUANTITY');
 
