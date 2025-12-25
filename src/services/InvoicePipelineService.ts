@@ -28,6 +28,7 @@ export class BulkActionError extends Error {
 }
 
 import { pusherService } from './pusherService';
+import { normalizeSupplierName } from '../utils/normalizeSupplierName';
 
 const DEFAULT_CURRENCY_CODE = 'AUD';
 
@@ -1491,10 +1492,15 @@ export const invoicePipelineService = {
       
       if (!invoice) {
         console.log(`[InvoicePipeline] verifyInvoice failed: Invoice ${invoiceId} not found`);
-        return null;
+        const err: any = new Error(`Invoice ${invoiceId} not found`);
+        err.statusCode = 404;
+        err.code = 'INVOICE_NOT_FOUND';
+        throw err;
       }
 
       // Run everything in a transaction to ensure atomicity
+      // CRITICAL: Validation + write occur in the same transaction to prevent race conditions
+      // where supplier could be deleted/modified between validation and invoice update
       return await prisma.$transaction(async (tx) => {
           // Fetch InvoiceFile fresh to avoid stale relation data
           let invoiceFile = null;
@@ -1506,9 +1512,54 @@ export const invoicePipelineService = {
           }
           let targetSupplierId = data.supplierId;
 
-          // 2. Resolve or Create Supplier if needed
+          // 2. Validate supplierId if provided (must exist and belong to org)
+          // NOTE: This validation happens inside the transaction, ensuring the supplier
+          // still belongs to the organisation when we write to Invoice.supplierId below
+          if (targetSupplierId) {
+              const supplier = await tx.supplier.findUnique({
+                  where: { id: targetSupplierId }
+              });
+
+              if (!supplier) {
+                  console.error('[InvoicePipeline] Invalid supplierId provided - supplier does not exist', {
+                      invoiceId,
+                      invoiceFileId: invoice.invoiceFileId,
+                      supplierId: targetSupplierId,
+                      organisationId: invoice.organisationId
+                  });
+                  const err: any = new Error(`Supplier ID ${targetSupplierId} does not exist.`);
+                  err.statusCode = 400;
+                  err.code = 'INVALID_SUPPLIER_ID';
+                  throw err;
+              }
+
+              // Check organisationId separately
+              if (supplier.organisationId !== invoice.organisationId) {
+                  console.error('[InvoicePipeline] Invalid supplierId provided - wrong organisation', {
+                      invoiceId,
+                      invoiceFileId: invoice.invoiceFileId,
+                      supplierId: targetSupplierId,
+                      supplierOrganisationId: supplier.organisationId,
+                      invoiceOrganisationId: invoice.organisationId
+                  });
+                  const err: any = new Error(`Supplier ID ${targetSupplierId} does not belong to this organisation.`);
+                  err.statusCode = 400;
+                  err.code = 'INVALID_SUPPLIER_ID';
+                  throw err;
+              }
+              
+              // Supplier is valid, use it
+              console.log('[InvoicePipeline] Using provided supplierId', {
+                  invoiceId,
+                  supplierId: targetSupplierId,
+                  supplierName: supplier.name
+              });
+          }
+
+          // 3. Resolve or Create Supplier if needed (only if supplierId was not provided or invalid)
           if (!targetSupplierId && data.supplierName) {
-              const normalizedName = data.supplierName.toLowerCase().trim();
+              // Use existing normalization utility (handles suffixes, punctuation, etc.)
+              const normalizedName = normalizeSupplierName(data.supplierName);
               
               // Check if exists
               const existingSupplier = await tx.supplier.findFirst({
@@ -1543,14 +1594,14 @@ export const invoicePipelineService = {
               }
           }
 
-          // 3. Delete All Existing Line Items
+          // 4. Delete All Existing Line Items
           // We replace them entirely with the verified list to ensure source of truth
           console.log(`[InvoicePipeline] Clearing existing line items for invoice ${invoiceId}...`);
           await tx.invoiceLineItem.deleteMany({
               where: { invoiceId: invoiceId }
           });
 
-          // 4. Create New Line Items (Normalized)
+          // 5. Create New Line Items (Normalized)
           if (data.items && data.items.length > 0) {
               console.log(`[InvoicePipeline] Creating ${data.items.length} verified line items...`);
               
@@ -1576,7 +1627,9 @@ export const invoicePipelineService = {
               });
           }
 
-          // 5. Update Invoice Header
+          // 6. Update Invoice Header
+          // NOTE: supplierId validation (step 2) and this write occur in the same transaction,
+          // ensuring the supplier still belongs to the organisation at write time
           const updatedInvoice = await tx.invoice.update({
               where: { id: invoiceId },
               data: {
@@ -1694,6 +1747,7 @@ export const invoicePipelineService = {
                   where: { id: invoice.invoiceFileId },
                   data: { 
                       reviewStatus: ReviewStatus.VERIFIED,
+                      verificationSource: VerificationSource.MANUAL,
                       // NOTE: Prisma client may be stale in some environments; keep this cast safe.
                       ...(shouldMarkAsManual && { processingStatus: 'MANUALLY_UPDATED' as any })
                   }
@@ -1753,7 +1807,48 @@ export const invoicePipelineService = {
           }
 
           console.log('[InvoicePipeline] verifyInvoice success', { invoiceId, supplierId: targetSupplierId });
-          return updatedInvoice;
+          
+          // After transaction completes, fetch enriched data
+          if (!invoice.invoiceFileId) {
+            // If no invoiceFile, return just the invoice (shouldn't happen but handle gracefully)
+            return {
+              invoice: updatedInvoice,
+              invoiceFile: null,
+              location: null,
+            };
+          }
+
+          const enrichedInvoiceFile = await prisma.invoiceFile.findUnique({
+              where: { id: invoice.invoiceFileId },
+              select: {
+                  id: true,
+                  reviewStatus: true,
+                  verificationSource: true,
+                  locationId: true,
+              }
+          });
+
+          if (!enrichedInvoiceFile) {
+            return {
+              invoice: updatedInvoice,
+              invoiceFile: null,
+              location: null,
+            };
+          }
+
+          const location = await prisma.location.findUnique({
+              where: { id: updatedInvoice.locationId },
+              select: {
+                  autoApproveCleanInvoices: true,
+                  hasSeenAutoApprovePrompt: true,
+              }
+          });
+
+          return {
+              invoice: updatedInvoice,
+              invoiceFile: enrichedInvoiceFile,
+              location: location || null,  // Graceful if location missing
+          };
       }, { timeout: 10000 });
   },
   

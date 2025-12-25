@@ -62,6 +62,32 @@ export const locationController = {
     return reply.send(result);
   },
 
+  async handleAutoApprovePrompt(
+    request: FastifyRequest<{ 
+      Params: { id: string }, 
+      Body: { enable: boolean } 
+    }>, 
+    reply: FastifyReply
+  ) {
+    const { id } = request.params;
+    const { enable } = request.body;
+    const userId = request.authContext.userId;
+    const organisationId = request.authContext.organisationId;
+    
+    if (!organisationId) {
+      return reply.status(401).send({ error: 'Unauthorized' });
+    }
+    
+    // Verify location belongs to org (uses existing guard)
+    const location = await getLocationIfOwned(id, organisationId);
+    if (!location) {
+      return reply.status(404).send({ error: 'Location not found' });
+    }
+    
+    const result = await locationService.handleAutoApprovePrompt(userId, id, enable);
+    return reply.send(result);
+  },
+
   async deleteLocationHandler(
     request: FastifyRequest<{ Params: { id: string } }>,
     reply: FastifyReply

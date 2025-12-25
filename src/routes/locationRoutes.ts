@@ -94,6 +94,21 @@ export default async function locationRoutes(fastify: FastifyInstance) {
     },
   }, locationController.update);
 
+  app.post('/locations/:id/auto-approve-prompt', {
+    schema: {
+      params: z.object({ id: z.string() }),
+      body: z.object({
+        enable: z.boolean(),
+      }),
+      response: {
+        200: z.object({
+          autoApproveCleanInvoices: z.boolean(),
+          hasSeenAutoApprovePrompt: z.boolean(),
+        }),
+      },
+    },
+  }, locationController.handleAutoApprovePrompt);
+
   app.delete('/locations/:id', {
     schema: {
       params: z.object({ id: z.string() }),

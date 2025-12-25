@@ -88,6 +88,7 @@ model Location {
 
   // Auto-approval of clean invoices (per-location feature flag)
   autoApproveCleanInvoices Boolean @default(false)
+  hasSeenAutoApprovePrompt Boolean @default(false)
 }
 
 model LocationAccountConfig {

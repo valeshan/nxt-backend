@@ -43,7 +43,22 @@ export default async function invoiceRoutes(fastify: FastifyInstance) {
                   productCode: z.string().nullable().optional()
               })).optional(),
               hasManuallyAddedItems: z.boolean().optional()
-          })
+          }),
+          response: {
+              200: z.object({
+                  invoice: z.any(), // Invoice type
+                  invoiceFile: z.object({
+                      id: z.string(),
+                      reviewStatus: z.string(),
+                      verificationSource: z.string().nullable(),
+                      locationId: z.string(),
+                  }).nullable(),
+                  location: z.object({
+                      autoApproveCleanInvoices: z.boolean(),
+                      hasSeenAutoApprovePrompt: z.boolean(),
+                  }).nullable(),
+              }),
+          },
       }
   }, invoiceController.verify);
 

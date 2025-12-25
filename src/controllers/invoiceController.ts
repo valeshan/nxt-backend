@@ -138,16 +138,42 @@ export const invoiceController = {
 
           return result;
       } catch (e: any) {
-          // Pass through specific error messages if possible
-          if (e.message === 'Invoice not found') {
-             return reply.status(404).send({ error: 'Invoice not found' });
+          // Standardize error handling: use statusCode and code, not message strings
+          const statusCode = e.statusCode || 500;
+          const errorCode = e.code || 'INTERNAL_ERROR';
+          const errorMessage = e.message || 'An error occurred while verifying the invoice';
+          
+          // Handle specific error codes
+          if (errorCode === 'INVALID_SUPPLIER_ID') {
+              return reply.status(400).send({ 
+                  error: {
+                      code: 'INVALID_SUPPLIER_ID',
+                      message: errorMessage
+                  }
+              });
           }
-          // Handle the validation error we added
-          if (e.message === "Supplier is required (either supplierId or supplierName)" || 
-              e.message === "At least one line item must be selected" ||
-              e.message.startsWith("Invalid line items")) {
-              return reply.status(400).send({ error: e.message });
+          
+          // Handle 404 errors (Invoice not found)
+          if (statusCode === 404 || errorCode === 'INVOICE_NOT_FOUND') {
+              return reply.status(404).send({ 
+                  error: {
+                      code: 'INVOICE_NOT_FOUND',
+                      message: errorMessage
+                  }
+              });
           }
+          
+          // Handle 400 errors (validation errors)
+          if (statusCode === 400) {
+              return reply.status(400).send({ 
+                  error: {
+                      code: errorCode,
+                      message: errorMessage
+                  }
+              });
+          }
+          
+          // Re-throw for global error handler to process
           throw e;
       }
   },

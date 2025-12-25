@@ -86,6 +86,35 @@ export const locationService = {
     return locationRepository.update(locationId, updateData);
   },
 
+  async handleAutoApprovePrompt(
+    userId: string, 
+    locationId: string, 
+    enable: boolean
+  ) {
+    const location = await locationRepository.findById(locationId);
+    if (!location) throw { statusCode: 404, message: 'Location not found' };
+
+    // Verify permissions
+    const membership = await userOrganisationRepository.findMembership(userId, location.organisationId);
+    if (!membership || (membership.role !== 'owner' && membership.role !== 'admin')) {
+      throw { statusCode: 403, message: 'Insufficient permissions' };
+    }
+
+    const updateData: any = {
+      hasSeenAutoApprovePrompt: true,  // Always set to true
+    };
+    
+    if (enable) {
+      updateData.autoApproveCleanInvoices = true;
+    }
+
+    const updated = await locationRepository.update(locationId, updateData);
+    return {
+      autoApproveCleanInvoices: updated.autoApproveCleanInvoices,
+      hasSeenAutoApprovePrompt: updated.hasSeenAutoApprovePrompt,
+    };
+  },
+
   async deleteLocation(params: { userId: string; organisationId: string; locationId: string }) {
     const { userId, organisationId, locationId } = params;
 
