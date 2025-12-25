@@ -80,6 +80,9 @@ model Location {
   // Segmentation for analytics
   industry  VenueIndustry?
   region    String?
+
+  // Auto-approval of clean invoices (per-location feature flag)
+  autoApproveCleanInvoices Boolean @default(false)
 }
 
 model LocationAccountConfig {
@@ -457,6 +460,11 @@ enum ReviewStatus {
   VERIFIED
 }
 
+enum VerificationSource {
+  MANUAL
+  AUTO
+}
+
 enum OcrFailureCategory {
   LOW_IMAGE_QUALITY
   BLURRY
@@ -497,6 +505,8 @@ model InvoiceFile {
   mimeType           String
   processingStatus   ProcessingStatus
   reviewStatus       ReviewStatus        @default(NONE)
+  verificationSource VerificationSource?
+  verifiedAt         DateTime?
   confidenceScore    Float?
   validationErrors   Json?
   ocrJobId           String? // Textract job reference
@@ -521,6 +531,8 @@ model InvoiceFile {
   @@index([organisationId, locationId])
   // - Batch upload grouping (used by upload session creation)
   @@index([uploadBatchId])
+  // - Auto-approval queries by location + verification status
+  @@index([locationId, reviewStatus])
 }
 
 model InvoiceOcrResult {

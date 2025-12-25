@@ -3,7 +3,7 @@ import { s3Service } from './S3Service';
 import { ocrService } from './OcrService';
 import { supplierResolutionService } from './SupplierResolutionService';
 import { imagePreprocessingService } from './ImagePreprocessingService';
-import { InvoiceSourceType, ProcessingStatus, ReviewStatus, SupplierSourceType, SupplierStatus, OcrFailureCategory } from '@prisma/client';
+import { InvoiceSourceType, ProcessingStatus, ReviewStatus, SupplierSourceType, SupplierStatus as PrismaSupplierStatus, OcrFailureCategory, VerificationSource } from '@prisma/client';
 import { randomUUID } from 'crypto';
 import { MANUAL_COGS_ACCOUNT_CODE } from '../config/constants';
 import { assertDateRangeOrThrow, assertWindowIfDeepPagination, getOffsetPaginationOrThrow, parseDateOrThrow } from '../utils/paginationGuards';
@@ -30,6 +30,107 @@ export class BulkActionError extends Error {
 import { pusherService } from './pusherService';
 
 const DEFAULT_CURRENCY_CODE = 'AUD';
+
+// ============================================================================
+// Auto-Approval Configuration & Types
+// ============================================================================
+
+/**
+ * Confidence threshold for auto-approval eligibility.
+ * Invoices with confidenceScore >= this value are considered high-confidence.
+ */
+const HIGH_CONFIDENCE_THRESHOLD = 90;
+
+/**
+ * Type for line-item quality summary used in auto-approval decisions.
+ */
+type LineItemQualitySummary = {
+  totalCount: number;
+  includedCount: number;
+  excludedCount: number;
+  excludedReasons: string[];
+  totalSpend: number;
+  excludedSpend: number;
+  excludedSpendPct: number | null;
+};
+
+/**
+ * Result of auto-approval eligibility check.
+ * Returns explicit reason codes for debugging and logging.
+ */
+type AutoApprovalResult =
+  | { eligible: true }
+  | { eligible: false; reason: string };
+
+/**
+ * Pure function to determine if an invoice is eligible for auto-approval.
+ * 
+ * @param invoiceFile - The invoice file record
+ * @param invoice - The invoice record (with total and supplier for security checks)
+ * @param lineItemQualitySummary - Quality summary from canonical line items
+ * @param locationAutoApproveEnabled - Whether the location has auto-approval enabled
+ * @returns Eligibility result with explicit reason if not eligible
+ */
+function isInvoiceAutoApprovable(
+  invoiceFile: { reviewStatus: ReviewStatus; processingStatus: ProcessingStatus; confidenceScore: number | null },
+  invoice: { total: any; supplier?: { status: PrismaSupplierStatus } | null },
+  lineItemQualitySummary: LineItemQualitySummary | null,
+  locationAutoApproveEnabled: boolean
+): AutoApprovalResult {
+  // 1. Feature flag must be enabled
+  if (!locationAutoApproveEnabled) {
+    return { eligible: false, reason: 'FEATURE_DISABLED' };
+  }
+
+  // 2. Already verified - skip (idempotent)
+  if (invoiceFile.reviewStatus === ReviewStatus.VERIFIED) {
+    return { eligible: false, reason: 'ALREADY_VERIFIED' };
+  }
+
+  // 3. Manual edits block auto-approval (manual always wins)
+  if (invoiceFile.processingStatus === ProcessingStatus.MANUALLY_UPDATED) {
+    return { eligible: false, reason: 'HAS_MANUAL_EDITS' };
+  }
+
+  // 4. Supplier must exist and be ACTIVE (prevents "Trojan Horse" attacks)
+  // New suppliers auto-created from OCR have PENDING_REVIEW status and must be
+  // manually verified before their invoices can be auto-approved.
+  if (!invoice.supplier) {
+    return { eligible: false, reason: 'NO_SUPPLIER' };
+  }
+  if (invoice.supplier.status !== PrismaSupplierStatus.ACTIVE) {
+    return { eligible: false, reason: 'SUPPLIER_NOT_ACTIVE' };
+  }
+
+  // 5. Must have quality data
+  if (!lineItemQualitySummary) {
+    return { eligible: false, reason: 'NO_QUALITY_DATA' };
+  }
+
+  // 6. Must have line items
+  if (lineItemQualitySummary.totalCount === 0) {
+    return { eligible: false, reason: 'NO_LINE_ITEMS' };
+  }
+
+  // 7. All line items must be included in analytics (excludedCount === 0)
+  if (lineItemQualitySummary.excludedCount > 0) {
+    return { eligible: false, reason: 'HAS_EXCLUDED_LINES' };
+  }
+
+  // 8. Confidence threshold check
+  const confidence = invoiceFile.confidenceScore ?? 0;
+  if (confidence < HIGH_CONFIDENCE_THRESHOLD) {
+    return { eligible: false, reason: 'LOW_CONFIDENCE' };
+  }
+
+  // 9. Credit note proxy - negative totals blocked until we have invoiceType
+  const total = invoice.total?.toNumber?.() ?? Number(invoice.total) ?? 0;
+  if (total < 0) {
+    return { eligible: false, reason: 'NEGATIVE_TOTAL' };
+  }
+
+  return { eligible: true };
+}
 
 /**
  * Classify OCR failure based on error, confidence, and text detection
@@ -440,6 +541,8 @@ export const invoicePipelineService = {
                       locationId: updated.locationId,
                       updatedAt: updated.updatedAt,
                       reviewStatus: updated.reviewStatus,
+                      verificationSource: updated.verificationSource ?? null,
+                      verifiedAt: updated.verifiedAt ?? null,
                       invoice: updated.invoice ?? null,
                       ocrFailureCategory: updated.ocrFailureCategory ?? null,
                       ocrFailureDetail: updated.ocrFailureDetail ?? null,
@@ -1185,12 +1288,21 @@ export const invoicePipelineService = {
                 });
                 if (res.count === 0) return this.enrichStatus(file);
 
+                // Fetch the updated file with relations for auto-approval check
                 const updatedFile = await prisma.invoiceFile.findUnique({
                   where: { id: file.id },
                   include: { invoice: { include: { lineItems: true, supplier: true } }, ocrResult: true }
                 });
-                 
-                 return this.enrichStatus(updatedFile);
+                
+                if (!updatedFile) {
+                  return this.enrichStatus(file);
+                }
+
+                // Auto-approval check runs exactly once here when OCR first completes
+                const outcome = await this.checkAndApplyAutoApproval(updatedFile);
+                
+                // Use the (possibly updated) file for enrichStatus to ensure fresh data in Pusher
+                return this.enrichStatus(outcome.updatedFile);
 
              } else if (result.JobStatus === 'FAILED') {
                   // Classify the failure
@@ -1231,6 +1343,84 @@ export const invoicePipelineService = {
 
     // Always return enriched status for any other state (PENDING, COMPLETE, VERIFIED, FAILED)
     return this.enrichStatus(file);
+  },
+
+  /**
+   * Check if an invoice is eligible for auto-approval and apply it if so.
+   * Must be called only once when OCR first transitions to OCR_COMPLETE.
+   * 
+   * Returns the (possibly updated) file with relations, ensuring no stale data flows to Pusher.
+   */
+  async checkAndApplyAutoApproval(
+    file: any // InvoiceFile with invoice relation
+  ): Promise<{ applied: boolean; reason?: string; updatedFile: any }> {
+    // Guard: invoice relation must exist
+    if (!file.invoice?.id) {
+      return { applied: false, reason: 'NO_INVOICE_RELATION', updatedFile: file };
+    }
+
+    // Fast path: check location flag first (before expensive quality computation)
+    const location = await prisma.location.findUnique({
+      where: { id: file.locationId },
+      select: { autoApproveCleanInvoices: true },
+    });
+    const enabled = location?.autoApproveCleanInvoices ?? false;
+    if (!enabled) {
+      return { applied: false, reason: 'FEATURE_DISABLED', updatedFile: file };
+    }
+
+    // Compute quality summary only if feature is enabled
+    const summary = await this.computeLineItemQualitySummary(file.invoice.id);
+
+    // Eligibility decision
+    const decision = isInvoiceAutoApprovable(file, file.invoice, summary, enabled);
+    if (!decision.eligible) {
+      console.log('[InvoicePipeline] Auto-approval skipped', {
+        invoiceFileId: file.id,
+        invoiceId: file.invoice.id,
+        locationId: file.locationId,
+        supplierId: file.invoice.supplier?.id ?? null,
+        supplierStatus: file.invoice.supplier?.status ?? null,
+        reason: decision.reason,
+      });
+      return { applied: false, reason: decision.reason, updatedFile: file };
+    }
+
+    // Apply updates transactionally (keep InvoiceFile and Invoice in sync)
+    const now = new Date();
+    await prisma.$transaction(async (tx) => {
+      await tx.invoiceFile.update({
+        where: { id: file.id },
+        data: {
+          reviewStatus: ReviewStatus.VERIFIED,
+          verificationSource: VerificationSource.AUTO,
+          verifiedAt: now,
+        },
+      });
+      await tx.invoice.update({
+        where: { id: file.invoice.id },
+        data: { isVerified: true },
+      });
+    });
+
+    console.log('[InvoicePipeline] Auto-approved invoice', {
+      event: 'invoice.auto_approved',
+      invoiceFileId: file.id,
+      invoiceId: file.invoice.id,
+      locationId: file.locationId,
+      supplierId: file.invoice.supplier?.id ?? null,
+      supplierName: file.invoice.supplier?.name ?? null,
+      confidenceScore: file.confidenceScore,
+      lineItemCount: summary?.totalCount ?? null,
+    });
+
+    // Re-fetch to avoid stale data flowing to enrichStatus and Pusher
+    const refreshed = await prisma.invoiceFile.findUnique({
+      where: { id: file.id },
+      include: { invoice: { include: { lineItems: true, supplier: true } }, ocrResult: true },
+    });
+
+    return { applied: true, updatedFile: refreshed ?? file };
   },
 
   async enrichStatus(file: any) {
@@ -1331,10 +1521,10 @@ export const invoicePipelineService = {
               if (existingSupplier) {
                   targetSupplierId = existingSupplier.id;
                   // Ensure supplier is active if it was pending review
-                  if (existingSupplier.status === SupplierStatus.PENDING_REVIEW) {
+                  if (existingSupplier.status === PrismaSupplierStatus.PENDING_REVIEW) {
                       await tx.supplier.update({
                           where: { id: existingSupplier.id },
-                          data: { status: SupplierStatus.ACTIVE }
+                          data: { status: PrismaSupplierStatus.ACTIVE }
                       });
                   }
               } else {
@@ -1345,7 +1535,7 @@ export const invoicePipelineService = {
                           name: data.supplierName.trim(),
                           normalizedName,
                           sourceType: SupplierSourceType.MANUAL,
-                          status: SupplierStatus.ACTIVE
+                          status: PrismaSupplierStatus.ACTIVE
                       }
                   });
                   targetSupplierId = newSupplier.id;

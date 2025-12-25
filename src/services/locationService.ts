@@ -67,7 +67,7 @@ export const locationService = {
     }));
   },
 
-  async updateLocation(userId: string, locationId: string, data: { name?: string; industry?: string | null; region?: string | null }) {
+  async updateLocation(userId: string, locationId: string, data: { name?: string; industry?: string | null; region?: string | null; autoApproveCleanInvoices?: boolean }) {
     const location = await locationRepository.findById(locationId);
     if (!location) throw { statusCode: 404, message: 'Location not found' };
 
@@ -81,6 +81,7 @@ export const locationService = {
     if (data.name !== undefined) updateData.name = data.name;
     if (data.industry !== undefined) updateData.industry = data.industry;
     if (data.region !== undefined) updateData.region = data.region ? data.region.trim() : null;
+    if (data.autoApproveCleanInvoices !== undefined) updateData.autoApproveCleanInvoices = data.autoApproveCleanInvoices;
 
     return locationRepository.update(locationId, updateData);
   },

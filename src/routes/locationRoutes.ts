@@ -46,6 +46,7 @@ export default async function locationRoutes(fastify: FastifyInstance) {
           forwardingStatus: z.enum(['NOT_CONFIGURED', 'PENDING_VERIFICATION', 'VERIFIED']).nullable(),
           industry: z.enum(['CAFE', 'RESTAURANT', 'BAR', 'BAKERY', 'RETAIL', 'HOTEL', 'CATERING', 'OTHER']).nullable(),
           region: z.string().nullable(),
+          autoApproveCleanInvoices: z.boolean(),
           integrations: z.array(z.object({
             type: z.string(),
             name: z.string(),
@@ -70,6 +71,7 @@ export default async function locationRoutes(fastify: FastifyInstance) {
           forwardingStatus: z.enum(['NOT_CONFIGURED', 'PENDING_VERIFICATION', 'VERIFIED']).nullable(),
           industry: z.enum(['CAFE', 'RESTAURANT', 'BAR', 'BAKERY', 'RETAIL', 'HOTEL', 'CATERING', 'OTHER']).nullable(),
           region: z.string().nullable(),
+          autoApproveCleanInvoices: z.boolean(),
           integrations: z.array(z.object({
             type: z.string(),
             name: z.string(),
@@ -87,6 +89,7 @@ export default async function locationRoutes(fastify: FastifyInstance) {
         name: z.string().min(1).optional(),
         industry: z.enum(['CAFE', 'RESTAURANT', 'BAR', 'BAKERY', 'RETAIL', 'HOTEL', 'CATERING', 'OTHER']).nullable().optional(),
         region: z.string().nullable().optional(),
+        autoApproveCleanInvoices: z.boolean().optional(),
       }),
     },
   }, locationController.update);
