@@ -443,6 +443,9 @@ export const invoicePipelineService = {
                       invoice: updated.invoice ?? null,
                       ocrFailureCategory: updated.ocrFailureCategory ?? null,
                       ocrFailureDetail: updated.ocrFailureDetail ?? null,
+                      // Canonicalization quality data (available after OCR_COMPLETE)
+                      lineItemQualitySummary: updated.lineItemQualitySummary ?? null,
+                      lineItemQualityIssues: updated.lineItemQualityIssues ?? null,
                   });
               }
           } catch (err) {
