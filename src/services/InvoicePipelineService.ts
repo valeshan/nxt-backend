@@ -1126,7 +1126,9 @@ export const invoicePipelineService = {
                                         unitPrice: item.unitPrice,
                                         lineTotal: item.lineTotal,
                                         productCode: item.productCode,
-                                        accountCode: MANUAL_COGS_ACCOUNT_CODE
+                                        accountCode: MANUAL_COGS_ACCOUNT_CODE,
+                                        confidenceScore: item.confidenceScore ?? null,
+                                        textWarnReasons: item.textWarnReasons ?? []
                                     }))
                                 }
                             }
@@ -1246,11 +1248,11 @@ export const invoicePipelineService = {
                            lineTotal: item.lineTotal ?? null,
                            taxAmount: null,
                            currencyCode: canon.currencyCode ?? canonical.currencyCode ?? headerCurrencyCode,
-                           adjustmentStatus: canon.adjustmentStatus,
-                           qualityStatus: canon.qualityStatus,
-                         warnReasons: canon.qualityWarnReasons ?? [],
-                           confidenceScore: parsed.confidenceScore ?? null,
-                         } as any;
+                          adjustmentStatus: canon.adjustmentStatus,
+                          qualityStatus: canon.qualityStatus,
+                        warnReasons: canon.qualityWarnReasons ?? [],
+                          confidenceScore: item.confidenceScore ?? parsed.confidenceScore ?? null,
+                        } as any;
                        });
 
                        if (canonicalLineData.length > 0) {
@@ -1480,8 +1482,20 @@ export const invoicePipelineService = {
   }) {
       console.log('[InvoicePipeline] verifyInvoice start', { invoiceId, ...data });
 
+      // Validate supplier requirement
       if (!data.supplierId && !data.supplierName) {
-          throw new Error("Supplier is required (either supplierId or supplierName)");
+          const err: any = new Error("Supplier is required (either supplierId or supplierName)");
+          err.statusCode = 400;
+          err.code = 'SUPPLIER_REQUIRED';
+          throw err;
+      }
+
+      // Validate supplierName is not empty/whitespace if provided
+      if (data.supplierName && !data.supplierName.trim()) {
+          const err: any = new Error("Supplier name cannot be empty");
+          err.statusCode = 400;
+          err.code = 'INVALID_SUPPLIER_NAME';
+          throw err;
       }
 
       // 1. Fetch Invoice
@@ -1601,31 +1615,67 @@ export const invoicePipelineService = {
               where: { invoiceId: invoiceId }
           });
 
-          // 5. Create New Line Items (Normalized)
-          if (data.items && data.items.length > 0) {
-              console.log(`[InvoicePipeline] Creating ${data.items.length} verified line items...`);
-              
-              const newItems = data.items.map(item => {
-                  // Data Normalization & Divide-by-Zero Guard
-                  const qty = Number(item.quantity) || 1; // Default to 1 if 0/missing
-                  const total = Number(item.lineTotal) || 0;
-                  const unitPrice = qty > 0 ? total / qty : 0;
-
-                  return {
-                      invoiceId: invoiceId,
-                      description: item.description ?? '',
-                      quantity: qty,
-                      lineTotal: total,
-                      unitPrice: unitPrice,
-                      productCode: item.productCode?.trim() || null,
-                      accountCode: MANUAL_COGS_ACCOUNT_CODE
-                  };
-              });
-
-              await tx.invoiceLineItem.createMany({
-                  data: newItems
-              });
+          // 5. Validate and Create New Line Items (Normalized)
+          if (!data.items || data.items.length === 0) {
+              const err: any = new Error("At least one line item is required");
+              err.statusCode = 400;
+              err.code = 'LINE_ITEMS_REQUIRED';
+              throw err;
           }
+
+          console.log(`[InvoicePipeline] Creating ${data.items.length} verified line items...`);
+          
+          // Validate required fields for each line item
+          const validationErrors: string[] = [];
+          data.items.forEach((item, index) => {
+              const trimmedDescription = String(item.description || '').trim();
+              const qty = item.quantity != null ? Number(item.quantity) : null;
+              const lineTotal = item.lineTotal != null ? Number(item.lineTotal) : null;
+
+              if (trimmedDescription.length === 0) {
+                  validationErrors.push(`Line item ${index + 1}: description is required`);
+              }
+              
+              if (qty === null || isNaN(qty) || qty <= 0) {
+                  validationErrors.push(`Line item ${index + 1}: quantity must be greater than 0`);
+              }
+              
+              if (lineTotal === null || isNaN(lineTotal)) {
+                  validationErrors.push(`Line item ${index + 1}: line total is required`);
+              }
+          });
+
+          if (validationErrors.length > 0) {
+              const err: any = new Error(`Line item validation failed: ${validationErrors.join('; ')}`);
+              err.statusCode = 400;
+              err.code = 'INVALID_LINE_ITEMS';
+              err.details = validationErrors;
+              throw err;
+          }
+          
+          const newItems = data.items.map(item => {
+              // Data Normalization & Divide-by-Zero Guard
+              const qty = Number(item.quantity) || 1; // Default to 1 if 0/missing (shouldn't happen after validation)
+              const total = Number(item.lineTotal) || 0; // Shouldn't happen after validation
+              const unitPrice = qty > 0 ? total / qty : 0;
+
+              return {
+                  invoiceId: invoiceId,
+                  description: (item.description ?? '').trim(),
+                  quantity: qty,
+                  lineTotal: total,
+                  unitPrice: unitPrice,
+                  productCode: item.productCode?.trim() || null,
+                  accountCode: MANUAL_COGS_ACCOUNT_CODE,
+                  // Explicit trust fields for manual items (null/empty since not from OCR)
+                  confidenceScore: null,
+                  textWarnReasons: []
+              };
+          });
+
+          await tx.invoiceLineItem.createMany({
+              data: newItems
+          });
 
           // 6. Update Invoice Header
           // NOTE: supplierId validation (step 2) and this write occur in the same transaction,
@@ -1842,6 +1892,51 @@ export const invoicePipelineService = {
                   autoApproveCleanInvoices: true,
                   hasSeenAutoApprovePrompt: true,
               }
+          });
+
+          // Observability: Compute trust stats for selected line items
+          const selectedItemIds = new Set(data.items?.map((item: any) => item.id) || []);
+          const selectedLineItems = updatedInvoice.lineItems.filter((li: any) => selectedItemIds.has(li.id));
+          
+          // Get line item quality issues for ambiguous/excluded detection
+          const lineItemQualityIssues = await this.computeLineItemQualityIssues({
+              legacyInvoiceId: updatedInvoice.id,
+              invoiceFileId: invoice.invoiceFileId,
+          });
+          const excludedById = new Map<string, string[]>();
+          for (const issue of lineItemQualityIssues || []) {
+              if (issue?.invoiceLineItemId) {
+                  excludedById.set(issue.invoiceLineItemId, issue.reasons || []);
+              }
+          }
+
+          const trustStats = {
+              totalSelected: selectedLineItems.length,
+              withTextWarnings: selectedLineItems.filter((li: any) => {
+                  const reasons = li.textWarnReasons || [];
+                  return reasons.length > 0;
+              }).length,
+              withLowConfidence: selectedLineItems.filter((li: any) => {
+                  const score = li.confidenceScore;
+                  return score !== null && score !== undefined && score < 80;
+              }).length,
+              withAmbiguous: selectedLineItems.filter((li: any) => {
+                  const reasons = excludedById.get(li.id) || [];
+                  return reasons.includes('AMBIGUOUS_DECIMAL_SEPARATOR');
+              }).length,
+              withExcluded: selectedLineItems.filter((li: any) => {
+                  const reasons = excludedById.get(li.id) || [];
+                  return reasons.some(r => r !== 'AMBIGUOUS_DECIMAL_SEPARATOR');
+              }).length,
+          };
+
+          console.log('[InvoicePipeline] verifyInvoice completed', {
+              event: 'invoice.verified',
+              invoiceId,
+              invoiceFileId: invoice.invoiceFileId,
+              locationId: updatedInvoice.locationId,
+              supplierId: targetSupplierId,
+              trustStats,
           });
 
           return {

@@ -584,6 +584,8 @@ model InvoiceLineItem {
   unitPrice   Decimal? @db.Decimal(19, 4)
   lineTotal   Decimal? @db.Decimal(19, 4)
   accountCode String?
+  confidenceScore Float?
+  textWarnReasons String[] @default([])
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt
   invoice     Invoice  @relation(fields: [invoiceId], references: [id], onDelete: Cascade)

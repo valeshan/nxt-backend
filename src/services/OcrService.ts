@@ -1,6 +1,7 @@
 import { TextractClient, StartExpenseAnalysisCommand, GetExpenseAnalysisCommand, JobStatus } from '@aws-sdk/client-textract';
 import { config } from '../config/env';
 import { parseMoneyLike } from '../utils/numberParsing';
+import { computeDescriptionWarnings } from '../utils/descriptionQuality';
 
 const textractClient = new TextractClient({
   region: config.AWS_REGION,
@@ -41,6 +42,16 @@ export type ParsedInvoice = {
     lineTotal?: number;
     productCode?: string;
     numericParseWarnReasons?: string[];
+    /**
+     * Per-line OCR confidence score (0-100), computed from individual field confidences.
+     * Null if insufficient fields available for reliable calculation.
+     */
+    confidenceScore?: number | null;
+    /**
+     * Text quality warnings indicating the description may be misread by OCR.
+     * Examples: DESCRIPTION_GIBBERISH, DESCRIPTION_LOW_ALPHA_RATIO, DESCRIPTION_NO_VOWELS_LONG_TOKEN
+     */
+    textWarnReasons?: string[];
   }>;
   confidenceScore: number;
 };
@@ -177,37 +188,75 @@ export const ocrService = {
 
     const lineItems: ParsedInvoice['lineItems'] = [];
 
+    // Helper to extract field with confidence
+    const getLineFieldWithConfidence = (fields: any[], type: string) => {
+      const field = fields.find((f: any) => f.Type?.Text === type);
+      const valueDetection = field?.ValueDetection;
+      return {
+        text: valueDetection?.Text ?? '',
+        confidence: typeof valueDetection?.Confidence === 'number'
+          ? valueDetection.Confidence
+          : null
+      };
+    };
+
     for (const group of lineItemGroups) {
       for (const item of group.LineItems || []) {
         const fields = item.LineItemExpenseFields || [];
-        const getLineField = (type: string) => fields.find((f: any) => f.Type?.Text === type)?.ValueDetection?.Text;
-
-        const description = getLineField('ITEM') || getLineField('EXPENSE_ROW') || '';
+        
+        // Extract description with confidence
+        const descItem = getLineFieldWithConfidence(fields, 'ITEM');
+        const descExpenseRow = getLineFieldWithConfidence(fields, 'EXPENSE_ROW');
+        const description = descItem.text || descExpenseRow.text;
         if (!description) continue;
 
-        const rawQuantityText = getLineField('QUANTITY');
-        const rawDeliveredText = getLineField('DELIVERED') || getLineField('DELIVERY');
-        const rawSizeText = getLineField('SIZE') || getLineField('PACK_SIZE');
+        // Extract other fields with confidence
+        const qty = getLineFieldWithConfidence(fields, 'QUANTITY');
+        const rawDelivered = getLineFieldWithConfidence(fields, 'DELIVERED') || getLineFieldWithConfidence(fields, 'DELIVERY');
+        const rawSize = getLineFieldWithConfidence(fields, 'SIZE') || getLineFieldWithConfidence(fields, 'PACK_SIZE');
+        const unitPrice = getLineFieldWithConfidence(fields, 'UNIT_PRICE');
+        const lineTotal = getLineFieldWithConfidence(fields, 'PRICE');
+        const productCode = getLineFieldWithConfidence(fields, 'PRODUCT_CODE');
 
         const extractedUnit =
-          extractUnitLabelFromText(rawQuantityText) ??
-          extractUnitLabelFromText(rawDeliveredText) ??
-          extractUnitLabelFromText(rawSizeText);
+          extractUnitLabelFromText(qty.text) ??
+          extractUnitLabelFromText(rawDelivered.text) ??
+          extractUnitLabelFromText(rawSize.text);
 
-        const unitPriceParsed = parseMoneyField(getLineField('UNIT_PRICE'), 'UNIT_PRICE');
-        const lineTotalParsed = parseMoneyField(getLineField('PRICE'), 'LINE_TOTAL');
+        const unitPriceParsed = parseMoneyField(unitPrice.text, 'UNIT_PRICE');
+        const lineTotalParsed = parseMoneyField(lineTotal.text, 'LINE_TOTAL');
+
+        // Compute per-line confidence (weight description 2x, require ≥2 fields)
+        const lineConfidenceInputs = [
+          descItem.confidence,
+          descItem.confidence, // Weight description 2x
+          qty.confidence,
+          unitPrice.confidence,
+          lineTotal.confidence,
+          productCode.confidence
+        ].filter((c): c is number => typeof c === 'number' && c > 0);
+
+        const lineConfidenceScore =
+          lineConfidenceInputs.length >= 2 // Require at least 2 fields
+            ? lineConfidenceInputs.reduce((a, b) => a + b, 0) / lineConfidenceInputs.length
+            : null;
+
+        // Compute text quality warnings
+        const textWarnReasons = computeDescriptionWarnings(description);
 
         lineItems.push({
           description,
-          rawQuantityText,
-          rawDeliveredText,
-          rawSizeText,
+          rawQuantityText: qty.text || undefined,
+          rawDeliveredText: rawDelivered.text || undefined,
+          rawSizeText: rawSize.text || undefined,
           unitLabel: extractedUnit,
-          quantity: parseQuantityLoose(rawQuantityText ?? rawDeliveredText),
+          quantity: parseQuantityLoose(qty.text ?? rawDelivered.text),
           unitPrice: unitPriceParsed.value,
           lineTotal: lineTotalParsed.value, // Usually 'PRICE' in Textract Expense
-          productCode: getLineField('PRODUCT_CODE'),
+          productCode: productCode.text || undefined,
           numericParseWarnReasons: [...unitPriceParsed.warnReasons, ...lineTotalParsed.warnReasons],
+          confidenceScore: lineConfidenceScore ?? null,
+          textWarnReasons: textWarnReasons.length > 0 ? textWarnReasons : undefined,
         });
       }
     }
