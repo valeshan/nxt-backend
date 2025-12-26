@@ -6,6 +6,7 @@
   "scripts": {
     "dev": "tsx watch src/server.ts",
     "build": "npx prisma generate && tsc -p tsconfig.build.json",
+    "postbuild": "node scripts/postbuild-copy-resources.js",
     "start": "node dist/src/server.js",
     "pretest": "npx prisma generate",
     "test": "vitest run",
@@ -49,7 +50,8 @@
     "pusher": "^5.2.0",
     "sharp": "^0.33.2",
     "xero-node": "^13.3.0",
-    "zod": "^3.22.4"
+    "zod": "^3.22.4",
+    "nspell": "^2.1.5"
   },
   "devDependencies": {
     "@types/bcrypt": "^6.0.0",
@@ -57,10 +59,12 @@
     "@types/jsonwebtoken": "^9.0.6",
     "@types/node": "^20.11.24",
     "@types/node-cron": "^3.0.11",
+    "@types/nspell": "^2.1.6",
     "@typescript-eslint/eslint-plugin": "^7.1.0",
     "@typescript-eslint/parser": "^7.1.0",
     "dotenv": "^17.2.3",
     "eslint": "^8.57.0",
+    "nspell": "^2.1.5",
     "prettier": "^3.2.5",
     "prisma": "^5.10.2",
     "supertest": "^6.3.4",

@@ -10,7 +10,7 @@ import { supplierInsightsService } from '../services/supplierInsightsService';
 const xeroSyncService = new XeroSyncService();
 
 export class DiagnosticsController {
-  private validateAccess(request: FastifyRequest) {
+  validateAccess(request: FastifyRequest) {
     // 1. Check Feature Flag
     if (config.ENABLE_DIAGNOSTICS !== 'true') {
       const error: any = new Error('Not found');

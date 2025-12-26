@@ -1916,6 +1916,10 @@ export const invoicePipelineService = {
                   const reasons = li.textWarnReasons || [];
                   return reasons.length > 0;
               }).length,
+              withPossibleTypo: selectedLineItems.filter((li: any) => {
+                  const reasons = li.textWarnReasons || [];
+                  return reasons.includes('DESCRIPTION_POSSIBLE_TYPO');
+              }).length,
               withLowConfidence: selectedLineItems.filter((li: any) => {
                   const score = li.confidenceScore;
                   return score !== null && score !== undefined && score < 80;
@@ -1930,6 +1934,10 @@ export const invoicePipelineService = {
               }).length,
           };
 
+          // Get spellcheck status (lazy import to avoid circular dependencies)
+          const { spellCheckService } = await import('../utils/spellcheck.js');
+          const spellcheckStatus = spellCheckService.getStatus();
+
           console.log('[InvoicePipeline] verifyInvoice completed', {
               event: 'invoice.verified',
               invoiceId,
@@ -1937,6 +1945,8 @@ export const invoicePipelineService = {
               locationId: updatedInvoice.locationId,
               supplierId: targetSupplierId,
               trustStats,
+              spellcheckStatus: spellcheckStatus.status,
+              ...(spellcheckStatus.status === 'disabled' && { spellcheckDisabledReason: spellcheckStatus.reason }),
           });
 
           return {

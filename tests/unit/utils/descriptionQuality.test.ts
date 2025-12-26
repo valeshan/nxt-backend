@@ -1,7 +1,12 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, beforeAll } from 'vitest';
 import { computeDescriptionWarnings } from '../../../src/utils/descriptionQuality';
 
 describe('computeDescriptionWarnings', () => {
+  // Initialize spellcheck service once for all tests
+  beforeAll(async () => {
+    const { spellCheckService } = await import('../../../src/utils/spellcheck.js');
+    await spellCheckService.initialize();
+  });
   describe('Normal descriptions (no warnings)', () => {
     it('should return empty array for "Frozen Brontosaurus Ribs"', () => {
       const warnings = computeDescriptionWarnings('Frozen Brontosaurus Ribs');
@@ -25,12 +30,11 @@ describe('computeDescriptionWarnings', () => {
   });
 
   describe('DESCRIPTION_NO_VOWELS_LONG_TOKEN', () => {
-    it('should flag "Frogen prontosaurvi RDS"', () => {
+    it('should flag "Frogen prontosaurvi RDS" (triggers POSSIBLE_TYPO, not NO_VOWELS)', () => {
       const warnings = computeDescriptionWarnings('Frogen prontosaurvi RDS');
-      // This text triggers CONSONANT_CLUSTER, not NO_VOWELS_LONG_TOKEN
-      // (all tokens have vowels, and RDS is too short)
-      expect(warnings.length).toBeGreaterThan(0);
-      expect(warnings).toContain('DESCRIPTION_CONSONANT_CLUSTER');
+      // This text triggers DESCRIPTION_POSSIBLE_TYPO (spellcheck catches the typos)
+      // It does NOT trigger NO_VOWELS_LONG_TOKEN because all tokens have vowels
+      expect(warnings).toContain('DESCRIPTION_POSSIBLE_TYPO');
     });
 
     it('should flag "prntsrvs" (long token without vowels)', () => {
@@ -79,10 +83,12 @@ describe('computeDescriptionWarnings', () => {
   });
 
   describe('DESCRIPTION_GIBBERISH', () => {
-    it('should flag "Frogen prontosaurvi RDS" as gibberish (when combined with other warnings)', () => {
+    it('should flag "Frogen prontosaurvi RDS" (triggers POSSIBLE_TYPO, not GIBBERISH)', () => {
       const warnings = computeDescriptionWarnings('Frogen prontosaurvi RDS');
-      // Should have multiple warnings, and gibberish should be included if pattern is strong
-      expect(warnings.length).toBeGreaterThan(0);
+      // This text triggers DESCRIPTION_POSSIBLE_TYPO (spellcheck catches the typos)
+      // GIBBERISH only triggers if base warnings exist AND looksGibberish() is true
+      // Since spellcheck catches it first, GIBBERISH may not trigger
+      expect(warnings).toContain('DESCRIPTION_POSSIBLE_TYPO');
     });
 
     it('should flag text with multiple unusual patterns', () => {
@@ -108,18 +114,33 @@ describe('computeDescriptionWarnings', () => {
     });
   });
 
-  describe('DESCRIPTION_CONSONANT_CLUSTER', () => {
-    it('should flag "prontosaurvi" (OCR misread of "Brontosaurus")', () => {
-      const warnings = computeDescriptionWarnings('Frogen prontosaurvi RDS');
-      expect(warnings).toContain('DESCRIPTION_CONSONANT_CLUSTER');
+  describe('DESCRIPTION_POSSIBLE_TYPO', () => {
+    // Initialize spellcheck service for tests (will use actual dictionaries if available)
+    beforeEach(async () => {
+      const { spellCheckService } = await import('../../../src/utils/spellcheck.js');
+      await spellCheckService.initialize();
     });
 
-    it('should NOT flag normal long product words', () => {
-      expect(computeDescriptionWarnings('Prosciutto di Parma')).not.toContain('DESCRIPTION_CONSONANT_CLUSTER');
-      expect(computeDescriptionWarnings('Mozzarella di Bufala')).not.toContain('DESCRIPTION_CONSONANT_CLUSTER');
-      expect(computeDescriptionWarnings('Cappuccino')).not.toContain('DESCRIPTION_CONSONANT_CLUSTER');
-      expect(computeDescriptionWarnings('Macchiato')).not.toContain('DESCRIPTION_CONSONANT_CLUSTER');
-      expect(computeDescriptionWarnings('Bruschetta')).not.toContain('DESCRIPTION_CONSONANT_CLUSTER');
+    it('should flag "Frogen prontosaurvi RDS" (OCR misread)', () => {
+      const warnings = computeDescriptionWarnings('Frogen prontosaurvi RDS');
+      // Should flag as possible typo (unknown words: Frogen, prontosaurvi)
+      expect(warnings).toContain('DESCRIPTION_POSSIBLE_TYPO');
+    });
+
+    it('should NOT flag "Transportation & Logistics" (known words)', () => {
+      const warnings = computeDescriptionWarnings('Transportation & Logistics');
+      expect(warnings).not.toContain('DESCRIPTION_POSSIBLE_TYPO');
+    });
+
+    it('should NOT flag "Heirloom Carrots" (anchor word exists)', () => {
+      const warnings = computeDescriptionWarnings('Heirloom Carrots');
+      // If "Carrots" is known (anchor), ratio = 0.5, should not flag with anchor rule
+      expect(warnings).not.toContain('DESCRIPTION_POSSIBLE_TYPO');
+    });
+
+    it('should NOT flag codes/units/acronyms', () => {
+      const warnings = computeDescriptionWarnings('12x500g RDS GST 500ml');
+      expect(warnings).not.toContain('DESCRIPTION_POSSIBLE_TYPO');
     });
 
     it('should NOT flag edge case hospo words with consonant clusters', () => {
@@ -136,9 +157,9 @@ describe('computeDescriptionWarnings', () => {
     it('should flag "Frogen prontosaurvi RDS" (misread "Frozen Brontosaurus Ribs")', () => {
       const warnings = computeDescriptionWarnings('Frogen prontosaurvi RDS');
       expect(warnings.length).toBeGreaterThan(0);
-      // Should catch at least one of: CONSONANT_CLUSTER, NO_VOWELS_LONG_TOKEN, LOW_ALPHA_RATIO, or OCR_NOISE
+      // Should catch at least one of: POSSIBLE_TYPO, NO_VOWELS_LONG_TOKEN, LOW_ALPHA_RATIO, or OCR_NOISE
       const hasRelevantWarning = warnings.some(w => 
-        w === 'DESCRIPTION_CONSONANT_CLUSTER' ||
+        w === 'DESCRIPTION_POSSIBLE_TYPO' ||
         w === 'DESCRIPTION_NO_VOWELS_LONG_TOKEN' ||
         w === 'DESCRIPTION_LOW_ALPHA_RATIO' ||
         w === 'DESCRIPTION_OCR_NOISE'

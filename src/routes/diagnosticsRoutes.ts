@@ -100,6 +100,32 @@ export default async function diagnosticsRoutes(fastify: FastifyInstance) {
       },
       diagnosticsController.triggerSync
     );
+
+    typedApp.get(
+      '/spellcheck-status',
+      {
+        schema: {
+          response: {
+            200: z.object({
+              status: z.enum(['uninitialized', 'ready', 'disabled']),
+              reason: z.string().optional(),
+              dictionariesLoaded: z.array(z.string()),
+              allowlistsLoaded: z.array(z.string()),
+              initializedAt: z.string().datetime().optional(),
+            }),
+          },
+        },
+      },
+      async (request, reply) => {
+        diagnosticsController.validateAccess(request);
+        const { spellCheckService } = await import('../utils/spellcheck.js');
+        const status = spellCheckService.getStatus();
+        return reply.send({
+          ...status,
+          initializedAt: status.initializedAt?.toISOString(),
+        });
+      }
+    );
   });
 }
 

@@ -7,6 +7,7 @@ import prisma from './infrastructure/prismaClient';
 import { closeInboundQueue, setupInboundWorker } from './services/InboundQueueService';
 import { closeAdminQueue, setupAdminWorker } from './services/AdminProductStatsQueueService';
 import { closeRedisClients, getRedisClient, pingWithTimeout } from './infrastructure/redis';
+import { spellCheckService } from './utils/spellcheck';
 import os from 'os';
 
 // Initialize Sentry before anything else
@@ -72,6 +73,35 @@ const start = async () => {
   try {
     // Run startup cleanup (Force reset all IN_PROGRESS)
     await cleanupStuckSyncs({ startup: true });
+
+    // Initialize spellcheck service (warm-up dictionaries)
+    try {
+      await spellCheckService.initialize();
+      const status = spellCheckService.getStatus();
+      
+      if (config.NODE_ENV === 'production' && status.status === 'disabled') {
+        // Emit structured error log event for production monitoring
+        app.log.error({
+          event: 'spellcheck.disabled.production',
+          reason: status.reason,
+          dictionariesLoaded: status.dictionariesLoaded,
+          allowlistsLoaded: status.allowlistsLoaded,
+          guidance: 'Run: tsx scripts/download-hunspell-dicts.ts',
+        }, 'Spellcheck disabled in production - typo detection unavailable');
+      } else {
+        app.log.info({
+          event: 'spellcheck.initialized',
+          status: status.status,
+          dictionariesLoaded: status.dictionariesLoaded,
+          allowlistsLoaded: status.allowlistsLoaded,
+        }, `Spellcheck ${status.status === 'ready' ? '✅ READY' : '⚠️ DISABLED'}`);
+      }
+    } catch (err: any) {
+      app.log.error({
+        event: 'spellcheck.init.error',
+        error: err.message,
+      }, `Spellcheck initialization failed: ${err.message}`);
+    }
 
     // In production, verify Redis connectivity BEFORE binding the HTTP listener.
     // (Fail-fast, but with short timeout and one retry for cold-start networking blips.)

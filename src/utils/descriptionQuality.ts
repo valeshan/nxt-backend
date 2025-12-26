@@ -10,29 +10,16 @@
  * - "prntsrvs" (no vowels in long token)
  */
 
+import { spellCheckService } from './spellcheck';
+
 export type DescriptionWarningReason =
   | 'DESCRIPTION_LOW_ALPHA_RATIO'
   | 'DESCRIPTION_NO_VOWELS_LONG_TOKEN'
   | 'DESCRIPTION_OCR_NOISE'
   | 'DESCRIPTION_GIBBERISH'
-  | 'DESCRIPTION_CONSONANT_CLUSTER';
+  | 'DESCRIPTION_POSSIBLE_TYPO';
 
 const VOWELS = new Set(['a', 'e', 'i', 'o', 'u', 'A', 'E', 'I', 'O', 'U']);
-
-// Whitelist of legitimate words that might otherwise be flagged as OCR garbage
-// These are common product names that have similar patterns to OCR misreads
-const LEGITIMATE_WORD_WHITELIST = new Set([
-  'prosciutto',
-  'prosciuttone',
-  'stracciatella',
-  'mozzarella',
-  'cappuccino',
-  'macchiato',
-  'bruschetta',
-  'gnocchi',
-  'pappardelle',
-  'tagliatelle',
-]);
 
 /**
  * Checks if a token has vowels (case-insensitive).
@@ -60,78 +47,7 @@ function vowelRatio(token: string): number {
   return vowels / letters.length;
 }
 
-/**
- * Computes maximum consecutive consonants in a token.
- */
-function maxConsecutiveConsonants(token: string): number {
-  const letters = token.replace(/[^a-z]/gi, '');
-  const consonant = /[bcdfghjklmnpqrstvwxyz]/i;
-  let max = 0;
-  let cur = 0;
-  for (const ch of letters) {
-    if (consonant.test(ch)) {
-      cur++;
-      max = Math.max(max, cur);
-    } else {
-      cur = 0;
-    }
-  }
-  return max;
-}
 
-/**
- * Checks if a token looks like OCR word garbage.
- * Targets OCR misreads like "prontosaurvi" without flagging normal words.
- */
-function looksLikeOcrWordGarbage(token: string): boolean {
-  const t = token.trim();
-  if (t.length < 8) return false;
-  
-  const maxCons = maxConsecutiveConsonants(t);
-  const vr = vowelRatio(t);
-  
-  // Very strong signal: 4+ consecutive consonants (rare in real product words)
-  if (maxCons >= 4) return true;
-  
-  // Medium signal: only when token is long + low vowels
-  if (maxCons >= 3 && t.length >= 10 && vr <= 0.25) return true;
-  
-  // NEW: Catch long tokens with moderate vowel ratio that have multiple consonant clusters
-  // Examples: "prontosaurvi" (12 chars, vr ~0.42, maxCons=2, but has multiple clusters: pr, nt, rv)
-  if (t.length >= 10 && vr < 0.50) {
-    // Count consonant clusters (2+ consecutive consonants)
-    const consonant = /[bcdfghjklmnpqrstvwxyz]/i;
-    const letters = t.replace(/[^a-z]/gi, '');
-    let clusterCount = 0;
-    let consecutiveConsonants = 0;
-    
-    for (const ch of letters) {
-      if (consonant.test(ch)) {
-        consecutiveConsonants++;
-        // Count when we hit 2 consecutive consonants (a cluster)
-        if (consecutiveConsonants === 2) {
-          clusterCount++;
-        }
-      } else {
-        consecutiveConsonants = 0;
-      }
-    }
-    
-    // Flag if has 3+ consonant clusters AND vowel ratio is in a narrow range (0.38-0.45)
-    // This catches "prontosaurvi" (vr=0.42) but we'll gate the actual warning behind base warnings
-    // to avoid false positives on legitimate words
-    if (clusterCount >= 3 && vr >= 0.38 && vr <= 0.45) {
-      // Additional check: require max consecutive consonants to be 2 (not 3+)
-      // This helps distinguish OCR garbage from legitimate words with natural consonant clusters
-      if (maxCons <= 2) return true;
-    }
-    
-    // Also catch very low vowel ratio with 3+ clusters (more conservative)
-    if (clusterCount >= 3 && vr < 0.35) return true;
-  }
-  
-  return false;
-}
 
 /**
  * Checks if text contains repeated odd characters that suggest OCR noise.
@@ -224,65 +140,53 @@ export function computeDescriptionWarnings(description: string): DescriptionWarn
     warnings.push('DESCRIPTION_GIBBERISH');
   }
   
-  // ✅ Consonant-cluster / OCR-garbage detection
-  // Strategy: Allow strong patterns (3+ clusters with moderate vowel ratio) to trigger independently
-  // This catches "prontosaurvi" even without other warnings.
-  // Weaker patterns are still gated behind base warnings to avoid false positives on "Transportation"
-  const hasBaseWarning = warnings.some(w =>
-    w === 'DESCRIPTION_LOW_ALPHA_RATIO' ||
-    w === 'DESCRIPTION_NO_VOWELS_LONG_TOKEN' ||
-    w === 'DESCRIPTION_OCR_NOISE' ||
-    w === 'DESCRIPTION_GIBBERISH'
-  );
+  // ✅ Spellcheck-based typo detection
+  // Uses dictionary-backed spellchecking with domain allowlists to detect OCR typos
+  // while avoiding false positives on legitimate words.
+  // Note: spellCheckService is imported at top of file (initialized at boot time)
   
-  // Check for OCR garbage patterns
-  // Strategy: Strong patterns (3+ clusters with moderate vowel ratio) trigger independently
-  // This catches "prontosaurvi" even without other warnings.
-  // Weaker patterns are gated behind base warnings to avoid false positives on "Transportation"
+  let totalEligible = 0;
+  let unknownCount = 0;
+  let trustedAnchorCount = 0;
+  
   for (const token of tokens) {
-    const t = token.trim();
-    if (t.length < 10) continue; // Skip short tokens
+    // Normalize token
+    const normalized = spellCheckService.normalizeToken(token);
     
-    // Skip if word is in whitelist of legitimate words
-    if (LEGITIMATE_WORD_WHITELIST.has(t.toLowerCase())) continue;
-    
-    // Check if token matches OCR garbage pattern
-    if (!looksLikeOcrWordGarbage(token)) continue;
-    
-    // Calculate cluster count, vowel ratio, and max consecutive consonants
-    const vr = vowelRatio(t);
-    const consonant = /[bcdfghjklmnpqrstvwxyz]/i;
-    const letters = t.replace(/[^a-z]/gi, '');
-    let clusterCount = 0;
-    let consecutiveConsonants = 0;
-    let maxCons = 0;
-    let curCons = 0;
-    
-    for (const ch of letters) {
-      if (consonant.test(ch)) {
-        consecutiveConsonants++;
-        curCons++;
-        maxCons = Math.max(maxCons, curCons);
-        if (consecutiveConsonants === 2) {
-          clusterCount++;
-        }
-      } else {
-        consecutiveConsonants = 0;
-        curCons = 0;
-      }
+    // Skip if should be ignored or too short
+    if (spellCheckService.shouldIgnoreToken(token) || normalized.length < 4) {
+      continue;
     }
     
-    // Strong pattern: very specific OCR garbage characteristics
-    // Require: 3+ clusters, vowel ratio 0.38-0.45, maxCons <= 2, AND cluster density < 0.27
-    // This catches "prontosaurvi" (density 0.25) but avoids "Prosciutto" (density 0.30)
-    const clusterDensity = clusterCount / letters.length;
-    const isVeryStrongPattern = clusterCount >= 3 && vr >= 0.38 && vr <= 0.45 && maxCons <= 2 && clusterDensity < 0.27;
+    totalEligible++;
     
-    // Trigger if very strong pattern OR if base warnings exist
-    // This allows catching clear OCR garbage independently while gating weaker signals
-    if (isVeryStrongPattern || hasBaseWarning) {
-      warnings.push('DESCRIPTION_CONSONANT_CLUSTER');
-      break; // Only flag once per description
+    // Check if token is correct (in allowlist or dictionary)
+    const isCorrect = spellCheckService.isCorrect(normalized);
+    
+    if (!isCorrect) {
+      unknownCount++;
+    } else if (normalized.length > 4) {
+      // Trusted anchor: correct word with length > 4
+      trustedAnchorCount++;
+    }
+  }
+  
+  // Only evaluate if we have at least 2 eligible tokens
+  if (totalEligible >= 2) {
+    const unknownRatio = totalEligible > 0 ? unknownCount / totalEligible : 0;
+    const hasTrustedAnchor = trustedAnchorCount > 0;
+    
+    // Standard rule: unknownRatio > 0.5 AND totalEligible >= 2
+    // Anchored rule: if hasTrustedAnchor, require unknownRatio >= 0.67 AND totalEligible >= 2
+    // Override: if unknownCount >= 3, flag regardless of anchor
+    const shouldFlag = 
+      unknownCount >= 3 || // Override: 3+ unknown tokens
+      (hasTrustedAnchor 
+        ? unknownRatio >= 0.67 && totalEligible >= 2  // Anchored threshold
+        : unknownRatio > 0.5 && totalEligible >= 2);  // Standard threshold
+    
+    if (shouldFlag) {
+      warnings.push('DESCRIPTION_POSSIBLE_TYPO');
     }
   }
   
