@@ -31,7 +31,7 @@ function hasVowels(token: string): boolean {
 /**
  * Computes the ratio of alphabetic characters to total characters.
  */
-function getAlphaRatio(text: string): number {
+export function getAlphaRatio(text: string): number {
   if (text.length === 0) return 0;
   const alphaCount = Array.from(text).filter(c => /[A-Za-z]/.test(c)).length;
   return alphaCount / text.length;
@@ -90,6 +90,13 @@ function looksGibberish(text: string): boolean {
 }
 
 /**
+ * Normalizes a phrase for lexicon matching (trim + lowercase).
+ */
+export function normalizePhrase(phrase: string): string {
+  return phrase.trim().toLowerCase();
+}
+
+/**
  * Computes text quality warnings for a description.
  * 
  * Returns an array of warning reason codes. Empty array means no warnings.
@@ -101,9 +108,15 @@ function looksGibberish(text: string): boolean {
  * - DESCRIPTION_GIBBERISH: Overall pattern suggests misread (> 30% unusual tokens)
  * 
  * @param description The description text to analyze
+ * @param options Optional configuration including lexicon Set to suppress false positives
  * @returns Array of warning reason codes
  */
-export function computeDescriptionWarnings(description: string): DescriptionWarningReason[] {
+export function computeDescriptionWarnings(
+  description: string,
+  options?: {
+    lexicon?: Set<string>;
+  }
+): DescriptionWarningReason[] {
   if (!description || description.trim().length === 0) {
     return [];
   }
@@ -185,7 +198,12 @@ export function computeDescriptionWarnings(description: string): DescriptionWarn
         ? unknownRatio >= 0.67 && totalEligible >= 2  // Anchored threshold
         : unknownRatio > 0.5 && totalEligible >= 2);  // Standard threshold
     
-    if (shouldFlag) {
+    // Check lexicon before adding DESCRIPTION_POSSIBLE_TYPO
+    // If phrase exists in lexicon, skip this warning (it's a known false positive)
+    const normalizedDescription = normalizePhrase(trimmed);
+    const isInLexicon = options?.lexicon?.has(normalizedDescription);
+    
+    if (shouldFlag && !isInLexicon) {
       warnings.push('DESCRIPTION_POSSIBLE_TYPO');
     }
   }

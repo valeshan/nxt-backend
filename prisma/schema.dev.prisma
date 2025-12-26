@@ -51,6 +51,7 @@ model Organisation {
   canonicalInvoices      CanonicalInvoice[]
   canonicalLineItems     CanonicalInvoiceLineItem[]
   emailForwardingVerifications EmailForwardingVerification[]
+  lexiconEntries         OrganisationLexiconEntry[]
   
   // Data contribution consent
   dataContributionEnabled   Boolean   @default(true)
@@ -231,6 +232,7 @@ model Supplier {
   ocrInvoices    Invoice[]
   canonicalInvoices  CanonicalInvoice[]
   canonicalLineItems CanonicalInvoiceLineItem[]
+  lexiconEntries     OrganisationLexiconEntry[]
 
   @@index([organisationId])
   @@index([normalizedName])
@@ -803,6 +805,25 @@ model EmailForwardingVerification {
   @@index([locationId, status])
   @@index([organisationId])
   @@index([expiresAt]) // For cleanup jobs
+}
+
+model OrganisationLexiconEntry {
+  id              String   @id @default(uuid())
+  organisationId  String
+  supplierId      String?
+  scopeKey        String   // 'ORG' or supplierId
+  phrase          String
+  lastSeenAt      DateTime
+  timesSeen       Int      @default(1)  // Track how many times phrase was matched
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+  organisation    Organisation @relation(fields: [organisationId], references: [id])
+  supplier        Supplier?    @relation(fields: [supplierId], references: [id])
+
+  @@unique([organisationId, scopeKey, phrase])
+  @@index([organisationId])
+  @@index([organisationId, supplierId])
+  @@index([organisationId, scopeKey])
 }
 
 

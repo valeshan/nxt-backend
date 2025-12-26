@@ -13,6 +13,30 @@ export default async function supplierRoutes(fastify: FastifyInstance) {
       protectedApp.register(authContextPlugin);
       const typedApp = protectedApp.withTypeProvider<ZodTypeProvider>();
 
+      typedApp.post(
+        '/',
+        {
+          schema: {
+            body: z.object({
+              name: z.string().min(1),
+            }),
+            response: {
+              200: z.object({
+                id: z.string(),
+                organisationId: z.string(),
+                name: z.string(),
+                normalizedName: z.string(),
+                sourceType: z.string(),
+                status: z.string(),
+                createdAt: z.string(),
+                updatedAt: z.string(),
+              }),
+            },
+          },
+        },
+        supplierController.createSupplier
+      );
+
       typedApp.get(
         '/',
         {

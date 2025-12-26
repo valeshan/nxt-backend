@@ -10,6 +10,7 @@ import { assertDateRangeOrThrow, assertWindowIfDeepPagination, getOffsetPaginati
 
 import { getProductKeyFromLineItem } from './helpers/productKey';
 import { assertCanonicalInvoiceLegacyLink, canonicalizeLine } from './canonical';
+import { computeDescriptionWarnings, getAlphaRatio, normalizePhrase } from '../utils/descriptionQuality';
 
 export class InvoiceFileNotFoundError extends Error {
   constructor(message: string) {
@@ -31,6 +32,34 @@ import { pusherService } from './pusherService';
 import { normalizeSupplierName } from '../utils/normalizeSupplierName';
 
 const DEFAULT_CURRENCY_CODE = 'AUD';
+
+/**
+ * Creates a scope key for lexicon entries (supplier-scoped or org-scoped).
+ */
+function makeScopeKey(supplierId?: string | null): string {
+  return supplierId ? String(supplierId) : 'ORG';
+}
+
+/**
+ * Builds a scope-aware suppression set for lexicon phrases.
+ * Includes ORG-scoped phrases (apply everywhere) plus phrases matching current supplier scope.
+ */
+function buildSuppressionSet(
+    entries: Array<{ phrase: string; scopeKey: string }>,
+    currentSupplierId: string | null
+): Set<string> {
+    const currentScopeKey = makeScopeKey(currentSupplierId);
+    const suppressionSet = new Set<string>();
+    
+    for (const entry of entries) {
+        // Include if it's ORG-scoped (applies everywhere) or matches current supplier scope
+        if (entry.scopeKey === 'ORG' || entry.scopeKey === currentScopeKey) {
+            suppressionSet.add(normalizePhrase(entry.phrase));
+        }
+    }
+    
+    return suppressionSet;
+}
 
 // ============================================================================
 // Auto-Approval Configuration & Types
@@ -1106,6 +1135,26 @@ export const invoicePipelineService = {
                          return this.enrichStatus(await prisma.invoiceFile.findUnique({ where: { id: file.id } }) as any);
                      }
                      
+                     // E) Apply lexicon suppression during OCR completion
+                     // Fetch org lexicon once for this invoice's organisation
+                     // Gracefully handle if table doesn't exist yet (migration not run)
+                     let lexiconEntries: Array<{ phrase: string; scopeKey: string }> = [];
+                     try {
+                         lexiconEntries = await (prisma as any).organisationLexiconEntry.findMany({
+                             where: { organisationId: file.organisationId },
+                             select: { phrase: true, scopeKey: true }
+                         });
+                         console.log('[InvoicePipeline] OCR completion - loaded lexicon entries:', lexiconEntries.length);
+                     } catch (error: any) {
+                         // Table doesn't exist yet - migration not run, continue without lexicon
+                         console.warn('[InvoicePipeline] Lexicon table not available during OCR completion, continuing without lexicon:', error.message);
+                         console.warn('[InvoicePipeline] To enable lexicon, run: npm run prisma:migrate:dev -- --name add_organisation_lexicon');
+                     }
+
+                     // Build scope-aware suppression set based on resolved supplier
+                     const resolvedSupplierId = resolution?.supplier?.id ?? null;
+                     const orgLexiconSetPhraseOnly = buildSuppressionSet(lexiconEntries, resolvedSupplierId);
+                     
                      try {
                         await prisma.invoice.create({
                             data: {
@@ -1120,16 +1169,24 @@ export const invoicePipelineService = {
                                 subtotal: parsed.subtotal,
                                 sourceType: file.sourceType,
                                 lineItems: {
-                                    create: parsed.lineItems.map(item => ({
-                                        description: item.description,
-                                        quantity: item.quantity,
-                                        unitPrice: item.unitPrice,
-                                        lineTotal: item.lineTotal,
-                                        productCode: item.productCode,
-                                        accountCode: MANUAL_COGS_ACCOUNT_CODE,
-                                        confidenceScore: item.confidenceScore ?? null,
-                                        textWarnReasons: item.textWarnReasons ?? []
-                                    }))
+                                    create: parsed.lineItems.map(item => {
+                                        // Recompute text warnings with lexicon to suppress false positives
+                                        const textWarnReasons = computeDescriptionWarnings(
+                                            item.description,
+                                            { lexicon: orgLexiconSetPhraseOnly }
+                                        );
+                                        
+                                        return {
+                                            description: item.description,
+                                            quantity: item.quantity,
+                                            unitPrice: item.unitPrice,
+                                            lineTotal: item.lineTotal,
+                                            productCode: item.productCode,
+                                            accountCode: MANUAL_COGS_ACCOUNT_CODE,
+                                            confidenceScore: item.confidenceScore ?? null,
+                                            textWarnReasons: textWarnReasons.length > 0 ? textWarnReasons : []
+                                        };
+                                    })
                                 }
                             }
                         });
@@ -1512,10 +1569,62 @@ export const invoicePipelineService = {
         throw err;
       }
 
+      // Note: We no longer need to fetch original line items for lexicon learning
+      // The simplified logic learns based on final verified text warnings only
+
+      // B) Fetch organisation lexicon BEFORE transaction (to avoid aborting transaction if table doesn't exist)
+      // Fetch once, build both sets from the same data
+      let lexiconEntries: Array<{ phrase: string; scopeKey: string }> = [];
+      let lexiconTableExists = false;
+      try {
+          lexiconEntries = await (prisma as any).organisationLexiconEntry.findMany({
+              where: { organisationId: invoice.organisationId },
+              select: { phrase: true, scopeKey: true }
+          });
+          lexiconTableExists = true;
+          console.log('[InvoicePipeline] Loaded lexicon entries:', lexiconEntries.length);
+      } catch (error: any) {
+          // Only treat as "table missing" for specific Prisma/Postgres errors
+          const msg = (error.message || '').toLowerCase();
+          const isTableMissing =
+              error.code === '42P01' ||  // PostgreSQL: relation does not exist
+              error.code === 'P2021' ||  // Prisma: table does not exist
+              msg.includes('does not exist') ||
+              (msg.includes('relation') && msg.includes('does not exist')) ||
+              (msg.includes('table') && msg.includes('does not exist'));
+          
+          if (isTableMissing) {
+              lexiconTableExists = false;
+              console.warn('[InvoicePipeline] Lexicon table not available, continuing without lexicon:', error.message);
+              console.warn('[InvoicePipeline] To enable lexicon, run: npm run prisma:migrate:dev -- --name add_organisation_lexicon');
+          } else {
+              // Other errors - in production, this should be a fatal error or high-severity alert
+              const isProduction = process.env.NODE_ENV === 'production';
+              if (isProduction) {
+                  console.error('[InvoicePipeline] FATAL: Failed to load lexicon (DB/permission issue):', {
+                      error: error.message,
+                      code: error.code,
+                      organisationId: invoice.organisationId
+                  });
+                  // Optionally rethrow in production to fail fast
+                  // throw error;
+              } else {
+                  console.error('[InvoicePipeline] Unexpected error loading lexicon (continuing without it):', error.message);
+              }
+              lexiconTableExists = false;
+          }
+      }
+
+      // Build scope-keyed set for learning checks (used before targetSupplierId is resolved)
+      const orgLexiconSetScopeKeyed = new Set<string>(
+          lexiconEntries.map((e) => `${e.scopeKey}::${normalizePhrase(e.phrase)}`)
+      );
+
       // Run everything in a transaction to ensure atomicity
       // CRITICAL: Validation + write occur in the same transaction to prevent race conditions
       // where supplier could be deleted/modified between validation and invoice update
       return await prisma.$transaction(async (tx) => {
+
           // Fetch InvoiceFile fresh to avoid stale relation data
           let invoiceFile = null;
           if (invoice.invoiceFileId) {
@@ -1608,6 +1717,9 @@ export const invoicePipelineService = {
               }
           }
 
+          // After targetSupplierId is finalized, build scope-aware suppression set
+          const orgLexiconSetPhraseOnly = buildSuppressionSet(lexiconEntries, targetSupplierId ?? null);
+
           // 4. Delete All Existing Line Items
           // We replace them entirely with the verified list to ensure source of truth
           console.log(`[InvoicePipeline] Clearing existing line items for invoice ${invoiceId}...`);
@@ -1676,6 +1788,220 @@ export const invoicePipelineService = {
           await tx.invoiceLineItem.createMany({
               data: newItems
           });
+
+          // C) Lexicon learning logic - simple + safe
+          // Learn phrases that have typo warnings but not hard garbage warnings
+          for (const item of data.items) {
+              const finalText = (item.description ?? '').trim();
+              if (!finalText) continue;
+
+              const normalizedPhrase = normalizePhrase(finalText);
+              const scopeKey = makeScopeKey(targetSupplierId ?? null);
+              const lexiconKey = `${scopeKey}::${normalizedPhrase}`;
+              
+              // Check if phrase is already in lexicon for this specific scope
+              const isInLexicon = orgLexiconSetScopeKeyed.has(lexiconKey);
+              
+              if (isInLexicon && lexiconTableExists) {
+                  // Phrase is already learned for this scope - update counter and lastSeenAt
+                  try {
+                      const result = await (tx as any).organisationLexiconEntry.upsert({
+                          where: {
+                              organisationId_scopeKey_phrase: {
+                                  organisationId: invoice.organisationId,
+                                  scopeKey,
+                                  phrase: normalizedPhrase,
+                              }
+                          },
+                          create: {
+                              // Fallback: if entry was deleted between read and write, recreate it
+                              organisationId: invoice.organisationId,
+                              supplierId: targetSupplierId ?? null,
+                              scopeKey,
+                              phrase: normalizedPhrase,
+                              lastSeenAt: new Date(),
+                              timesSeen: 1,
+                          },
+                          update: {
+                              lastSeenAt: new Date(),
+                              timesSeen: { increment: 1 },
+                          },
+                          select: {
+                              timesSeen: true  // Return timesSeen directly from upsert
+                          }
+                      });
+                      
+                      // Update in-memory set to prevent duplicate upserts in same request
+                      orgLexiconSetScopeKeyed.add(lexiconKey);
+                      
+                      // Check promotion after update (using result from upsert, no extra query)
+                      if (scopeKey !== 'ORG' && result.timesSeen >= 3) {
+                          const orgLexiconKey = `ORG::${normalizedPhrase}`;
+                          if (!orgLexiconSetScopeKeyed.has(orgLexiconKey)) {
+                              try {
+                                  await (tx as any).organisationLexiconEntry.upsert({
+                                      where: {
+                                          organisationId_scopeKey_phrase: {
+                                              organisationId: invoice.organisationId,
+                                              scopeKey: 'ORG',
+                                              phrase: normalizedPhrase,
+                                          }
+                                      },
+                                      create: {
+                                          organisationId: invoice.organisationId,
+                                          supplierId: null,
+                                          scopeKey: 'ORG',
+                                          phrase: normalizedPhrase,
+                                          lastSeenAt: new Date(),
+                                          timesSeen: 1,
+                                      },
+                                      update: {
+                                          lastSeenAt: new Date(),
+                                          timesSeen: { increment: 1 },
+                                      }
+                                  });
+                                  orgLexiconSetScopeKeyed.add(orgLexiconKey);
+                                  // Also add to phrase-only set for immediate suppression in this request
+                                  orgLexiconSetPhraseOnly.add(normalizedPhrase);
+                                  console.log('[InvoicePipeline] Promoted phrase to ORG scope:', normalizedPhrase);
+                              } catch (promoError: any) {
+                                  console.error('[InvoicePipeline] Failed to promote phrase to ORG:', promoError.message);
+                              }
+                          }
+                      }
+                      
+                      console.log('[InvoicePipeline] Updated lexicon entry counter:', normalizedPhrase, 'scope:', scopeKey);
+                  } catch (error: any) {
+                      console.error('[InvoicePipeline] Failed to update lexicon entry:', error.message);
+                      // Don't throw - let transaction continue (this is non-critical)
+                  }
+              } else {
+                  // Phrase is NOT in lexicon for this scope - check if it should be learned
+                  // IMPORTANT: Check WITHOUT lexicon to see if it would trigger typo
+                  const warningsWithoutLexicon = computeDescriptionWarnings(finalText);
+                  const hasTypo = warningsWithoutLexicon.includes('DESCRIPTION_POSSIBLE_TYPO');
+                  
+                  // Hard-stop warnings: never learn these (likely OCR garbage)
+                  const hasHardGarbage =
+                      warningsWithoutLexicon.includes('DESCRIPTION_LOW_ALPHA_RATIO') ||
+                      warningsWithoutLexicon.includes('DESCRIPTION_GIBBERISH');
+                  
+                  // Soft-stop warnings: learn only with guardrails
+                  const hasSoftGarbage =
+                      warningsWithoutLexicon.includes('DESCRIPTION_OCR_NOISE') ||
+                      warningsWithoutLexicon.includes('DESCRIPTION_NO_VOWELS_LONG_TOKEN');
+                  
+                  // Guardrails for soft-garbage: require minimum quality
+                  const alphaRatio = getAlphaRatio(finalText);
+                  const phraseLength = normalizedPhrase.length;
+                  const isMostlyDigits = /^\d+$/.test(finalText.replace(/\s+/g, ''));
+                  const softGarbageAllowed = hasSoftGarbage && (
+                      phraseLength >= 6 && 
+                      alphaRatio > 0.5 && 
+                      !isMostlyDigits
+                  );
+
+                  // Debug logging
+                  console.log('[InvoicePipeline] Lexicon learning check:', {
+                      phrase: normalizedPhrase,
+                      scopeKey,
+                      lexiconKey,
+                      isInLexicon,
+                      warnings: warningsWithoutLexicon,
+                      hasTypo,
+                      hasHardGarbage,
+                      hasSoftGarbage,
+                      softGarbageAllowed,
+                      alphaRatio,
+                      phraseLength,
+                      lexiconTableExists,
+                      lexiconSize: orgLexiconSetScopeKeyed.size,
+                      willLearn: hasTypo && !hasHardGarbage && (!hasSoftGarbage || softGarbageAllowed) && lexiconTableExists
+                  });
+
+                  if (hasTypo && !hasHardGarbage && (!hasSoftGarbage || softGarbageAllowed) && lexiconTableExists) {
+                      try {
+                          const result = await (tx as any).organisationLexiconEntry.upsert({
+                              where: {
+                                  organisationId_scopeKey_phrase: {
+                                      organisationId: invoice.organisationId,
+                                      scopeKey,
+                                      phrase: normalizedPhrase,
+                                  }
+                              },
+                              create: {
+                                  organisationId: invoice.organisationId,
+                                  supplierId: targetSupplierId ?? null,
+                                  scopeKey,
+                                  phrase: normalizedPhrase,
+                                  lastSeenAt: new Date(),
+                                  timesSeen: 1,
+                              },
+                              update: {
+                                  // Race condition: entry was created between read and write
+                                  lastSeenAt: new Date(),
+                                  timesSeen: { increment: 1 },
+                              },
+                              select: {
+                                  timesSeen: true  // Return timesSeen directly from upsert
+                              }
+                          });
+                          
+                          // Update in-memory set to prevent duplicate upserts in same request
+                          orgLexiconSetScopeKeyed.add(lexiconKey);
+                          // Also add to phrase-only set for immediate suppression in this request
+                          orgLexiconSetPhraseOnly.add(normalizedPhrase);
+                          
+                          // Check promotion after learning (using result from upsert, no extra query)
+                          if (scopeKey !== 'ORG' && result.timesSeen >= 3) {
+                              const orgLexiconKey = `ORG::${normalizedPhrase}`;
+                              if (!orgLexiconSetScopeKeyed.has(orgLexiconKey)) {
+                                  try {
+                                      await (tx as any).organisationLexiconEntry.upsert({
+                                          where: {
+                                              organisationId_scopeKey_phrase: {
+                                                  organisationId: invoice.organisationId,
+                                                  scopeKey: 'ORG',
+                                                  phrase: normalizedPhrase,
+                                              }
+                                          },
+                                          create: {
+                                              organisationId: invoice.organisationId,
+                                              supplierId: null,
+                                              scopeKey: 'ORG',
+                                              phrase: normalizedPhrase,
+                                              lastSeenAt: new Date(),
+                                              timesSeen: 1,
+                                          },
+                                          update: {
+                                              lastSeenAt: new Date(),
+                                              timesSeen: { increment: 1 },
+                                          }
+                                      });
+                                      orgLexiconSetScopeKeyed.add(orgLexiconKey);
+                                      orgLexiconSetPhraseOnly.add(normalizedPhrase);
+                                      console.log('[InvoicePipeline] Promoted phrase to ORG scope:', normalizedPhrase);
+                                  } catch (promoError: any) {
+                                      console.error('[InvoicePipeline] Failed to promote phrase to ORG:', promoError.message);
+                                  }
+                              }
+                          }
+                          
+                          console.log('[InvoicePipeline] Learned phrase:', normalizedPhrase, 'scope:', scopeKey);
+                      } catch (error: any) {
+                          console.error('[InvoicePipeline] Failed to learn phrase:', error.message);
+                          // Don't throw - let transaction continue (this is non-critical)
+                      }
+                  } else if (hasTypo && hasSoftGarbage && !softGarbageAllowed) {
+                      console.warn('[InvoicePipeline] Blocked learning phrase with soft-garbage warnings (quality too low):', {
+                          phrase: normalizedPhrase,
+                          warnings: warningsWithoutLexicon,
+                          alphaRatio,
+                          phraseLength
+                      });
+                  }
+              }
+          }
 
           // 6. Update Invoice Header
           // NOTE: supplierId validation (step 2) and this write occur in the same transaction,

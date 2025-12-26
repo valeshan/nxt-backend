@@ -1,7 +1,7 @@
 import { FastifyRequest, FastifyReply } from 'fastify';
 import prisma from '../infrastructure/prismaClient';
 import { normalizeSupplierName } from '../utils/normalizeSupplierName';
-import { Prisma, SupplierStatus } from '@prisma/client';
+import { Prisma, SupplierStatus, SupplierSourceType } from '@prisma/client';
 import { supplierInsightsService } from '../services/supplierInsightsService';
 import { MANUAL_COGS_ACCOUNT_CODE } from '../config/constants';
 import { getOffsetPaginationOrThrow } from '../utils/paginationGuards';
@@ -27,6 +27,87 @@ export class SupplierController {
        throw { statusCode: 403, message: 'Forbidden' };
     }
     return { organisationId, locationId: locationId || undefined };
+  }
+
+  createSupplier = async (request: FastifyRequest, reply: FastifyReply) => {
+    try {
+      const { organisationId } = this.validateOrgAccess(request);
+      const { name } = request.body as { name: string };
+      
+      if (!name || !name.trim()) {
+        return reply.status(400).send({ error: 'Supplier name is required' });
+      }
+      
+      const trimmedName = name.trim();
+      const normalizedName = normalizeSupplierName(trimmedName);
+      
+      // Validate normalized name is not empty
+      if (!normalizedName || normalizedName.length === 0) {
+        console.error('[SupplierController] Normalized name is empty for input:', trimmedName);
+        return reply.status(400).send({ error: 'Invalid supplier name: name cannot be normalized' });
+      }
+      
+      // Check if supplier already exists
+      const existing = await prisma.supplier.findFirst({
+        where: {
+          organisationId,
+          normalizedName
+        }
+      });
+      
+      if (existing) {
+        return reply.send(existing);
+      }
+      
+      // Create new supplier with ACTIVE status (manual creation)
+      const supplier = await prisma.supplier.create({
+        data: {
+          organisationId,
+          name: trimmedName,
+          normalizedName,
+          sourceType: SupplierSourceType.MANUAL,
+          status: SupplierStatus.ACTIVE,
+        }
+      });
+      
+      return reply.send(supplier);
+    } catch (error: any) {
+      console.error('[SupplierController] Failed to create supplier:', error);
+      const name = (request.body as any)?.name;
+      const trimmedName = name?.trim() || '';
+      const normalizedName = trimmedName ? normalizeSupplierName(trimmedName) : 'N/A';
+      let organisationId = 'unknown';
+      try {
+        const orgAccess = this.validateOrgAccess(request);
+        organisationId = orgAccess.organisationId;
+      } catch (e) {
+        // ignore - org access might be the issue
+      }
+      
+      console.error('[SupplierController] Error details:', {
+        message: error.message,
+        code: error.code,
+        meta: error.meta,
+        stack: error.stack,
+        name: error.name,
+        organisationId,
+        inputName: trimmedName,
+        normalizedName
+      });
+      
+      // Handle validation errors from validateOrgAccess
+      if (error.statusCode) {
+        return reply.status(error.statusCode).send({ error: error.message });
+      }
+      
+      return reply.status(500).send({ 
+        error: error.message || 'Failed to create supplier',
+        details: process.env.NODE_ENV === 'development' ? {
+          code: error.code,
+          meta: error.meta
+        } : undefined
+      });
+    }
   }
 
   listAccounts = async (request: FastifyRequest, reply: FastifyReply) => {
