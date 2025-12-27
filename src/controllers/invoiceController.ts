@@ -101,7 +101,19 @@ export const invoiceController = {
       }
       
       // Extract all relevant fields from body
-      const { supplierId, supplierName, total, createAlias, aliasName, selectedLineItemIds, date, items, hasManuallyAddedItems } = req.body as any;
+      const { 
+        supplierId, 
+        supplierName, 
+        total, 
+        createAlias, 
+        aliasName, 
+        selectedLineItemIds, 
+        date, 
+        items, 
+        hasManuallyAddedItems,
+        approveTerms,
+        approvedPhrases
+      } = req.body as any;
       
       if (selectedLineItemIds !== undefined && !Array.isArray(selectedLineItemIds)) {
           return reply.status(400).send({ error: 'selectedLineItemIds must be an array of strings' });
@@ -111,12 +123,22 @@ export const invoiceController = {
           return reply.status(400).send({ error: 'items must be an array of objects' });
       }
 
+      if (approvedPhrases !== undefined && !Array.isArray(approvedPhrases)) {
+          return reply.status(400).send({ error: 'approvedPhrases must be an array of strings' });
+      }
+
+      if (approveTerms !== undefined && typeof approveTerms !== 'boolean') {
+          return reply.status(400).send({ error: 'approveTerms must be a boolean' });
+      }
+
       req.log.info({ 
         msg: 'Verify invoice requested',
         invoiceId: id,
         params: req.params,
         body: req.body 
       });
+
+      req.log.info({ approveTerms, approvedPhrasesCount: approvedPhrases?.length });
 
       try {
           const result = await invoicePipelineService.verifyInvoice(id, {
@@ -128,7 +150,9 @@ export const invoiceController = {
               selectedLineItemIds,
               date,
               items,
-              hasManuallyAddedItems
+              hasManuallyAddedItems,
+              approveTerms,
+              approvedPhrases
           });
           
           if (!result) {

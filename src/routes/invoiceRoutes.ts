@@ -42,7 +42,9 @@ export default async function invoiceRoutes(fastify: FastifyInstance) {
                   lineTotal: z.number().optional(),
                   productCode: z.string().nullable().optional()
               })).optional(),
-              hasManuallyAddedItems: z.boolean().optional()
+              hasManuallyAddedItems: z.boolean().optional(),
+              approveTerms: z.boolean().optional(),
+              approvedPhrases: z.array(z.string()).optional()
           }),
           response: {
               200: z.object({

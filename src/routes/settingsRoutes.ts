@@ -18,10 +18,8 @@ export default async function settingsRoutes(fastify: FastifyInstance) {
       {
         schema: {
           querystring: z.object({
-            scope: z.enum(['ORG', 'SUPPLIER']).optional(),
-            supplierId: z.string().uuid().optional(),
             q: z.string().optional(),
-            limit: z.coerce.number().min(1).max(100).optional().default(50),
+            limit: z.coerce.number().min(1).max(200).optional().default(50),
             cursor: z.string().optional(),
           }),
         },

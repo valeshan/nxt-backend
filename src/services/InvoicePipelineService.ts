@@ -10,7 +10,7 @@ import { assertDateRangeOrThrow, assertWindowIfDeepPagination, getOffsetPaginati
 
 import { getProductKeyFromLineItem } from './helpers/productKey';
 import { assertCanonicalInvoiceLegacyLink, canonicalizeLine } from './canonical';
-import { computeDescriptionWarnings, getAlphaRatio, normalizePhrase } from '../utils/descriptionQuality';
+import { computeDescriptionWarnings, getAlphaRatio, normalizePhrase, normalizePhraseKey } from '../utils/descriptionQuality';
 
 export class InvoiceFileNotFoundError extends Error {
   constructor(message: string) {
@@ -34,29 +34,23 @@ import { normalizeSupplierName } from '../utils/normalizeSupplierName';
 const DEFAULT_CURRENCY_CODE = 'AUD';
 
 /**
- * Creates a scope key for lexicon entries (supplier-scoped or org-scoped).
- */
-function makeScopeKey(supplierId?: string | null): string {
-  return supplierId ? String(supplierId) : 'ORG';
-}
-
-/**
- * Builds a scope-aware suppression set for lexicon phrases.
- * Includes ORG-scoped phrases (apply everywhere) plus phrases matching current supplier scope.
+ * Builds a suppression set for lexicon phrases.
+ * All phrases are org-wide and apply to all suppliers.
  */
 function buildSuppressionSet(
-    entries: Array<{ phrase: string; scopeKey: string }>,
-    currentSupplierId: string | null
+    entries: Array<{ phraseKey: string }>
 ): Set<string> {
-    const currentScopeKey = makeScopeKey(currentSupplierId);
     const suppressionSet = new Set<string>();
     
     for (const entry of entries) {
-        // Include if it's ORG-scoped (applies everywhere) or matches current supplier scope
-        if (entry.scopeKey === 'ORG' || entry.scopeKey === currentScopeKey) {
-            suppressionSet.add(normalizePhrase(entry.phrase));
-        }
+        // phraseKey is already normalized, use as-is
+        suppressionSet.add(entry.phraseKey);
     }
+    
+    console.log('[LEXICON] suppression built', {
+        size: suppressionSet.size,
+        loadedEntries: entries.length,
+    });
     
     return suppressionSet;
 }
@@ -1138,11 +1132,11 @@ export const invoicePipelineService = {
                      // E) Apply lexicon suppression during OCR completion
                      // Fetch org lexicon once for this invoice's organisation
                      // Gracefully handle if table doesn't exist yet (migration not run)
-                     let lexiconEntries: Array<{ phrase: string; scopeKey: string }> = [];
+                     let lexiconEntries: Array<{ phraseKey: string }> = [];
                      try {
                          lexiconEntries = await (prisma as any).organisationLexiconEntry.findMany({
                              where: { organisationId: file.organisationId },
-                             select: { phrase: true, scopeKey: true }
+                             select: { phraseKey: true }
                          });
                          console.log('[InvoicePipeline] OCR completion - loaded lexicon entries:', lexiconEntries.length);
                      } catch (error: any) {
@@ -1151,9 +1145,8 @@ export const invoicePipelineService = {
                          console.warn('[InvoicePipeline] To enable lexicon, run: npm run prisma:migrate:dev -- --name add_organisation_lexicon');
                      }
 
-                     // Build scope-aware suppression set based on resolved supplier
-                     const resolvedSupplierId = resolution?.supplier?.id ?? null;
-                     const orgLexiconSetPhraseOnly = buildSuppressionSet(lexiconEntries, resolvedSupplierId);
+                     // Build suppression set from org lexicon (all phrases are org-wide)
+                     const orgLexiconSetPhraseOnly = buildSuppressionSet(lexiconEntries);
                      
                      try {
                         await prisma.invoice.create({
@@ -1171,9 +1164,33 @@ export const invoicePipelineService = {
                                 lineItems: {
                                     create: parsed.lineItems.map(item => {
                                         // Recompute text warnings with lexicon to suppress false positives
+                                        // Use phraseKey normalization for matching
+                                        const normalizedPhrase = normalizePhraseKey(item.description ?? '');
+                                        console.log('[WARN] passing lexicon', {
+                                          phrase: item.description,
+                                          normalized: normalizedPhrase,
+                                          lexiconSize: orgLexiconSetPhraseOnly?.size,
+                                          has: orgLexiconSetPhraseOnly?.has(normalizedPhrase),
+                                        });
+                                        
+                                        // Sanity test for specific phrase
+                                        if (normalizedPhrase.includes('topp.chocolate')) {
+                                          if (!orgLexiconSetPhraseOnly?.has(normalizedPhrase)) {
+                                            console.error('SANITY FAIL: expected lexicon to contain phrase', {
+                                              norm: normalizedPhrase,
+                                              lexiconSize: orgLexiconSetPhraseOnly?.size,
+                                            });
+                                          } else {
+                                            console.log('SANITY PASS: lexicon contains phrase', normalizedPhrase);
+                                          }
+                                        }
+                                        
                                         const textWarnReasons = computeDescriptionWarnings(
                                             item.description,
-                                            { lexicon: orgLexiconSetPhraseOnly }
+                                            { 
+                                                lexicon: orgLexiconSetPhraseOnly,
+                                                ocrConfidence: item.confidenceScore ?? null
+                                            }
                                         );
                                         
                                         return {
@@ -1536,6 +1553,8 @@ export const invoicePipelineService = {
           productCode?: string;
       }>;
       hasManuallyAddedItems?: boolean;
+      approveTerms?: boolean;
+      approvedPhrases?: string[];
   }) {
       console.log('[InvoicePipeline] verifyInvoice start', { invoiceId, ...data });
 
@@ -1573,13 +1592,18 @@ export const invoicePipelineService = {
       // The simplified logic learns based on final verified text warnings only
 
       // B) Fetch organisation lexicon BEFORE transaction (to avoid aborting transaction if table doesn't exist)
-      // Fetch once, build both sets from the same data
-      let lexiconEntries: Array<{ phrase: string; scopeKey: string }> = [];
+      // Fetch once, build suppression set from the same data
+      let lexiconEntries: Array<{ id: string; phrase: string; phraseKey: string; timesSeen: number }> = [];
       let lexiconTableExists = false;
       try {
           lexiconEntries = await (prisma as any).organisationLexiconEntry.findMany({
               where: { organisationId: invoice.organisationId },
-              select: { phrase: true, scopeKey: true }
+              select: { 
+                  id: true,
+                  phrase: true,
+                  phraseKey: true,
+                  timesSeen: true
+              }
           });
           lexiconTableExists = true;
           console.log('[InvoicePipeline] Loaded lexicon entries:', lexiconEntries.length);
@@ -1615,10 +1639,8 @@ export const invoicePipelineService = {
           }
       }
 
-      // Build scope-keyed set for learning checks (used before targetSupplierId is resolved)
-      const orgLexiconSetScopeKeyed = new Set<string>(
-          lexiconEntries.map((e) => `${e.scopeKey}::${normalizePhrase(e.phrase)}`)
-      );
+      // Build suppression set from org lexicon (all phrases are org-wide)
+      const orgLexiconSetPhraseOnly = buildSuppressionSet(lexiconEntries);
 
       // Run everything in a transaction to ensure atomicity
       // CRITICAL: Validation + write occur in the same transaction to prevent race conditions
@@ -1717,8 +1739,7 @@ export const invoicePipelineService = {
               }
           }
 
-          // After targetSupplierId is finalized, build scope-aware suppression set
-          const orgLexiconSetPhraseOnly = buildSuppressionSet(lexiconEntries, targetSupplierId ?? null);
+          // Suppression set is already built above (org-wide only, no supplier filtering needed)
 
           // 4. Delete All Existing Line Items
           // We replace them entirely with the verified list to ensure source of truth
@@ -1789,217 +1810,293 @@ export const invoicePipelineService = {
               data: newItems
           });
 
-          // C) Lexicon learning logic - simple + safe
+          // C) Lexicon learning logic - org-wide only
           // Learn phrases that have typo warnings but not hard garbage warnings
-          for (const item of data.items) {
-              const finalText = (item.description ?? '').trim();
-              if (!finalText) continue;
+          // Each phrase exists once per organisation
 
-              const normalizedPhrase = normalizePhrase(finalText);
-              const scopeKey = makeScopeKey(targetSupplierId ?? null);
-              const lexiconKey = `${scopeKey}::${normalizedPhrase}`;
-              
-              // Check if phrase is already in lexicon for this specific scope
-              const isInLexicon = orgLexiconSetScopeKeyed.has(lexiconKey);
-              
-              if (isInLexicon && lexiconTableExists) {
-                  // Phrase is already learned for this scope - update counter and lastSeenAt
+          // Backend guard: Check if approveTerms is true but no approvedPhrases provided
+          if (data.approveTerms && (!data.approvedPhrases || data.approvedPhrases.length === 0)) {
+              console.log('[Lexicon Approve] Skipped: approveTerms=true but no approvedPhrases');
+          }
+
+          // Build in-memory lookup map from existing lexicon entries
+          // IMPORTANT: Declare this BEFORE approval block so approved terms are visible in same request
+          const orgLexiconByPhrase = new Map<string, { 
+              id: string; 
+              phrase: string;
+              phraseKey: string;
+              timesSeen: number;
+          }>();
+
+          if (lexiconTableExists && lexiconEntries.length > 0) {
+              for (const entry of lexiconEntries) {
+                  // phraseKey is already normalized, use as-is
+                  orgLexiconByPhrase.set(entry.phraseKey, {
+                      id: entry.id,
+                      phrase: entry.phrase,
+                      phraseKey: entry.phraseKey,
+                      timesSeen: entry.timesSeen
+                  });
+              }
+          }
+
+          // ✅ EXPLICIT APPROVAL (bypasses learning heuristics)
+          if (data.approveTerms === true && Array.isArray(data.approvedPhrases) && data.approvedPhrases.length > 0) {
+              const now = new Date();
+              // Dedup by phraseKey (org-wide unique key)
+              const byKey = new Map<string, { phraseKey: string; phrase: string }>();
+              for (const raw of data.approvedPhrases) {
+                  const rawText = (raw ?? '').trim();
+                  if (!rawText) continue;
+                  const phraseKey = normalizePhraseKey(rawText);
+                  if (!phraseKey) continue;
+                  // Keep display phrase stable + readable
+                  const phrase = normalizePhrase(rawText);
+                  // first one wins (or overwrite — either is fine)
+                  if (!byKey.has(phraseKey)) byKey.set(phraseKey, { phraseKey, phrase });
+              }
+
+              console.log('[Lexicon Approve] Incoming', {
+                  approveTerms: data.approveTerms,
+                  approvedPhrasesCount: data.approvedPhrases.length,
+                  dedupedCount: byKey.size,
+              });
+
+              for (const { phraseKey, phrase } of byKey.values()) {
+                  // Debug: Check if phrase already exists before upsert
+                  const alreadyExists = orgLexiconByPhrase.has(phraseKey);
+                  const existingEntry = orgLexiconByPhrase.get(phraseKey);
+                  
+                  console.log('[Lexicon Approve] Before upsert', {
+                      rawPhrase: phrase,
+                      phraseKey,
+                      alreadyExists,
+                      existingTimesSeen: existingEntry?.timesSeen ?? null,
+                  });
+
                   try {
                       const result = await (tx as any).organisationLexiconEntry.upsert({
                           where: {
-                              organisationId_scopeKey_phrase: {
+                              organisationId_phraseKey: {
                                   organisationId: invoice.organisationId,
-                                  scopeKey,
-                                  phrase: normalizedPhrase,
-                              }
+                                  phraseKey,
+                              },
                           },
                           create: {
-                              // Fallback: if entry was deleted between read and write, recreate it
                               organisationId: invoice.organisationId,
-                              supplierId: targetSupplierId ?? null,
-                              scopeKey,
-                              phrase: normalizedPhrase,
-                              lastSeenAt: new Date(),
+                              phrase,
+                              phraseKey,
+                              lastSeenAt: now,
                               timesSeen: 1,
                           },
                           update: {
+                              // keep phrase fresh in case normalization/display changes
+                              phrase,
+                              lastSeenAt: now,
+                              timesSeen: { increment: 1 },
+                          },
+                          select: { id: true, timesSeen: true },
+                      });
+
+                      console.log('[Lexicon Approve] Upserted', {
+                          organisationId: invoice.organisationId,
+                          phrase,
+                          phraseKey,
+                          timesSeen: result.timesSeen,
+                          wasNew: !alreadyExists,
+                      });
+
+                      // IMPORTANT: also add to in-memory map so learning loop sees it
+                      orgLexiconByPhrase.set(phraseKey, { 
+                          id: result.id, 
+                          phrase, 
+                          phraseKey, 
+                          timesSeen: result.timesSeen 
+                      });
+                  } catch (e: any) {
+                      console.error('[Lexicon Approve] Failed upsert', {
+                          organisationId: invoice.organisationId,
+                          phrase,
+                          phraseKey,
+                          error: e?.message,
+                      });
+                      // I'd recommend NOT throwing — keep invoice verification successful even if lexicon write fails
+                  }
+              }
+          }
+
+          // CRITICAL: Build Set of unique normalized phrases from items FIRST
+          // This ensures single DB write per phrase per verify request
+          // Use phraseKey normalization (aggressive) for matching
+          const uniquePhrases = new Set<string>();
+          for (const item of data.items) {
+              const finalText = (item.description ?? '').trim();
+              if (finalText) {
+                  uniquePhrases.add(normalizePhraseKey(finalText));
+              }
+          }
+
+          // Process each unique phrase once
+          for (const normalizedPhrase of uniquePhrases) {
+              if (!lexiconTableExists) continue;
+              
+              // Check if entry exists
+              const existingEntry = orgLexiconByPhrase.get(normalizedPhrase);
+              
+              if (existingEntry) {
+                  // Entry exists - update counter
+                  try {
+                      const result = await (tx as any).organisationLexiconEntry.update({
+                          where: { id: existingEntry.id },
+                          data: {
                               lastSeenAt: new Date(),
                               timesSeen: { increment: 1 },
                           },
                           select: {
-                              timesSeen: true  // Return timesSeen directly from upsert
+                              timesSeen: true
                           }
                       });
                       
-                      // Update in-memory set to prevent duplicate upserts in same request
-                      orgLexiconSetScopeKeyed.add(lexiconKey);
+                      // Update in-memory entry
+                      existingEntry.timesSeen = result.timesSeen;
                       
-                      // Check promotion after update (using result from upsert, no extra query)
-                      if (scopeKey !== 'ORG' && result.timesSeen >= 3) {
-                          const orgLexiconKey = `ORG::${normalizedPhrase}`;
-                          if (!orgLexiconSetScopeKeyed.has(orgLexiconKey)) {
-                              try {
-                                  await (tx as any).organisationLexiconEntry.upsert({
-                                      where: {
-                                          organisationId_scopeKey_phrase: {
-                                              organisationId: invoice.organisationId,
-                                              scopeKey: 'ORG',
-                                              phrase: normalizedPhrase,
-                                          }
-                                      },
-                                      create: {
-                                          organisationId: invoice.organisationId,
-                                          supplierId: null,
-                                          scopeKey: 'ORG',
-                                          phrase: normalizedPhrase,
-                                          lastSeenAt: new Date(),
-                                          timesSeen: 1,
-                                      },
-                                      update: {
-                                          lastSeenAt: new Date(),
-                                          timesSeen: { increment: 1 },
-                                      }
-                                  });
-                                  orgLexiconSetScopeKeyed.add(orgLexiconKey);
-                                  // Also add to phrase-only set for immediate suppression in this request
-                                  orgLexiconSetPhraseOnly.add(normalizedPhrase);
-                                  console.log('[InvoicePipeline] Promoted phrase to ORG scope:', normalizedPhrase);
-                              } catch (promoError: any) {
-                                  console.error('[InvoicePipeline] Failed to promote phrase to ORG:', promoError.message);
-                              }
-                          }
-                      }
-                      
-                      console.log('[InvoicePipeline] Updated lexicon entry counter:', normalizedPhrase, 'scope:', scopeKey);
+                      console.log('[InvoicePipeline] Updated lexicon entry counter:', normalizedPhrase, 'timesSeen:', result.timesSeen);
                   } catch (error: any) {
                       console.error('[InvoicePipeline] Failed to update lexicon entry:', error.message);
                       // Don't throw - let transaction continue (this is non-critical)
                   }
-              } else {
-                  // Phrase is NOT in lexicon for this scope - check if it should be learned
-                  // IMPORTANT: Check WITHOUT lexicon to see if it would trigger typo
-                  const warningsWithoutLexicon = computeDescriptionWarnings(finalText);
-                  const hasTypo = warningsWithoutLexicon.includes('DESCRIPTION_POSSIBLE_TYPO');
-                  
-                  // Hard-stop warnings: never learn these (likely OCR garbage)
-                  const hasHardGarbage =
-                      warningsWithoutLexicon.includes('DESCRIPTION_LOW_ALPHA_RATIO') ||
-                      warningsWithoutLexicon.includes('DESCRIPTION_GIBBERISH');
-                  
-                  // Soft-stop warnings: learn only with guardrails
-                  const hasSoftGarbage =
-                      warningsWithoutLexicon.includes('DESCRIPTION_OCR_NOISE') ||
-                      warningsWithoutLexicon.includes('DESCRIPTION_NO_VOWELS_LONG_TOKEN');
-                  
-                  // Guardrails for soft-garbage: require minimum quality
-                  const alphaRatio = getAlphaRatio(finalText);
-                  const phraseLength = normalizedPhrase.length;
-                  const isMostlyDigits = /^\d+$/.test(finalText.replace(/\s+/g, ''));
-                  const softGarbageAllowed = hasSoftGarbage && (
-                      phraseLength >= 6 && 
-                      alphaRatio > 0.5 && 
-                      !isMostlyDigits
-                  );
+                  continue;
+              }
+              
+              // No entry exists - run learning decision
+              // Find the original item text for this normalized phrase to compute warnings
+              // normalizedPhrase is already phraseKey-normalized
+              const originalItem = data.items.find(item => {
+                  const text = (item.description ?? '').trim();
+                  return text && normalizePhraseKey(text) === normalizedPhrase;
+              });
+              
+              if (!originalItem) continue;
+              
+              const finalText = (originalItem.description ?? '').trim();
+              
+              // IMPORTANT: Check WITHOUT lexicon to see if it would trigger typo
+              // Pass null for ocrConfidence since we're checking without lexicon (learning decision)
+              const warningsWithoutLexicon = computeDescriptionWarnings(finalText, { ocrConfidence: null });
+              const hasTypo = warningsWithoutLexicon.includes('DESCRIPTION_POSSIBLE_TYPO');
+              
+              // Hard-stop warnings: never learn these (likely OCR garbage)
+              const hasHardGarbage =
+                  warningsWithoutLexicon.includes('DESCRIPTION_LOW_ALPHA_RATIO') ||
+                  warningsWithoutLexicon.includes('DESCRIPTION_GIBBERISH');
+              
+              // Soft-stop warnings: learn only with guardrails
+              const hasSoftGarbage =
+                  warningsWithoutLexicon.includes('DESCRIPTION_OCR_NOISE') ||
+                  warningsWithoutLexicon.includes('DESCRIPTION_NO_VOWELS_LONG_TOKEN');
+              
+              // Guardrails for soft-garbage: require minimum quality
+              const alphaRatio = getAlphaRatio(finalText);
+              const phraseLength = normalizedPhrase.length;
+              const isMostlyDigits = /^\d+$/.test(finalText.replace(/\s+/g, ''));
+              const softGarbageAllowed = hasSoftGarbage && (
+                  phraseLength >= 6 && 
+                  alphaRatio > 0.5 && 
+                  !isMostlyDigits
+              );
 
-                  // Debug logging
-                  console.log('[InvoicePipeline] Lexicon learning check:', {
-                      phrase: normalizedPhrase,
-                      scopeKey,
-                      lexiconKey,
-                      isInLexicon,
-                      warnings: warningsWithoutLexicon,
-                      hasTypo,
-                      hasHardGarbage,
-                      hasSoftGarbage,
-                      softGarbageAllowed,
-                      alphaRatio,
-                      phraseLength,
-                      lexiconTableExists,
-                      lexiconSize: orgLexiconSetScopeKeyed.size,
-                      willLearn: hasTypo && !hasHardGarbage && (!hasSoftGarbage || softGarbageAllowed) && lexiconTableExists
-                  });
+              // Debug logging
+              console.log('[InvoicePipeline] Lexicon learning check:', {
+                  phrase: normalizedPhrase,
+                  warnings: warningsWithoutLexicon,
+                  hasTypo,
+                  hasHardGarbage,
+                  hasSoftGarbage,
+                  softGarbageAllowed,
+                  alphaRatio,
+                  phraseLength,
+                  lexiconTableExists,
+                  willLearn: hasTypo && !hasHardGarbage && (!hasSoftGarbage || softGarbageAllowed) && lexiconTableExists
+              });
 
-                  if (hasTypo && !hasHardGarbage && (!hasSoftGarbage || softGarbageAllowed) && lexiconTableExists) {
-                      try {
-                          const result = await (tx as any).organisationLexiconEntry.upsert({
-                              where: {
-                                  organisationId_scopeKey_phrase: {
-                                      organisationId: invoice.organisationId,
-                                      scopeKey,
-                                      phrase: normalizedPhrase,
-                                  }
-                              },
-                              create: {
+              if (hasTypo && !hasHardGarbage && (!hasSoftGarbage || softGarbageAllowed) && lexiconTableExists) {
+                  try {
+                      // normalizedPhrase is already phraseKey-normalized
+                      // For display, use the original text normalized with simple normalization
+                      const displayPhrase = normalizePhrase(finalText);
+                      const phraseKey = normalizedPhrase; // Already normalized with normalizePhraseKey
+                      
+                      // Use upsert to handle race conditions (entry created between read and write)
+                      const result = await (tx as any).organisationLexiconEntry.upsert({
+                          where: {
+                              organisationId_phraseKey: {
                                   organisationId: invoice.organisationId,
-                                  supplierId: targetSupplierId ?? null,
-                                  scopeKey,
-                                  phrase: normalizedPhrase,
-                                  lastSeenAt: new Date(),
-                                  timesSeen: 1,
-                              },
-                              update: {
-                                  // Race condition: entry was created between read and write
-                                  lastSeenAt: new Date(),
-                                  timesSeen: { increment: 1 },
-                              },
-                              select: {
-                                  timesSeen: true  // Return timesSeen directly from upsert
+                                  phraseKey: phraseKey,
                               }
-                          });
-                          
-                          // Update in-memory set to prevent duplicate upserts in same request
-                          orgLexiconSetScopeKeyed.add(lexiconKey);
-                          // Also add to phrase-only set for immediate suppression in this request
-                          orgLexiconSetPhraseOnly.add(normalizedPhrase);
-                          
-                          // Check promotion after learning (using result from upsert, no extra query)
-                          if (scopeKey !== 'ORG' && result.timesSeen >= 3) {
-                              const orgLexiconKey = `ORG::${normalizedPhrase}`;
-                              if (!orgLexiconSetScopeKeyed.has(orgLexiconKey)) {
-                                  try {
-                                      await (tx as any).organisationLexiconEntry.upsert({
-                                          where: {
-                                              organisationId_scopeKey_phrase: {
-                                                  organisationId: invoice.organisationId,
-                                                  scopeKey: 'ORG',
-                                                  phrase: normalizedPhrase,
-                                              }
-                                          },
-                                          create: {
-                                              organisationId: invoice.organisationId,
-                                              supplierId: null,
-                                              scopeKey: 'ORG',
-                                              phrase: normalizedPhrase,
-                                              lastSeenAt: new Date(),
-                                              timesSeen: 1,
-                                          },
-                                          update: {
-                                              lastSeenAt: new Date(),
-                                              timesSeen: { increment: 1 },
-                                          }
-                                      });
-                                      orgLexiconSetScopeKeyed.add(orgLexiconKey);
-                                      orgLexiconSetPhraseOnly.add(normalizedPhrase);
-                                      console.log('[InvoicePipeline] Promoted phrase to ORG scope:', normalizedPhrase);
-                                  } catch (promoError: any) {
-                                      console.error('[InvoicePipeline] Failed to promote phrase to ORG:', promoError.message);
-                                  }
-                              }
+                          },
+                          create: {
+                              organisationId: invoice.organisationId,
+                              phrase: displayPhrase,
+                              phraseKey: phraseKey,
+                              lastSeenAt: new Date(),
+                              timesSeen: 1,
+                          },
+                          update: {
+                              // Race condition: entry was created between read and write
+                              lastSeenAt: new Date(),
+                              timesSeen: { increment: 1 },
+                          },
+                          select: {
+                              id: true,
+                              timesSeen: true
                           }
-                          
-                          console.log('[InvoicePipeline] Learned phrase:', normalizedPhrase, 'scope:', scopeKey);
-                      } catch (error: any) {
-                          console.error('[InvoicePipeline] Failed to learn phrase:', error.message);
-                          // Don't throw - let transaction continue (this is non-critical)
-                      }
-                  } else if (hasTypo && hasSoftGarbage && !softGarbageAllowed) {
-                      console.warn('[InvoicePipeline] Blocked learning phrase with soft-garbage warnings (quality too low):', {
-                          phrase: normalizedPhrase,
-                          warnings: warningsWithoutLexicon,
-                          alphaRatio,
-                          phraseLength
                       });
+                      
+                      // Add to in-memory map
+                      orgLexiconByPhrase.set(phraseKey, {
+                          id: result.id,
+                          phrase: displayPhrase,
+                          phraseKey: phraseKey,
+                          timesSeen: result.timesSeen
+                      });
+                      
+                      console.log('[InvoicePipeline] Learned phrase:', phraseKey, 'display:', displayPhrase, 'timesSeen:', result.timesSeen);
+                      
+                      // Optional guard: sanity check for duplicate rows (dev only)
+                      if (process.env.NODE_ENV !== 'production') {
+                          try {
+                              const count = await (tx as any).organisationLexiconEntry.count({
+                                  where: { 
+                                      organisationId: invoice.organisationId, 
+                                      phrase: normalizedPhrase 
+                                  }
+                              });
+                              if (count > 1) {
+                                  console.error('[Lexicon Sanity] REGRESSION DETECTED:', {
+                                      phrase: normalizedPhrase,
+                                      organisationId: invoice.organisationId,
+                                      count,
+                                      message: 'Multiple rows found for same (organisationId, phrase) - uniqueness constraint may be broken'
+                                  });
+                              } else {
+                                  console.log('[Lexicon Sanity]', normalizedPhrase, 'count:', count);
+                              }
+                          } catch (sanityError: any) {
+                              // Don't fail the transaction on sanity check errors
+                              console.warn('[Lexicon Sanity] Check failed:', sanityError.message);
+                          }
+                      }
+                  } catch (error: any) {
+                      console.error('[InvoicePipeline] Failed to learn phrase:', error.message);
+                      // Don't throw - let transaction continue (this is non-critical)
                   }
+              } else if (hasTypo && hasSoftGarbage && !softGarbageAllowed) {
+                  console.warn('[InvoicePipeline] Blocked learning phrase with soft-garbage warnings (quality too low):', {
+                      phrase: normalizedPhrase,
+                      warnings: warningsWithoutLexicon,
+                      alphaRatio,
+                      phraseLength
+                  });
               }
           }
 

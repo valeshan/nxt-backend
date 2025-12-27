@@ -17,7 +17,8 @@ export type DescriptionWarningReason =
   | 'DESCRIPTION_NO_VOWELS_LONG_TOKEN'
   | 'DESCRIPTION_OCR_NOISE'
   | 'DESCRIPTION_GIBBERISH'
-  | 'DESCRIPTION_POSSIBLE_TYPO';
+  | 'DESCRIPTION_POSSIBLE_TYPO'
+  | 'DESCRIPTION_ULTRA_LOW_CONFIDENCE';
 
 const VOWELS = new Set(['a', 'e', 'i', 'o', 'u', 'A', 'E', 'I', 'O', 'U']);
 
@@ -90,10 +91,28 @@ function looksGibberish(text: string): boolean {
 }
 
 /**
- * Normalizes a phrase for lexicon matching (trim + lowercase).
+ * Normalizes a phrase for lexicon matching (display text).
+ * This is the normalization used for storage in the `phrase` field.
+ * Order: trim → lowercase
  */
 export function normalizePhrase(phrase: string): string {
   return phrase.trim().toLowerCase();
+}
+
+/**
+ * Normalizes a phrase for lexicon matching (aggressive key).
+ * This is used for the `phraseKey` field and matching operations.
+ * Order: Unicode normalize → replace NBSP → remove spaces after decimal points → remove punctuation → collapse whitespace → trim → lowercase
+ */
+export function normalizePhraseKey(phrase: string): string {
+  return phrase
+    .normalize('NFKC')         // Unicode normalize FIRST (before case changes)
+    .replace(/\u00A0/g, ' ')    // Replace NBSP with space
+    .replace(/\.\s+(\d)/g, '.$1')  // Remove space after decimal point before digit (e.g., "2x2. 5k" -> "2x2.5k")
+    .replace(/[.,;:!?'"\-_]/g, ' ')  // Remove punctuation (for punctuation invariance matching)
+    .replace(/\s+/g, ' ')       // Collapse whitespace to single spaces
+    .trim()                     // Trim after all processing
+    .toLowerCase();             // Lowercase last
 }
 
 /**
@@ -115,6 +134,7 @@ export function computeDescriptionWarnings(
   description: string,
   options?: {
     lexicon?: Set<string>;
+    ocrConfidence?: number | null;
   }
 ): DescriptionWarningReason[] {
   if (!description || description.trim().length === 0) {
@@ -123,6 +143,27 @@ export function computeDescriptionWarnings(
   
   const warnings: DescriptionWarningReason[] = [];
   const trimmed = description.trim();
+  
+  // 🔒 HARD SUPPRESSION - must happen BEFORE any warning logic
+  // Use phraseKey normalization for matching (aggressive: NFKC, NBSP, whitespace collapse)
+  const normalizedDescription = normalizePhraseKey(trimmed);
+  const lex = options?.lexicon;
+  const isInLexicon = !!lex?.has(normalizedDescription);
+  
+  if (isInLexicon) {
+    // Only allow warnings if OCR confidence is ultra-low
+    if (
+      options?.ocrConfidence !== undefined &&
+      options.ocrConfidence !== null &&
+      options.ocrConfidence < 0.25 // exact threshold — tune later
+    ) {
+      return ['DESCRIPTION_ULTRA_LOW_CONFIDENCE'];
+    }
+    // Approved means approved — no warnings
+    return [];
+  }
+  
+  // ⛔ Everything below runs ONLY for non-approved phrases
   
   // Base warnings first
   const alphaRatio = getAlphaRatio(trimmed);
@@ -198,12 +239,7 @@ export function computeDescriptionWarnings(
         ? unknownRatio >= 0.67 && totalEligible >= 2  // Anchored threshold
         : unknownRatio > 0.5 && totalEligible >= 2);  // Standard threshold
     
-    // Check lexicon before adding DESCRIPTION_POSSIBLE_TYPO
-    // If phrase exists in lexicon, skip this warning (it's a known false positive)
-    const normalizedDescription = normalizePhrase(trimmed);
-    const isInLexicon = options?.lexicon?.has(normalizedDescription);
-    
-    if (shouldFlag && !isInLexicon) {
+    if (shouldFlag) {
       warnings.push('DESCRIPTION_POSSIBLE_TYPO');
     }
   }

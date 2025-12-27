@@ -242,7 +242,11 @@ export const ocrService = {
             : null;
 
         // Compute text quality warnings
-        const textWarnReasons = computeDescriptionWarnings(description);
+        // Note: OCR confidence is passed, but lexicon is not available at this stage
+        // Lexicon suppression happens later in InvoicePipelineService during OCR completion
+        const textWarnReasons = computeDescriptionWarnings(description, { 
+            ocrConfidence: lineConfidenceScore 
+        });
 
         lineItems.push({
           description,

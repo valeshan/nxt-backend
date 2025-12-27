@@ -227,7 +227,7 @@ model Supplier {
   ocrInvoices    Invoice[]
   canonicalInvoices  CanonicalInvoice[]
   canonicalLineItems CanonicalInvoiceLineItem[]
-  lexiconEntries     OrganisationLexiconEntry[]
+  // Note: lexiconEntries relation removed - ownerSupplierId is now a string (not FK) to support '__ORG__' sentinel
 
   @@index([organisationId])
   @@index([normalizedName])
@@ -803,20 +803,19 @@ model EmailForwardingVerification {
 }
 
 model OrganisationLexiconEntry {
-  id              String   @id @default(uuid())
-  organisationId  String
-  supplierId      String?
-  scopeKey        String   // 'ORG' or supplierId
-  phrase          String
-  lastSeenAt      DateTime
-  timesSeen       Int      @default(1)  // Track how many times phrase was matched
-  createdAt       DateTime @default(now())
-  updatedAt       DateTime @updatedAt
-  organisation    Organisation @relation(fields: [organisationId], references: [id])
-  supplier        Supplier?    @relation(fields: [supplierId], references: [id])
+  id            String    @id @default(uuid())
+  organisationId String
+  phrase        String    // Display text (normalized for display)
+  phraseKey     String    // Aggressive normalized key for matching (NFKC, NBSP, whitespace collapse)
+  lastSeenAt    DateTime
+  timesSeen     Int       @default(1)  // Track how many times phrase was matched
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+  organisation  Organisation @relation(fields: [organisationId], references: [id])
 
-  @@unique([organisationId, scopeKey, phrase])
+  @@unique([organisationId, phraseKey])
   @@index([organisationId])
-  @@index([organisationId, supplierId])
-  @@index([organisationId, scopeKey])
+  @@index([organisationId, phraseKey])
+  @@index([phraseKey])
+  @@index([lastSeenAt])
 }

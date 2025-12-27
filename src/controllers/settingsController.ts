@@ -1,5 +1,6 @@
 import { FastifyRequest, FastifyReply } from 'fastify';
 import prisma from '../infrastructure/prismaClient';
+import { normalizePhrase } from '../utils/descriptionQuality';
 
 export class SettingsController {
   // Helper for org access validation
@@ -14,85 +15,74 @@ export class SettingsController {
   }
 
   listLexiconEntries = async (request: FastifyRequest, reply: FastifyReply) => {
-    const { organisationId } = this.validateOrgAccess(request);
-    const { scope, supplierId, q, limit = 50, cursor } = request.query as {
-      scope?: 'ORG' | 'SUPPLIER';
-      supplierId?: string;
-      q?: string;
-      limit?: number;
-      cursor?: string;
-    };
-
-    // Build where clause
-    const where: any = {
-      organisationId,
-    };
-
-    // Filter by scope
-    if (scope === 'ORG') {
-      where.scopeKey = 'ORG';
-    } else if (scope === 'SUPPLIER') {
-      where.scopeKey = { not: 'ORG' };
-    }
-
-    // Filter by supplier
-    if (supplierId) {
-      where.supplierId = supplierId;
-    }
-
-    // Search by phrase (case-insensitive)
-    if (q) {
-      where.phrase = {
-        contains: q,
-        mode: 'insensitive' as any,
+    try {
+      const { organisationId } = this.validateOrgAccess(request);
+      const { q, limit = 50, cursor } = request.query as {
+        q?: string;
+        limit?: number;
+        cursor?: string;
       };
-    }
 
-    // Cursor-based pagination
-    if (cursor) {
-      where.id = {
-        gt: cursor,
+      // Parse limit safely
+      const take = Math.min(200, Math.max(1, Number(limit) || 50));
+
+      // Build where clause
+      const where: any = {
+        organisationId,
       };
-    }
 
-    // Fetch entries with supplier relation
-    const entries = await prisma.organisationLexiconEntry.findMany({
-      where,
-      include: {
-        supplier: {
-          select: {
-            id: true,
-            name: true,
-          },
+      // Search by phrase (normalize search input for consistent matching)
+      if (q) {
+        const normalizedQuery = normalizePhrase(q);
+        where.phrase = {
+          contains: normalizedQuery,
+          mode: 'insensitive' as any,
+        };
+      }
+
+      // Cursor-based pagination (stable: order by id desc, cursor uses lt)
+      if (cursor) {
+        where.id = {
+          lt: cursor,
+        };
+      }
+
+      // Fetch entries
+      const entries = await prisma.organisationLexiconEntry.findMany({
+        where,
+        orderBy: {
+          id: 'desc', // Stable ordering for pagination
         },
-      },
-      orderBy: {
-        lastSeenAt: 'desc',
-      },
-      take: limit + 1, // Fetch one extra to check if there's more
-    });
+        take: take + 1, // Fetch one extra to check if there's more
+      });
 
-    const hasMore = entries.length > limit;
-    const data = hasMore ? entries.slice(0, limit) : entries;
-    const nextCursor = hasMore ? data[data.length - 1].id : null;
+      const hasMore = entries.length > take;
+      const data = hasMore ? entries.slice(0, take) : entries;
+      const nextCursor = hasMore ? data[data.length - 1].id : null;
 
-    return reply.send({
-      data: data.map(entry => ({
-        id: entry.id,
-        phrase: entry.phrase,
-        scope: entry.scopeKey === 'ORG' ? 'ORG' : 'SUPPLIER',
-        supplierId: entry.supplierId,
-        supplierName: entry.supplier?.name || null,
-        addedOn: entry.createdAt,
-        lastSeen: entry.lastSeenAt,
-        timesSeen: entry.timesSeen,
-      })),
-      pagination: {
-        cursor: nextCursor,
-        hasMore,
-      },
-    });
+      return reply.send({
+        data: data.map(entry => ({
+          id: entry.id,
+          phrase: entry.phrase,
+          addedOn: entry.createdAt,
+          lastSeen: entry.lastSeenAt,
+          timesSeen: entry.timesSeen,
+        })),
+        pagination: {
+          cursor: nextCursor,
+          hasMore,
+        },
+      });
+    } catch (error: any) {
+      console.error('[SettingsController] Error listing lexicon entries:', error);
+      return reply.status(500).send({ 
+        error: 'Failed to fetch lexicon entries',
+        message: error.message,
+        code: error.code 
+      });
+    }
   };
+
 
   deleteLexiconEntry = async (request: FastifyRequest, reply: FastifyReply) => {
     const { organisationId } = this.validateOrgAccess(request);

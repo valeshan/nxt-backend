@@ -39,6 +39,9 @@ export async function resetDb() {
   // Delete UserOrganisation immediately before Organisation to minimize race windows
   await prisma.userOrganisation.deleteMany();
   
+  // Delete lexicon entries before organisations (foreign key constraint)
+  await (prisma as any).organisationLexiconEntry.deleteMany();
+  
   await prisma.organisation.deleteMany();
   
   // User must be last if referenced by others (which it is by UserSettings, UserOrganisation)
