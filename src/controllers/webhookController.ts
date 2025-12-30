@@ -36,7 +36,7 @@ export const verifyMailgunSignature = (
 
 export const webhookController = {
   mailgunInbound: async (req: FastifyRequest, reply: FastifyReply) => {
-    console.log('[Webhook] Received Mailgun inbound webhook request');
+    req.log.info('[Webhook] Received Mailgun inbound webhook request');
     // 1. Determine Content-Type
     const contentType = req.headers['content-type'] || '';
     const payload: Record<string, any> = {};
@@ -47,6 +47,29 @@ export const webhookController = {
       encoding: string;
       content: Buffer;
     }> = [];
+
+    const getProviderMessageId = (): string => {
+      const raw =
+        (payload['Message-Id'] as string | undefined) ||
+        (payload['message-id'] as string | undefined) ||
+        (payload['messageId'] as string | undefined) ||
+        (payload['message_id'] as string | undefined);
+
+      if (raw && typeof raw === 'string' && raw.trim().length > 0) return raw.trim();
+
+      // Fallback (deterministic) to preserve idempotency when Mailgun omits Message-Id.
+      // NOTE: This is a last resort; primary idempotency should be provider message id.
+      const token = (payload.token ?? '').toString();
+      const ts = (payload.timestamp ?? '').toString();
+      const rcpt = (payload.recipient ?? '').toString().toLowerCase().trim();
+      const subj = (payload.subject ?? '').toString();
+      const sender = (payload.sender ?? '').toString();
+      const basis = `${ts}|${token}|${rcpt}|${sender}|${subj}`;
+      const digest = crypto.createHash('sha256').update(basis).digest('hex');
+      return `fallback-${digest}`;
+    };
+
+    const ok = (body: any = { success: true }) => reply.status(200).send(body);
 
     try {
       if (contentType.includes('multipart/form-data')) {
@@ -75,22 +98,38 @@ export const webhookController = {
           Object.assign(payload, body);
         }
       } else {
-        // Fallback or Error
-        return reply.status(415).send({ error: 'Unsupported Content-Type' });
+        req.log.warn({ contentType }, 'Unsupported Content-Type for Mailgun inbound webhook');
+        return ok({ success: false, ignored: true, reason: 'UNSUPPORTED_CONTENT_TYPE' });
       }
     } catch (err) {
-      req.log.error(err, 'Error parsing webhook body');
-      return reply.status(400).send({ error: 'Body parsing failed' });
+      req.log.error(err, 'Error parsing Mailgun inbound webhook body');
+      return ok({ success: false, ignored: true, reason: 'BODY_PARSING_FAILED' });
     }
 
-    // 2. Verify Signature
+    // 2. Extract signature fields
     const { timestamp, token, signature } = payload;
-    
-    // Safety check: Ensure fields exist
+
     if (!timestamp || !token || !signature) {
-      return reply.status(400).send({ error: 'Missing signature fields' });
+      req.log.error({ hasTimestamp: !!timestamp, hasToken: !!token, hasSignature: !!signature }, 'Missing Mailgun signature fields');
+      return ok({ success: false, ignored: true, reason: 'MISSING_SIGNATURE_FIELDS' });
     }
 
+    // 3. Normalize recipient + alias
+    const recipient = (payload.recipient || '').toString().toLowerCase().trim();
+    req.log.info({ recipient }, '[Webhook] Processing email recipient');
+
+    // Normalize Recipient: Strip "Name <email>" format
+    const emailMatch = recipient.match(/<([^>]+)>/);
+    const normalizedRecipient = emailMatch ? emailMatch[1] : recipient;
+
+    // Recipient Alias Parsing: invoices+<ALIAS>@...
+    const aliasMatch = normalizedRecipient.match(/\+([^@]+)@/);
+    const recipientAlias = aliasMatch ? aliasMatch[1] : null;
+
+    // 4. Provider message id (primary idempotency key)
+    const providerMessageId = getProviderMessageId();
+
+    // 5. Signature verification (never non-200)
     const isValid = verifyMailgunSignature(
       config.MAILGUN_WEBHOOK_SIGNING_KEY,
       token,
@@ -98,48 +137,29 @@ export const webhookController = {
       signature
     );
 
-    if (!isValid) {
-      const debugInfo = {
-        token,
-        timestamp,
-        signature,
-        signingKeyLength: config.MAILGUN_WEBHOOK_SIGNING_KEY?.length,
-        signingKeyPrefix: config.MAILGUN_WEBHOOK_SIGNING_KEY?.substring(0, 4),
-        payloadKeys: Object.keys(payload)
-      };
-      req.log.error(debugInfo, `Invalid Mailgun webhook signature - Debug Info: ${JSON.stringify(debugInfo)}`);
-      return reply.status(403).send({ error: 'Invalid signature' });
+    // 6. Idempotency check via provider message id
+    try {
+      const existingByMessageId = await prisma.inboundEmailEvent.findFirst({
+        where: { messageId: providerMessageId },
+        select: { id: true },
+      });
+
+      if (existingByMessageId) {
+        req.log.info(
+          { eventId: existingByMessageId.id, messageId: providerMessageId },
+          'Ignored duplicate Mailgun webhook (messageId)'
+        );
+        return ok({ success: true, duplicate: true, id: existingByMessageId.id });
+      }
+    } catch (err) {
+      // If lookup fails, continue and rely on DB unique constraint during create (once added).
+      req.log.warn(
+        { err, messageId: providerMessageId },
+        'Idempotency lookup failed; will rely on DB uniqueness'
+      );
     }
 
-    // 3. Idempotency Check
-    const existingEvent = await prisma.inboundEmailEvent.findUnique({
-      where: {
-        token_timestamp: {
-          token,
-          timestamp,
-        },
-      },
-    });
-
-    if (existingEvent) {
-      req.log.info({ eventId: existingEvent.id }, 'Ignored duplicate Mailgun webhook');
-      return reply.status(200).send({ success: true, duplicate: true });
-    }
-
-    // 4. Normalization
-    const recipient = (payload.recipient || '').toString().toLowerCase().trim();
-    console.log(`[Webhook] Processing email for recipient: ${recipient}`);
-    // Normalize Recipient: Strip "Name <email>" format
-    // Regex matches text inside < > or just the full string if no brackets
-    const emailMatch = recipient.match(/<([^>]+)>/);
-    const normalizedRecipient = emailMatch ? emailMatch[1] : recipient;
-    
-    // Recipient Alias Parsing: invoices+<ALIAS>@...
-    // Matches content between + and @
-    const aliasMatch = normalizedRecipient.match(/\+([^@]+)@/);
-    const recipientAlias = aliasMatch ? aliasMatch[1] : null;
-
-    // 5. Persist Event
+    // 7. Persist event (even if invalid signature)
     try {
       const event = await prisma.inboundEmailEvent.create({
         data: {
@@ -147,28 +167,35 @@ export const webhookController = {
           recipientAlias,
           sender: payload.sender as string,
           subject: payload.subject as string,
-          messageId: payload['Message-Id'] as string || payload['message-id'] as string,
-          timestamp,
-          token,
-          signature,
+          messageId: providerMessageId,
+          timestamp: timestamp.toString(),
+          token: token.toString(),
+          signature: signature.toString(),
           raw: payload,
-          status: 'PENDING_FETCH', // Initial status
+          status: isValid ? 'PENDING_FETCH' : 'FAILED_SIGNATURE',
+          failureReason: isValid ? null : 'Invalid Mailgun webhook signature',
         },
       });
 
-      // 6. Upload Files to S3 if present (Handling "Forward" route case)
+      if (!isValid) {
+        const debugInfo = {
+          messageId: providerMessageId,
+          token,
+          timestamp,
+          signature,
+          signingKeyLength: config.MAILGUN_WEBHOOK_SIGNING_KEY?.length,
+          signingKeyPrefix: config.MAILGUN_WEBHOOK_SIGNING_KEY?.substring(0, 4),
+          payloadKeys: Object.keys(payload),
+        };
+        req.log.error(debugInfo, 'Invalid Mailgun webhook signature');
+        // Do NOT enqueue processing for invalid signature
+        return ok({ success: true, id: event.id, accepted: true, signatureValid: false });
+      }
+
+      // 8. Upload files to S3 if present (Forward-route staging)
       if (uploadedFiles.length > 0) {
-        // We need to resolve routing logic here or temporarily store them.
-        // To keep it simple, we'll store them in a temporary S3 location or pass them differently.
-        // Actually, we can just process them in the worker if we can pass the data.
-        // But passing 20MB buffers to Redis is bad.
-        // So we upload to S3 NOW and update the event with metadata.
-        
-        // Wait, we don't have the organizationId/locationId yet (routing happens in service).
-        // So we'll store in a temporary "staging" path.
-        
-        const stagingAttachments = [];
-        
+        const stagingAttachments: any[] = [];
+
         for (const file of uploadedFiles) {
           const s3Key = `inbound-email/staging/${event.id}/${randomUUID()}-${file.filename}`;
           await s3Service.putObject(s3Key, file.content, { ContentType: file.mimetype });
@@ -176,32 +203,40 @@ export const webhookController = {
             originalName: file.filename,
             mimeType: file.mimetype,
             size: file.content.length,
-            key: s3Key
+            key: s3Key,
           });
         }
-        
-        // Update event with staging attachments metadata
+
         await prisma.inboundEmailEvent.update({
           where: { id: event.id },
           data: {
             raw: {
               ...(payload as any),
-              stagingAttachments // Add this to the raw payload so worker finds it
-            }
-          }
+              stagingAttachments,
+            },
+          },
         });
       }
 
-      // 7. Enqueue Job
+      // 9. Enqueue job for async processing
       await addInboundJob(event.id);
+      req.log.info({ eventId: event.id, alias: recipientAlias, messageId: providerMessageId }, 'Enqueued inbound email');
 
-      req.log.info({ eventId: event.id, alias: recipientAlias }, 'Enqueued inbound email');
-      return reply.status(200).send({ success: true, id: event.id });
+      return ok({ success: true, id: event.id, accepted: true, signatureValid: true });
 
-    } catch (err) {
+    } catch (err: any) {
+      // If duplicate due to unique(messageId), treat as idempotent success
+      if (err?.code === 'P2002') {
+        req.log.info({ messageId: providerMessageId }, 'Ignored duplicate Mailgun webhook (DB unique)');
+        const existing = await prisma.inboundEmailEvent
+          .findFirst({ where: { messageId: providerMessageId }, select: { id: true } })
+          .catch(() => null);
+        return ok({ success: true, duplicate: true, id: existing?.id });
+      }
+
       req.log.error(err, 'Failed to store inbound email event');
-      // Even if DB fails, return 500 so Mailgun retries
-      return reply.status(500).send({ error: 'Internal Server Error' });
+      // Always return 200 so Mailgun does not keep retrying.
+      return ok({ success: false, accepted: true, reason: 'DB_ERROR' });
     }
   },
 };

@@ -733,7 +733,7 @@ model InboundEmailEvent {
   recipientAlias String? // Derived alias (e.g. "cafe-nyc" or uuid)
   sender         String?
   subject        String?
-  messageId      String?
+  messageId      String // Mailgun Message-Id (provider idempotency key)
   timestamp      String // Raw timestamp from webhook
   token          String // Webhook token
   signature      String // Webhook signature
@@ -747,10 +747,12 @@ model InboundEmailEvent {
 
   attachments InboundAttachment[]
 
-  @@unique([token, timestamp])
+  // messageId is the Mailgun provider idempotency key
+  @@unique([messageId])
   @@index([status, createdAt])
   @@index([recipient])
   @@index([recipientAlias])
+  @@index([token, timestamp])
 }
 
 enum InboundAttachmentStatus {

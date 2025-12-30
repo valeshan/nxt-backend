@@ -561,10 +561,11 @@ export const invoicePipelineService = {
                   
                   await pusherService.triggerEvent(channel, 'invoice-status-updated', {
                       invoiceFileId: updated.id,
-                      status: updated.processingStatus,
+                      organisationId: updated.organisationId,
                       locationId: updated.locationId,
-                      updatedAt: updated.updatedAt,
+                      status: updated.processingStatus,
                       reviewStatus: updated.reviewStatus,
+                      updatedAt: updated.updatedAt,
                       verificationSource: updated.verificationSource ?? null,
                       verifiedAt: updated.verifiedAt ?? null,
                       invoice: updated.invoice ?? null,
@@ -658,7 +659,12 @@ export const invoicePipelineService = {
 
         const updated = await prisma.invoiceFile.findUnique({
           where: { id: file.id },
-          select: { organisationId: true, locationId: true, updatedAt: true },
+          select: { 
+            organisationId: true, 
+            locationId: true, 
+            updatedAt: true,
+            reviewStatus: true  // Fetch actual reviewStatus
+          },
         });
         
         // Send Pusher (non-blocking)
@@ -667,8 +673,10 @@ export const invoicePipelineService = {
             const channel = pusherService.getOrgChannel(updated.organisationId);
             await pusherService.triggerEvent(channel, 'invoice-status-updated', {
               invoiceFileId: file.id,
-              status: ProcessingStatus.OCR_FAILED,
+              organisationId: updated.organisationId,
               locationId: updated.locationId,
+              status: ProcessingStatus.OCR_FAILED,
+              reviewStatus: updated.reviewStatus,  // Use actual value, not NONE
               updatedAt: updated.updatedAt,
               ocrFailureCategory: OcrFailureCategory.PROVIDER_TIMEOUT,
               ocrFailureDetail: 'Processing timed out after multiple attempts',
@@ -843,7 +851,12 @@ export const invoicePipelineService = {
         }
         updated = await prisma.invoiceFile.findUnique({
           where: { id: invoiceFileId },
-          select: { organisationId: true, locationId: true, updatedAt: true },
+          select: { 
+            organisationId: true, 
+            locationId: true, 
+            updatedAt: true,
+            reviewStatus: true  // Fetch actual reviewStatus
+          },
         });
       } catch (dbError) {
         console.error(`[InvoicePipeline] Failed to update status for ${invoiceFileId}:`, dbError);
@@ -856,8 +869,10 @@ export const invoicePipelineService = {
           const channel = pusherService.getOrgChannel(updated.organisationId);
           await pusherService.triggerEvent(channel, 'invoice-status-updated', {
             invoiceFileId,
-            status: ProcessingStatus.OCR_FAILED,
+            organisationId: updated.organisationId,
             locationId: updated.locationId,
+            status: ProcessingStatus.OCR_FAILED,
+            reviewStatus: updated.reviewStatus,  // Use actual value, not NONE
             updatedAt: updated.updatedAt,
             ocrFailureCategory: classification.category,
             ocrFailureDetail: classification.detail,
@@ -1375,6 +1390,9 @@ export const invoicePipelineService = {
                      // reviewStatus = ReviewStatus.VERIFIED; 
                  }
 
+                 // Track previous reviewStatus to detect changes
+                 const previousReviewStatus = file.reviewStatus;
+
                  // Update File Status and return FRESH enriched object
                 const res = await prisma.invoiceFile.updateMany({
                   where: {
@@ -1404,6 +1422,12 @@ export const invoicePipelineService = {
 
                 // Auto-approval check runs exactly once here when OCR first completes
                 const outcome = await this.checkAndApplyAutoApproval(updatedFile);
+                
+                // Emit review count update only if reviewStatus changed
+                const finalReviewStatus = outcome.updatedFile.reviewStatus;
+                if (previousReviewStatus !== finalReviewStatus) {
+                  await this.emitReviewCountUpdate(outcome.updatedFile.locationId, outcome.updatedFile.organisationId);
+                }
                 
                 // Use the (possibly updated) file for enrichStatus to ensure fresh data in Pusher
                 return this.enrichStatus(outcome.updatedFile);
@@ -1544,17 +1568,27 @@ export const invoicePipelineService = {
       // If canonical is not ready/available yet, summary will be null and FE should HIDE the banner.
       let lineItemQualitySummary = null;
       if (file.invoice?.id) {
-          lineItemQualitySummary = await this.computeLineItemQualitySummary(file.invoice.id);
+          try {
+              lineItemQualitySummary = await this.computeLineItemQualitySummary(file.invoice.id);
+          } catch (e) {
+              console.error(`[InvoicePipeline] Error computing line item quality summary for invoice ${file.invoice.id}`, e);
+              // Continue without summary - frontend will handle null gracefully
+          }
       }
 
       // Per-line issues for row-level highlighting in the Invoice Review Modal.
       // If canonical is not ready/available yet, issues will be null (UI should treat as no row highlights).
       let lineItemQualityIssues = null;
       if (file.invoice?.id) {
-          lineItemQualityIssues = await this.computeLineItemQualityIssues({
-              legacyInvoiceId: file.invoice.id,
-              invoiceFileId: file.id,
-          });
+          try {
+              lineItemQualityIssues = await this.computeLineItemQualityIssues({
+                  legacyInvoiceId: file.invoice.id,
+                  invoiceFileId: file.id,
+              });
+          } catch (e) {
+              console.error(`[InvoicePipeline] Error computing line item quality issues for invoice ${file.invoice.id}`, e);
+              // Continue without issues - frontend will handle null gracefully
+          }
       }
 
       // Remove rawResultJson from ocrResult to reduce payload size (frontend only uses parsedJson)
@@ -1625,6 +1659,16 @@ export const invoicePipelineService = {
         err.code = 'INVOICE_NOT_FOUND';
         throw err;
       }
+
+      // Fetch current reviewStatus BEFORE transaction to detect changes
+      const invoiceFileBefore = invoice.invoiceFileId 
+        ? await prisma.invoiceFile.findUnique({
+            where: { id: invoice.invoiceFileId },
+            select: { reviewStatus: true, locationId: true }
+          })
+        : null;
+      
+      const previousReviewStatus = invoiceFileBefore?.reviewStatus;
 
       // Note: We no longer need to fetch original line items for lexicon learning
       // The simplified logic learns based on final verified text warnings only
@@ -2372,6 +2416,48 @@ export const invoicePipelineService = {
               }
           });
 
+          // Emit review count update if reviewStatus changed (NEEDS_REVIEW -> VERIFIED)
+          // Use updatedInvoice.locationId (canonical truth) instead of invoiceFileBefore.locationId
+          if (previousReviewStatus === ReviewStatus.NEEDS_REVIEW) {
+            await this.emitReviewCountUpdate(updatedInvoice.locationId, invoice.organisationId);
+          }
+
+          // Emit invoice-status-updated event for UI updates
+          // Re-fetch the file to get real persisted values (no guessing)
+          const freshFile = invoice.invoiceFileId
+            ? await prisma.invoiceFile.findUnique({
+                where: { id: invoice.invoiceFileId },
+                select: {
+                  id: true,
+                  organisationId: true,
+                  locationId: true,
+                  processingStatus: true,
+                  reviewStatus: true,
+                  updatedAt: true,
+                  verificationSource: true,
+                  verifiedAt: true,
+                },
+              })
+            : null;
+
+          if (freshFile) {
+            try {
+              const channel = pusherService.getOrgChannel(invoice.organisationId);
+              await pusherService.triggerEvent(channel, 'invoice-status-updated', {
+                invoiceFileId: freshFile.id,
+                organisationId: invoice.organisationId,
+                locationId: freshFile.locationId,
+                status: freshFile.processingStatus,
+                reviewStatus: freshFile.reviewStatus,
+                updatedAt: freshFile.updatedAt.toISOString(),
+                verificationSource: freshFile.verificationSource,
+                verifiedAt: freshFile.verifiedAt ? freshFile.verifiedAt.toISOString() : null,
+              });
+            } catch (e) {
+              console.warn(`[InvoicePipeline] Failed to emit invoice-status-updated for ${invoice.invoiceFileId}:`, e);
+            }
+          }
+
           // Observability: Compute trust stats for selected line items
           const selectedItemIds = new Set(data.items?.map((item: any) => item.id) || []);
           const selectedLineItems = updatedInvoice.lineItems.filter((li: any) => selectedItemIds.has(li.id));
@@ -2793,6 +2879,53 @@ export const invoicePipelineService = {
           });
       });
 
+      // After transaction, emit review count updates for affected locations
+      const affectedLocations = new Set(validFiles.map(f => f.locationId));
+      for (const locId of affectedLocations) {
+        await this.emitReviewCountUpdate(locId, organisationId);
+      }
+
+      // Emit invoice-status-updated events for each file (non-blocking)
+      // Note: For large batches (100s+), consider introducing a bulk event type later
+      // For now, individual events ensure UI consistency
+      try {
+        const channel = pusherService.getOrgChannel(organisationId);
+        // Fetch updated files to get current status
+        const updatedFiles = await prisma.invoiceFile.findMany({
+          where: { id: { in: validFileIds } },
+          select: {
+            id: true,
+            organisationId: true,
+            locationId: true,
+            reviewStatus: true,
+            processingStatus: true,
+            updatedAt: true,
+            verificationSource: true,
+            verifiedAt: true,
+          },
+        });
+
+        // Emit events for each file
+        for (const file of updatedFiles) {
+          try {
+            await pusherService.triggerEvent(channel, 'invoice-status-updated', {
+              invoiceFileId: file.id,
+              organisationId: file.organisationId,  // Guaranteed from select
+              locationId: file.locationId,
+              status: file.processingStatus,
+              reviewStatus: file.reviewStatus,
+              updatedAt: file.updatedAt.toISOString(),
+              verificationSource: file.verificationSource,
+              verifiedAt: file.verifiedAt ? file.verifiedAt.toISOString() : null,
+            });
+          } catch (e) {
+            console.warn(`[InvoicePipeline] Failed to emit invoice-status-updated for ${file.id}:`, e);
+          }
+        }
+      } catch (e) {
+        console.warn(`[InvoicePipeline] Failed to emit invoice-status-updated events for bulk approve:`, e);
+      }
+
       console.log(`[InvoicePipeline] Successfully bulk approved ${validFiles.length} invoices.`);
 
       return {
@@ -2953,6 +3086,34 @@ export const invoicePipelineService = {
 
       console.log(`[InvoicePipeline] Successfully restored ${files.length} files.`);
       return { restoredCount: files.length, restoredIds: foundFileIds };
-  }
+  },
+
+  /**
+   * Emits a review-count-updated event for a location.
+   * Computes the exact count of invoices needing review.
+   * Non-blocking: logs errors but doesn't throw.
+   */
+  async emitReviewCountUpdate(locationId: string, organisationId: string): Promise<void> {
+    try {
+      const count = await prisma.invoiceFile.count({
+        where: {
+          locationId,
+          organisationId,
+          reviewStatus: ReviewStatus.NEEDS_REVIEW,
+          deletedAt: null,
+        } as any,
+      });
+
+      const channel = pusherService.getOrgChannel(organisationId);
+      await pusherService.triggerEvent(channel, 'review-count-updated', {
+        locationId,
+        organisationId,
+        count,
+      });
+    } catch (error) {
+      // Non-blocking: log but don't throw
+      console.warn(`[InvoicePipeline] Failed to emit review count update for location ${locationId}:`, error);
+    }
+  },
 };
 

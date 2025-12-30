@@ -64,6 +64,18 @@ export default async function invoiceRoutes(fastify: FastifyInstance) {
       }
   }, invoiceController.verify);
 
+  // GET /invoices/locations/:locationId/review-count
+  app.get('/locations/:locationId/review-count', {
+      schema: {
+          params: z.object({ locationId: z.string() }),
+          response: {
+              200: z.object({
+                  count: z.number(),
+              }),
+          },
+      }
+  }, invoiceController.getReviewCount);
+
   // GET /invoices/locations/:locationId
   app.get('/locations/:locationId', {
       schema: {

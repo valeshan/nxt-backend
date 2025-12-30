@@ -854,6 +854,47 @@ export const invoiceController = {
           });
           return reply.status(500).send({ error: 'Failed to create manual entry' });
       }
-  }
+  },
+
+  async getReviewCount(req: FastifyRequest, reply: FastifyReply) {
+    const { locationId } = req.params as { locationId: string };
+    const auth = req.authContext;
+    
+    if (!auth?.organisationId) {
+      return reply.status(401).send({ error: 'Unauthorized' });
+    }
+    
+    // Validate location belongs to org
+    const location = await getLocationIfOwned(locationId, auth.organisationId);
+    if (!location) {
+      return reply.status(404).send({ error: 'Location not found' });
+    }
+    
+    // If token is location-scoped, validate it matches
+    if (!validateLocationScope(locationId, auth)) {
+      return reply.status(404).send({ error: 'Location not found' });
+    }
+    
+    try {
+      const count = await prisma.invoiceFile.count({
+        where: {
+          locationId,
+          organisationId: auth.organisationId,
+          reviewStatus: ReviewStatus.NEEDS_REVIEW,
+          deletedAt: null,
+        } as any,
+      });
+      
+      return reply.status(200).send({ count });
+    } catch (error: any) {
+      req.log.error({
+        msg: 'Get review count failed',
+        locationId,
+        organisationId: auth?.organisationId,
+        error: error.message,
+      });
+      return reply.status(500).send({ error: 'Failed to get review count' });
+    }
+  },
 };
 
