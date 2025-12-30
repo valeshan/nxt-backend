@@ -15,17 +15,23 @@ const redact = (v?: string | null) => {
 };
 
 const getMailgunApiKey = (): string => {
-  const key = config.MAILGUN_API_KEY as any;
+  const raw = config.MAILGUN_API_KEY as any;
 
-  if (!key || typeof key !== 'string') {
-    throw new Error('[InboundEmail] Missing MAILGUN_API_KEY (Mailgun API key secret).');
+  if (!raw || typeof raw !== 'string') {
+    throw new Error('[InboundEmail] Missing MAILGUN_API_KEY (Mailgun private API key secret).');
   }
 
-  // Common misconfig: webhook signing key / wrong key type
-  if (!key.startsWith('key-')) {
-    console.warn(
-      `[InboundEmail] MAILGUN_API_KEY does not look like a Mailgun API key (expected 'key-...'). Got: ${redact(key)}`
-    );
+  // Mailgun UI sometimes shows keys as `key-<privateKey>`. For API auth, we must use the raw private key.
+  const key = raw.startsWith('key-') ? raw.slice(4) : raw;
+
+  // Lightweight sanity check (don’t be too strict — formats can vary)
+  if (key.length < 20) {
+    console.warn(`[InboundEmail] MAILGUN_API_KEY looks unusually short. Got: ${redact(key)}`);
+  }
+
+  // Warn if we had to strip the prefix (helps catch accidental use of webhook signing key)
+  if (raw.startsWith('key-')) {
+    console.warn(`[InboundEmail] MAILGUN_API_KEY included 'key-' prefix; stripped for HTTP Basic auth. Using: ${redact(key)}`);
   }
 
   return key;
@@ -48,17 +54,22 @@ const resolveMailgunApiUrl = (inputUrl: string): string => {
 
 const fetchMailgunJson = async (url: string): Promise<Response> => {
   // Try original URL first
+  console.log(`[InboundEmail] Using MAILGUN_API_KEY: ${redact(config.MAILGUN_API_KEY)}`);
   let res = await fetch(url, { headers: mailgunAuthHeaders() });
 
-  // Retry against standard API host if storage URL rejects
-  if (res.status === 401 || res.status === 403 || res.status === 404) {
+  // Retry against standard API host only on auth errors (storage host often returns real 404s)
+  if (res.status === 401 || res.status === 403) {
     const fallbackUrl = resolveMailgunApiUrl(url);
     if (fallbackUrl !== url) {
       console.warn(`[InboundEmail] Mailgun fetch failed (${res.status}) for ${url}. Retrying via ${fallbackUrl}`);
     }
+
+    console.log(`[InboundEmail] Using MAILGUN_API_KEY: ${redact(config.MAILGUN_API_KEY)}`);
     res = await fetch(fallbackUrl, { headers: mailgunAuthHeaders() });
   }
-
+  if (!res.ok) {
+    console.warn(`[InboundEmail] Mailgun fetch failed after retry: ${res.status} ${res.statusText} url=${url}`);
+  }
   return res;
 };
 // Mailgun types (partial)
