@@ -41,12 +41,23 @@ export const invoiceController = {
         return reply.status(400).send({ error: 'Only PDF files up to 10MB are supported' });
     }
 
+    // Extract test override header for E2E determinism (only in test environment)
+    let testOverridesJson: any = null;
+    const testOcrSupplierName = req.headers['x-test-ocr-supplier-name'];
+    if ((process.env.NODE_ENV === 'test' || process.env.E2E === 'true') && testOcrSupplierName) {
+        if (typeof testOcrSupplierName === 'string') {
+            testOverridesJson = { ocrSupplierName: testOcrSupplierName };
+            req.log.info({ msg: 'Test OCR override applied', ocrSupplierName: testOcrSupplierName });
+        }
+    }
+
     try {
         const result = await invoicePipelineService.submitForProcessing(data.file, {
             organisationId: auth.organisationId,
             locationId,
             fileName: data.filename,
             mimeType: data.mimetype,
+            testOverridesJson,
         });
         return reply.status(202).send(result);
     } catch (e: any) {

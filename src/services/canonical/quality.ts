@@ -37,7 +37,13 @@ export function computeQualityStatus(input: QualityInput): { qualityStatus: Qual
     if (!warnReasons.includes(r)) warnReasons.push(r);
   }
 
-  if (qty !== null && qty <= 0) warnReasons.push('NON_POSITIVE_QUANTITY');
+  // Quantity validation: separate warnings for missing vs invalid
+  // Credit notes are exempt from missing quantity checks (they often have totals without meaningful unit quantity)
+  if (qty === null && input.adjustmentStatus !== AdjustmentStatus.CREDITED) {
+    warnReasons.push('MISSING_QUANTITY');
+  } else if (qty !== null && qty <= 0) {
+    warnReasons.push('NON_POSITIVE_QUANTITY');
+  }
 
   if (lineTotal !== null && lineTotal < 0 && input.adjustmentStatus !== AdjustmentStatus.CREDITED) {
     warnReasons.push('NEGATIVE_LINE_TOTAL_NOT_CREDITED');

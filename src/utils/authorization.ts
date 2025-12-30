@@ -60,3 +60,4 @@ export function validateLocationScope(
   // Org-scoped token: allow any location (ownership checked separately)
   return true;
 }
+

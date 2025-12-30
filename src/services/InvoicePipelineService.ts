@@ -11,6 +11,7 @@ import { assertDateRangeOrThrow, assertWindowIfDeepPagination, getOffsetPaginati
 import { getProductKeyFromLineItem } from './helpers/productKey';
 import { assertCanonicalInvoiceLegacyLink, canonicalizeLine } from './canonical';
 import { computeDescriptionWarnings, getAlphaRatio, normalizePhrase, normalizePhraseKey } from '../utils/descriptionQuality';
+import { normalizeSupplierName } from '../utils/normalizeSupplierName';
 
 export class InvoiceFileNotFoundError extends Error {
   constructor(message: string) {
@@ -879,6 +880,7 @@ export const invoicePipelineService = {
         mimeType: string; 
         sourceType?: InvoiceSourceType;
         sourceReference?: string;
+        testOverridesJson?: any; // Test-only overrides for E2E determinism
     }
   ) {
     // Guard: Check if stream is readable
@@ -913,6 +915,7 @@ export const invoicePipelineService = {
                 storageKey: key,
                 processingStatus: ProcessingStatus.PENDING_OCR,
                 reviewStatus: ReviewStatus.NONE,
+                testOverridesJson: metadata.testOverridesJson || null,
             }
         });
         console.log(`[InvoicePipeline] InvoiceFile created: ${invoiceFile.id}`);
@@ -980,6 +983,15 @@ export const invoicePipelineService = {
                  // ... (Processing Logic) ...
                  // Parse
                  const parsed = ocrService.parseTextractOutput(result);
+
+                 // Apply test override for E2E determinism (if present)
+                 if (file.testOverridesJson && typeof file.testOverridesJson === 'object') {
+                     const overrides = file.testOverridesJson as any;
+                     if (overrides.ocrSupplierName && typeof overrides.ocrSupplierName === 'string') {
+                         console.log(`[InvoicePipeline] Applying test OCR override for file ${file.id}: ${overrides.ocrSupplierName}`);
+                         parsed.supplierName = overrides.ocrSupplierName;
+                     }
+                 }
 
                  // Early abort check: If confidence or word count is too low, fail immediately
                  const detectedWords = countDetectedWords(parsed);
@@ -1054,10 +1066,16 @@ export const invoicePipelineService = {
                  
                  // Resolve Supplier
                  let resolution;
+                 const rawSupplierName = parsed.supplierName || '';
                  if (xeroSupplierId) {
-                      resolution = { supplier: { id: xeroSupplierId } };
+                      // Xero supplier override: treat as EXACT match from trusted source
+                      resolution = { 
+                          supplier: { id: xeroSupplierId }, 
+                          matchType: 'EXACT' as const,
+                          confidence: 1.0
+                      };
                  } else {
-                      resolution = await supplierResolutionService.resolveSupplier(parsed.supplierName || '', file.organisationId);
+                      resolution = await supplierResolutionService.resolveSupplier(rawSupplierName, file.organisationId);
                  }
                  
                  // Create or Update OcrResult
@@ -1149,12 +1167,22 @@ export const invoicePipelineService = {
                      const orgLexiconSetPhraseOnly = buildSuppressionSet(lexiconEntries);
                      
                      try {
+                        // Prepare match metadata
+                        const supplierMatchType = resolution?.matchType || null;
+                        const matchedAliasKey = resolution?.matchType === 'ALIAS' && resolution?.matchedAliasKey 
+                            ? resolution.matchedAliasKey 
+                            : null;
+                        const matchedAliasRaw = rawSupplierName ? rawSupplierName.slice(0, 50) : null;
+
                         await prisma.invoice.create({
                             data: {
                                 organisationId: file.organisationId,
                                 locationId: file.locationId,
                                 invoiceFileId: file.id,
                                 supplierId: resolution?.supplier.id,
+                                supplierMatchType: supplierMatchType as any,
+                                matchedAliasKey: matchedAliasKey,
+                                matchedAliasRaw: matchedAliasRaw,
                                 invoiceNumber: parsed.invoiceNumber,
                                 date: invoiceDate,
                                 total: parsed.total,
@@ -1529,8 +1557,19 @@ export const invoicePipelineService = {
               invoiceFileId: file.id,
           });
       }
+
+      // Remove rawResultJson from ocrResult to reduce payload size (frontend only uses parsedJson)
+      const sanitizedOcrResult = file.ocrResult ? {
+          id: file.ocrResult.id,
+          invoiceFileId: file.ocrResult.invoiceFileId,
+          parsedJson: file.ocrResult.parsedJson,
+          createdAt: file.ocrResult.createdAt,
+          updatedAt: file.ocrResult.updatedAt,
+      } : file.ocrResult;
+
       return {
           ...file,
+          ocrResult: sanitizedOcrResult,
           presignedUrl,
           lineItemQualitySummary,
           lineItemQualityIssues,
@@ -2103,13 +2142,28 @@ export const invoicePipelineService = {
           // 6. Update Invoice Header
           // NOTE: supplierId validation (step 2) and this write occur in the same transaction,
           // ensuring the supplier still belongs to the organisation at write time
+          
+          // Determine match metadata: if supplier changed, set to MANUAL and clear alias fields
+          // If supplier unchanged, keep existing matchType (e.g., FUZZY stays FUZZY)
+          const supplierChanged = invoice.supplierId !== targetSupplierId;
+          const matchMetadataUpdate: any = {};
+          
+          if (supplierChanged) {
+              // Manual override: clear match metadata
+              matchMetadataUpdate.supplierMatchType = 'MANUAL';
+              matchMetadataUpdate.matchedAliasKey = null;
+              matchMetadataUpdate.matchedAliasRaw = null;
+          }
+          // If supplier unchanged, we keep existing matchType (don't overwrite)
+          
           const updatedInvoice = await tx.invoice.update({
               where: { id: invoiceId },
               data: {
                   supplierId: targetSupplierId,
                   total: data.total,
                   isVerified: true,
-                  date: data.date ? new Date(data.date) : undefined
+                  date: data.date ? new Date(data.date) : undefined,
+                  ...matchMetadataUpdate
               },
               include: { supplier: true, lineItems: true }
           });
@@ -2260,7 +2314,9 @@ export const invoicePipelineService = {
           if (data.createAlias && targetSupplierId) {
               const aliasName = data.aliasName || data.supplierName;
               if (aliasName) {
-                  const normalized = aliasName.toLowerCase().trim();
+                  // Use normalizeSupplierName to match the resolution logic
+                  // This ensures aliases match OCR variations (punctuation, suffixes, etc.)
+                  const normalized = normalizeSupplierName(aliasName);
                   await tx.supplierAlias.upsert({
                       where: {
                           organisationId_normalisedAliasName: {

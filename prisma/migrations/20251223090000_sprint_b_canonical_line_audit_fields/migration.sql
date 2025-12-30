@@ -9,3 +9,4 @@ ALTER TABLE "CanonicalInvoiceLineItem"
   ADD COLUMN IF NOT EXISTS "warnReasons" TEXT[] NOT NULL DEFAULT '{}';
 
 
+

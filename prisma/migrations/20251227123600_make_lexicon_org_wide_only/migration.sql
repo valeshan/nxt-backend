@@ -78,3 +78,4 @@ CREATE INDEX IF NOT EXISTS "OrganisationLexiconEntry_organisationId_phrase_idx"
 CREATE INDEX IF NOT EXISTS "OrganisationLexiconEntry_lastSeenAt_idx" 
   ON "OrganisationLexiconEntry"("lastSeenAt");
 
+

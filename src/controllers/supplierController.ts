@@ -56,7 +56,12 @@ export class SupplierController {
       });
       
       if (existing) {
-        return reply.send(existing);
+        // Serialize dates to ISO strings to match schema
+        return reply.send({
+          ...existing,
+          createdAt: existing.createdAt.toISOString(),
+          updatedAt: existing.updatedAt.toISOString(),
+        });
       }
       
       // Create new supplier with ACTIVE status (manual creation)
@@ -70,7 +75,12 @@ export class SupplierController {
         }
       });
       
-      return reply.send(supplier);
+      // Serialize dates to ISO strings to match schema
+      return reply.send({
+        ...supplier,
+        createdAt: supplier.createdAt.toISOString(),
+        updatedAt: supplier.updatedAt.toISOString(),
+      });
     } catch (error: any) {
       console.error('[SupplierController] Failed to create supplier:', error);
       const name = (request.body as any)?.name;

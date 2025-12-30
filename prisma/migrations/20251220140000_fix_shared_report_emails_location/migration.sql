@@ -10,3 +10,4 @@ BEGIN
         ALTER TABLE "Location" ADD COLUMN "sharedReportEmails" TEXT[] DEFAULT ARRAY[]::TEXT[];
     END IF;
 END $$;
+

@@ -487,6 +487,14 @@ enum OcrFailureCategory {
   UNKNOWN
 }
 
+enum SupplierMatchType {
+  ALIAS
+  EXACT
+  FUZZY
+  MANUAL
+  CREATED
+}
+
 model SupplierAlias {
   id                  String       @id @default(uuid())
   organisationId      String
@@ -526,6 +534,7 @@ model InvoiceFile {
   ocrFailureDetail   String?
   lastOcrAttemptAt   DateTime?
   preprocessingFlags Json? // Store preprocessing flags like { autoRotate: true, contrastBoost: true }
+  testOverridesJson  Json? // Test-only overrides: { ocrSupplierName: string } for E2E determinism
   createdAt          DateTime            @default(now())
   updatedAt          DateTime            @updatedAt
   ocrResult          InvoiceOcrResult?
@@ -564,11 +573,14 @@ model Invoice {
   total           Decimal?          @db.Decimal(19, 4)
   tax             Decimal?          @db.Decimal(19, 4)
   subtotal        Decimal?          @db.Decimal(19, 4)
-  sourceType      InvoiceSourceType
-  sourceReference String?
-  isVerified      Boolean           @default(false)
-  createdAt       DateTime          @default(now())
-  updatedAt       DateTime          @updatedAt
+  sourceType         InvoiceSourceType
+  sourceReference    String?
+  supplierMatchType  SupplierMatchType?
+  matchedAliasKey    String? // Normalized alias name that matched (from SupplierAlias.normalisedAliasName)
+  matchedAliasRaw    String? // Raw OCR supplier name (max 50 chars)
+  isVerified          Boolean           @default(false)
+  createdAt           DateTime          @default(now())
+  updatedAt           DateTime          @updatedAt
   invoiceFile     InvoiceFile?      @relation(fields: [invoiceFileId], references: [id])
   supplier        Supplier?         @relation(fields: [supplierId], references: [id])
   lineItems       InvoiceLineItem[]

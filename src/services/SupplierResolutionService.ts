@@ -66,7 +66,12 @@ export const supplierResolutionService = {
             supplierId: alias.supplier.id,
             confidence: 1.0
         }));
-        return { supplier: alias.supplier, confidence: 1.0, matchType: 'ALIAS' as const };
+        return { 
+            supplier: alias.supplier, 
+            confidence: 1.0, 
+            matchType: 'ALIAS' as const,
+            matchedAliasKey: alias.normalisedAliasName // Use the actual alias record's normalized name
+        };
     }
 
     // 2. Try exact match on Supplier normalizedName
@@ -78,7 +83,11 @@ export const supplierResolutionService = {
     });
 
     if (exactSupplier) {
-        return { supplier: exactSupplier, confidence: 1.0, matchType: 'EXACT' as const };
+        return { 
+            supplier: exactSupplier, 
+            confidence: 1.0, 
+            matchType: 'EXACT' as const 
+        };
     }
 
     // 3. Fuzzy matching - find best match above threshold
@@ -137,7 +146,7 @@ export const supplierResolutionService = {
         event: 'supplier_resolve',
         orgId: organisationId,
         rawName: rawNameSafe,
-        matchType: 'CREATED_NEW',
+        matchType: 'CREATED',
         confidence: 1.0
     }));
 
@@ -165,7 +174,7 @@ export const supplierResolutionService = {
       return created;
     });
 
-    return { supplier: newSupplier, confidence: 1.0, matchType: 'CREATED_NEW' as const };
+    return { supplier: newSupplier, confidence: 1.0, matchType: 'CREATED' as const };
   },
 
   async createAlias(organisationId: string, supplierId: string, aliasName: string) {
