@@ -57,7 +57,13 @@ const fetchMailgunJson = async (url: string): Promise<Response> => {
   console.log(`[InboundEmail] Using MAILGUN_API_KEY: ${redact(config.MAILGUN_API_KEY)}`);
   let res = await fetch(url, { headers: mailgunAuthHeaders() });
 
-  // Retry against standard API host only on auth errors (storage host often returns real 404s)
+  // If it's a 404, do NOT retry. Log clearly and return immediately.
+  if (res.status === 404) {
+    console.warn(`[InboundEmail] Mailgun fetch 404: message not found/expired at ${url}`);
+    return res;
+  }
+
+  // Retry against standard API host only on auth errors (401/403)
   if (res.status === 401 || res.status === 403) {
     const fallbackUrl = resolveMailgunApiUrl(url);
     if (fallbackUrl !== url) {
@@ -305,6 +311,17 @@ export const inboundEmailService = {
         // Try original URL first
         const response = await fetchMailgunJson(storageUrl);
 
+        if (response.status === 404) {
+          // Mailgun message not found (expired or deleted)
+          await prisma.inboundEmailEvent.update({
+            where: { id: eventId },
+            data: {
+              status: InboundEmailStatus.FAILED_FETCH,
+              failureReason: 'Mailgun message not found (expired or already deleted from storage)',
+            },
+          });
+          return;
+        }
         if (!response.ok) {
           throw new Error(`Mailgun API error: ${response.status} ${response.statusText}`);
         }
