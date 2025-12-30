@@ -53,13 +53,24 @@ const resolveMailgunApiUrl = (inputUrl: string): string => {
 };
 
 const fetchMailgunJson = async (url: string): Promise<Response> => {
-  // Always attempt the provided URL first.
   console.log(`[InboundEmail] Using MAILGUN_API_KEY: ${redact(config.MAILGUN_API_KEY)}`);
-  let res = await fetch(url, { headers: mailgunAuthHeaders() });
+
+  // Storage hosts are often flaky / eventually-consistent. Prefer the standard API host first.
+  const primaryUrl = (() => {
+    try {
+      const u = new URL(url);
+      const isStorage = u.hostname.startsWith('storage-') || u.hostname.includes('storage');
+      return isStorage ? resolveMailgunApiUrl(url) : url;
+    } catch {
+      return url;
+    }
+  })();
+
+  let res = await fetch(primaryUrl, { headers: mailgunAuthHeaders() });
 
   const isStorageHost = (() => {
     try {
-      const u = new URL(url);
+      const u = new URL(primaryUrl);
       return u.hostname.startsWith('storage-') || u.hostname.includes('storage');
     } catch {
       return false;
@@ -68,9 +79,9 @@ const fetchMailgunJson = async (url: string): Promise<Response> => {
 
   // On auth errors, retry against the standard API host.
   if (res.status === 401 || res.status === 403) {
-    const fallbackUrl = resolveMailgunApiUrl(url);
-    if (fallbackUrl !== url) {
-      console.warn(`[InboundEmail] Mailgun fetch failed (${res.status}) for ${url}. Retrying via ${fallbackUrl}`);
+    const fallbackUrl = resolveMailgunApiUrl(primaryUrl);
+    if (fallbackUrl !== primaryUrl) {
+      console.warn(`[InboundEmail] Mailgun fetch failed (${res.status}) for ${primaryUrl}. Retrying via ${fallbackUrl}`);
       console.log(`[InboundEmail] Using MAILGUN_API_KEY: ${redact(config.MAILGUN_API_KEY)}`);
       res = await fetch(fallbackUrl, { headers: mailgunAuthHeaders() });
     }
@@ -79,16 +90,16 @@ const fetchMailgunJson = async (url: string): Promise<Response> => {
   // IMPORTANT: storage hosts can return 404 even when the message is retrievable via api.mailgun.net.
   // If we got a 404 from a storage host, retry once via the standard API host.
   if (res.status === 404 && isStorageHost) {
-    const fallbackUrl = resolveMailgunApiUrl(url);
-    if (fallbackUrl !== url) {
-      console.warn(`[InboundEmail] Mailgun storage 404 for ${url}. Retrying via ${fallbackUrl}`);
+    const fallbackUrl = resolveMailgunApiUrl(primaryUrl);
+    if (fallbackUrl !== primaryUrl) {
+      console.warn(`[InboundEmail] Mailgun storage 404 for ${primaryUrl}. Retrying via ${fallbackUrl}`);
       console.log(`[InboundEmail] Using MAILGUN_API_KEY: ${redact(config.MAILGUN_API_KEY)}`);
       res = await fetch(fallbackUrl, { headers: mailgunAuthHeaders() });
     }
   }
 
   if (!res.ok) {
-    console.warn(`[InboundEmail] Mailgun fetch failed: ${res.status} ${res.statusText} url=${url}`);
+    console.warn(`[InboundEmail] Mailgun fetch failed: ${res.status} ${res.statusText} url=${primaryUrl}`);
   }
 
   return res;
@@ -104,13 +115,22 @@ const fetchMailgunJsonWithRetry = async (
   url: string,
   opts: { maxAttempts?: number; initialDelayMs?: number } = {}
 ): Promise<Response> => {
-  const maxAttempts = opts.maxAttempts ?? 5;
-  let delay = opts.initialDelayMs ?? 750;
+  const maxAttempts = opts.maxAttempts ?? 10;
+  let delay = opts.initialDelayMs ?? 1000;
 
   let lastRes: Response | null = null;
   for (let attempt = 1; attempt <= maxAttempts; attempt++) {
     const res = await fetchMailgunJson(url);
     lastRes = res;
+
+    if (res.status === 404) {
+      try {
+        const txt = await res.clone().text();
+        console.warn(`[InboundEmail] Mailgun 404 body: ${txt.slice(0, 200)}`);
+      } catch {
+        // ignore
+      }
+    }
 
     // 404 can happen briefly right after inbound email arrives (storage not ready yet)
     if (res.status === 404 && attempt < maxAttempts) {
@@ -360,15 +380,19 @@ export const inboundEmailService = {
         const response = await fetchMailgunJsonWithRetry(storageUrl, { maxAttempts: 5, initialDelayMs: 750 });
 
         if (response.status === 404) {
-          // After retries, treat as terminal (expired / deleted / wrong key)
+          // After retries, treat as transient and allow BullMQ to retry the job later.
+          // Mailgun storage can lag, and sometimes message becomes available after a longer window.
           await prisma.inboundEmailEvent.update({
             where: { id: eventId },
             data: {
-              status: InboundEmailStatus.FAILED_FETCH,
-              failureReason: `Mailgun message not found after retries (expired, deleted, or unavailable): ${storageUrl}`,
+              status: InboundEmailStatus.PROCESSING,
+              failureReason: `Mailgun message returned 404 after retries; will retry job. url=${storageUrl}`,
             },
           });
-          return;
+
+          const err: any = new Error(`MAILGUN_MESSAGE_NOT_READY: 404 from Mailgun after retries. url=${storageUrl}`);
+          err.code = 'MAILGUN_MESSAGE_NOT_READY';
+          throw err;
         }
         if (!response.ok) {
           throw new Error(`Mailgun API error: ${response.status} ${response.statusText}`);
