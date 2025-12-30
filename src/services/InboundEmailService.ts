@@ -123,12 +123,18 @@ const fetchMailgunJsonWithRetry = async (
     const res = await fetchMailgunJson(url);
     lastRes = res;
 
+    let bodyTxt: string | null = null;
     if (res.status === 404) {
       try {
-        const txt = await res.clone().text();
-        console.warn(`[InboundEmail] Mailgun 404 body: ${txt.slice(0, 200)}`);
+        bodyTxt = await res.clone().text();
+        console.warn(`[InboundEmail] Mailgun 404 body: ${bodyTxt.slice(0, 200)}`);
       } catch {
-        // ignore
+        bodyTxt = null;
+      }
+
+      // This is NOT eventual consistency. It is a domain-level setting blocking message retrieval.
+      if (bodyTxt && bodyTxt.includes('Message retrieval disabled for domain')) {
+        return res;
       }
     }
 
@@ -380,20 +386,26 @@ export const inboundEmailService = {
         const response = await fetchMailgunJsonWithRetry(storageUrl, { maxAttempts: 5, initialDelayMs: 750 });
 
         if (response.status === 404) {
-          // After retries, treat as transient and allow BullMQ to retry the job later.
-          // Mailgun storage can lag, and sometimes message becomes available after a longer window.
-          await prisma.inboundEmailEvent.update({
-            where: { id: eventId },
-            data: {
-              status: InboundEmailStatus.PROCESSING,
-              failureReason: `Mailgun message returned 404 after retries; will retry job. url=${storageUrl}`,
-            },
-          });
+          // Distinguish eventual-consistency (not ready) vs domain-level config (retrieval disabled)
+          let bodyTxt: string | null = null;
+          try {
+            bodyTxt = await response.clone().text();
+          } catch {
+            bodyTxt = null;
+          }
 
+          if (bodyTxt && bodyTxt.includes('Message retrieval disabled for domain')) {
+            const err: any = new Error(`MAILGUN_MESSAGE_RETRIEVAL_DISABLED: ${bodyTxt}`);
+            err.code = 'MAILGUN_MESSAGE_RETRIEVAL_DISABLED';
+            throw err;
+          }
+
+          // Otherwise treat as transient and allow BullMQ to retry the job later.
           const err: any = new Error(`MAILGUN_MESSAGE_NOT_READY: 404 from Mailgun after retries. url=${storageUrl}`);
           err.code = 'MAILGUN_MESSAGE_NOT_READY';
           throw err;
         }
+
         if (!response.ok) {
           throw new Error(`Mailgun API error: ${response.status} ${response.statusText}`);
         }
@@ -586,11 +598,36 @@ export const inboundEmailService = {
 
     } catch (err: any) {
       console.error(`[InboundEmail] Fatal error processing event ${eventId}`, err);
+
+      // If Mailgun message isn't ready yet, do NOT mark terminal. Let BullMQ retry later.
+      if (err?.code === 'MAILGUN_MESSAGE_NOT_READY') {
+        await prisma.inboundEmailEvent.update({
+          where: { id: eventId },
+          data: {
+            status: InboundEmailStatus.PROCESSING,
+            failureReason: err.message,
+          },
+        });
+        throw err;
+      }
+
+      // If message retrieval is disabled for the domain, this is a configuration issue.
+      if (err?.code === 'MAILGUN_MESSAGE_RETRIEVAL_DISABLED') {
+        await prisma.inboundEmailEvent.update({
+          where: { id: eventId },
+          data: {
+            status: InboundEmailStatus.FAILED_PROCESSING,
+            failureReason: 'Mailgun message retrieval is disabled for this domain. Enable message storage/retrieval for inbound.thenxt.ai (Domains -> inbound.thenxt.ai -> Message storage/retrieval), or change the route to include attachments in the webhook payload.',
+          },
+        });
+        throw err;
+      }
+
       await prisma.inboundEmailEvent.update({
         where: { id: eventId },
-        data: { 
+        data: {
           status: InboundEmailStatus.FAILED_PROCESSING,
-          failureReason: err.message
+          failureReason: err.message,
         },
       });
       throw err; // Re-throw to let BullMQ retry if transient
