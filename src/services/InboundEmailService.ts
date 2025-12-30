@@ -93,6 +93,39 @@ const fetchMailgunJson = async (url: string): Promise<Response> => {
 
   return res;
 };
+
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+/**
+ * Mailgun storage can be eventually-consistent for a short window after Store & Notify.
+ * Retry a few times on 404 before treating as terminal.
+ */
+const fetchMailgunJsonWithRetry = async (
+  url: string,
+  opts: { maxAttempts?: number; initialDelayMs?: number } = {}
+): Promise<Response> => {
+  const maxAttempts = opts.maxAttempts ?? 5;
+  let delay = opts.initialDelayMs ?? 750;
+
+  let lastRes: Response | null = null;
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    const res = await fetchMailgunJson(url);
+    lastRes = res;
+
+    // 404 can happen briefly right after inbound email arrives (storage not ready yet)
+    if (res.status === 404 && attempt < maxAttempts) {
+      console.warn(`[InboundEmail] Mailgun message 404 (attempt ${attempt}/${maxAttempts}). Waiting ${delay}ms then retrying...`);
+      await sleep(delay);
+      delay = Math.min(delay * 2, 8000);
+      continue;
+    }
+
+    return res;
+  }
+
+  // Should never hit because we return inside the loop, but keep types happy
+  return lastRes as Response;
+};
 // Mailgun types (partial)
 interface MailgunAttachment {
   url: string;
@@ -214,7 +247,7 @@ export const inboundEmailService = {
           const storageUrl = rawPayload['message-url'] || rawPayload['storage']?.['url'];
           if (storageUrl) {
             try {
-              const response = await fetchMailgunJson(storageUrl);
+              const response = await fetchMailgunJsonWithRetry(storageUrl, { maxAttempts: 4, initialDelayMs: 500 });
               if (response.ok) {
                 const messageData = await response.json() as MailgunMessage;
                 bodyText = messageData['body-plain'] || null;
@@ -323,16 +356,16 @@ export const inboundEmailService = {
   
         console.log(`[InboundEmail] Fetching message content from ${storageUrl}`);
         
-        // Try original URL first
-        const response = await fetchMailgunJson(storageUrl);
+        // Try original URL first, but retry on 404 (eventual consistency)
+        const response = await fetchMailgunJsonWithRetry(storageUrl, { maxAttempts: 5, initialDelayMs: 750 });
 
         if (response.status === 404) {
-          // Mailgun message not found (expired or deleted)
+          // After retries, treat as terminal (expired / deleted / wrong key)
           await prisma.inboundEmailEvent.update({
             where: { id: eventId },
             data: {
               status: InboundEmailStatus.FAILED_FETCH,
-              failureReason: 'Mailgun message not found (expired or already deleted from storage)',
+              failureReason: `Mailgun message not found after retries (expired, deleted, or unavailable): ${storageUrl}`,
             },
           });
           return;
