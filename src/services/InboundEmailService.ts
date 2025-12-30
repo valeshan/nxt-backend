@@ -53,29 +53,44 @@ const resolveMailgunApiUrl = (inputUrl: string): string => {
 };
 
 const fetchMailgunJson = async (url: string): Promise<Response> => {
-  // Try original URL first
+  // Always attempt the provided URL first.
   console.log(`[InboundEmail] Using MAILGUN_API_KEY: ${redact(config.MAILGUN_API_KEY)}`);
   let res = await fetch(url, { headers: mailgunAuthHeaders() });
 
-  // If it's a 404, do NOT retry. Log clearly and return immediately.
-  if (res.status === 404) {
-    console.warn(`[InboundEmail] Mailgun fetch 404: message not found/expired at ${url}`);
-    return res;
-  }
+  const isStorageHost = (() => {
+    try {
+      const u = new URL(url);
+      return u.hostname.startsWith('storage-') || u.hostname.includes('storage');
+    } catch {
+      return false;
+    }
+  })();
 
-  // Retry against standard API host only on auth errors (401/403)
+  // On auth errors, retry against the standard API host.
   if (res.status === 401 || res.status === 403) {
     const fallbackUrl = resolveMailgunApiUrl(url);
     if (fallbackUrl !== url) {
       console.warn(`[InboundEmail] Mailgun fetch failed (${res.status}) for ${url}. Retrying via ${fallbackUrl}`);
+      console.log(`[InboundEmail] Using MAILGUN_API_KEY: ${redact(config.MAILGUN_API_KEY)}`);
+      res = await fetch(fallbackUrl, { headers: mailgunAuthHeaders() });
     }
+  }
 
-    console.log(`[InboundEmail] Using MAILGUN_API_KEY: ${redact(config.MAILGUN_API_KEY)}`);
-    res = await fetch(fallbackUrl, { headers: mailgunAuthHeaders() });
+  // IMPORTANT: storage hosts can return 404 even when the message is retrievable via api.mailgun.net.
+  // If we got a 404 from a storage host, retry once via the standard API host.
+  if (res.status === 404 && isStorageHost) {
+    const fallbackUrl = resolveMailgunApiUrl(url);
+    if (fallbackUrl !== url) {
+      console.warn(`[InboundEmail] Mailgun storage 404 for ${url}. Retrying via ${fallbackUrl}`);
+      console.log(`[InboundEmail] Using MAILGUN_API_KEY: ${redact(config.MAILGUN_API_KEY)}`);
+      res = await fetch(fallbackUrl, { headers: mailgunAuthHeaders() });
+    }
   }
+
   if (!res.ok) {
-    console.warn(`[InboundEmail] Mailgun fetch failed after retry: ${res.status} ${res.statusText} url=${url}`);
+    console.warn(`[InboundEmail] Mailgun fetch failed: ${res.status} ${res.statusText} url=${url}`);
   }
+
   return res;
 };
 // Mailgun types (partial)
@@ -196,7 +211,7 @@ export const inboundEmailService = {
         
         // If body not in raw payload, fetch from Mailgun storage URL
         if (!bodyText && !bodyHtml) {
-          const storageUrl = rawPayload['storage']?.['url'] || rawPayload['message-url'];
+          const storageUrl = rawPayload['message-url'] || rawPayload['storage']?.['url'];
           if (storageUrl) {
             try {
               const response = await fetchMailgunJson(storageUrl);
@@ -297,7 +312,7 @@ export const inboundEmailService = {
         stagingAttachments = rawPayload.stagingAttachments;
       } else {
         // "Store and Notify" route case: Fetch from Storage URL
-        const storageUrl = rawPayload['storage']?.['url'] || rawPayload['message-url']; 
+        const storageUrl = rawPayload['message-url'] || rawPayload['storage']?.['url'];
         
         if (!storageUrl) {
            // Fallback logic or error. For "Store and Notify", there should be a storage URL.
