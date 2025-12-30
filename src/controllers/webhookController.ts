@@ -48,6 +48,11 @@ export const webhookController = {
       content: Buffer;
     }> = [];
 
+    // Hybrid inbound email handling:
+    // - If Mailgun forwards attachments (multipart), we stage them to S3 and let the worker process from staging.
+    // - If the total forwarded payload is too large, we skip staging and rely on Store+Notify retrieval (storage.url).
+    const STAGING_MAX_TOTAL_BYTES = 4.5 * 1024 * 1024; // 4.5MB
+
     const getProviderMessageId = (): string => {
       const raw =
         (payload['Message-Id'] as string | undefined) ||
@@ -79,14 +84,44 @@ export const webhookController = {
           if (part.type === 'field') {
             payload[part.fieldname] = part.value;
           } else {
-            // Consume file stream to buffer
-            const buffer = await part.toBuffer();
-            uploadedFiles.push({
-              filename: part.filename,
-              mimetype: part.mimetype,
-              encoding: part.encoding,
-              content: buffer,
-            });
+            // Hybrid mode: only stage small payloads (< 4.5MB total). For bigger payloads, drain the stream
+            // but do not buffer/upload — rely on Store+Notify retrieval instead.
+            const filename = part.filename;
+            const mimetype = part.mimetype;
+            const encoding = part.encoding;
+
+            // Track total bytes received across all forwarded attachments
+            // NOTE: part.toBuffer() will buffer the whole file. We only do this while staging remains eligible.
+            const currentTotal = (payload.__staging_total_bytes ? Number(payload.__staging_total_bytes) : 0) || 0;
+            const stagingSkipped = payload.__staging_skipped === true;
+
+            if (stagingSkipped || currentTotal >= STAGING_MAX_TOTAL_BYTES) {
+              // Already over limit (or previously skipped): drain stream and mark staging as skipped
+              payload.__staging_skipped = true;
+              payload.__staging_total_bytes = currentTotal;
+              for await (const _chunk of part.file) {
+                // no-op
+              }
+            } else {
+              // Buffer this file, then decide if we keep it (within limit)
+              const buffer = await part.toBuffer();
+              const nextTotal = currentTotal + buffer.length;
+              payload.__staging_total_bytes = nextTotal;
+
+              if (nextTotal > STAGING_MAX_TOTAL_BYTES) {
+                // Crossed the limit: DO NOT partially stage.
+                // Mark staging skipped and discard any previously buffered files.
+                payload.__staging_skipped = true;
+                uploadedFiles.length = 0;
+              } else {
+                uploadedFiles.push({
+                  filename,
+                  mimetype,
+                  encoding,
+                  content: buffer,
+                });
+              }
+            }
           }
         }
       } else if (contentType.includes('application/x-www-form-urlencoded') || contentType.includes('application/json')) {
@@ -192,8 +227,11 @@ export const webhookController = {
         return ok({ success: true, id: event.id, accepted: true, signatureValid: false });
       }
 
+      const stagingSkipped = payload.__staging_skipped === true || payload.__staging_skipped === 'true';
+      const stagingTotalBytes = Number(payload.__staging_total_bytes || 0) || 0;
+
       // 8. Upload files to S3 if present (Forward-route staging)
-      if (uploadedFiles.length > 0) {
+      if (uploadedFiles.length > 0 && !stagingSkipped) {
         const stagingAttachments: any[] = [];
 
         for (const file of uploadedFiles) {
@@ -213,6 +251,28 @@ export const webhookController = {
             raw: {
               ...(payload as any),
               stagingAttachments,
+              __hybrid: {
+                mode: 'staging',
+                stagingTotalBytes,
+                stagingLimitBytes: STAGING_MAX_TOTAL_BYTES,
+              },
+            },
+          },
+        });
+      } else if (stagingSkipped) {
+        // Multipart was received but we skipped staging (too large). Persist metadata so the worker
+        // can ignore staging and use Store+Notify retrieval (storage.url / message-url).
+        await prisma.inboundEmailEvent.update({
+          where: { id: event.id },
+          data: {
+            raw: {
+              ...(payload as any),
+              __hybrid: {
+                mode: 'storage',
+                reason: 'STAGING_SKIPPED_TOO_LARGE',
+                stagingTotalBytes,
+                stagingLimitBytes: STAGING_MAX_TOTAL_BYTES,
+              },
             },
           },
         });

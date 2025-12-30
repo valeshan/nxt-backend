@@ -176,6 +176,32 @@ export const inboundEmailService = {
       return;
     }
 
+    // Dedupe: when using a hybrid Mailgun route (store+notify and forward),
+    // the same inbound email can create two events. If another event with the
+    // same Mailgun messageId has already been processed, skip this one.
+    if (event.messageId) {
+      const alreadyProcessed = await prisma.inboundEmailEvent.findFirst({
+        where: {
+          messageId: event.messageId,
+          id: { not: eventId },
+          status: InboundEmailStatus.PROCESSED,
+        } as any,
+        select: { id: true },
+      });
+
+      if (alreadyProcessed) {
+        console.log(
+          `[InboundEmail] Duplicate messageId detected (${event.messageId}). ` +
+          `Already processed by event ${alreadyProcessed.id}. Marking this event PROCESSED and skipping.`
+        );
+        await prisma.inboundEmailEvent.update({
+          where: { id: eventId },
+          data: { status: InboundEmailStatus.PROCESSED, failureReason: 'Duplicate inbound email event (hybrid route dedupe)' },
+        });
+        return;
+      }
+    }
+
     // Update status to PROCESSING
     await prisma.inboundEmailEvent.update({
       where: { id: eventId },
@@ -257,7 +283,7 @@ export const inboundEmailService = {
         
         // If body not in raw payload, fetch from Mailgun storage URL
         if (!bodyText && !bodyHtml) {
-          const storageUrl = rawPayload['message-url'] || rawPayload['storage']?.['url'];
+          const storageUrl = rawPayload['storage']?.['url'] || rawPayload['message-url'];
           if (storageUrl) {
             try {
               const response = await fetchMailgunJsonWithRetry(storageUrl, { maxAttempts: 4, initialDelayMs: 500 });
@@ -349,57 +375,70 @@ export const inboundEmailService = {
       }
 
       // 3. Fetch Message from Mailgun OR Use Staging Attachments
-      let attachments: MailgunAttachment[] = [];
-      let stagingAttachments: any[] = [];
+let attachments: MailgunAttachment[] = [];
+let stagingAttachments: any[] = [];
 
-      if (rawPayload.stagingAttachments && Array.isArray(rawPayload.stagingAttachments)) {
-        // "Forward" route case: Attachments already in S3 (staging)
-        console.log(`[InboundEmail] Found ${rawPayload.stagingAttachments.length} pre-uploaded staging attachments`);
-        stagingAttachments = rawPayload.stagingAttachments;
-      } else {
-        // "Store and Notify" route case: Fetch from Storage URL
-        const storageUrl = rawPayload['message-url'] || rawPayload['storage']?.['url'];
-        
-        if (!storageUrl) {
-           // Fallback logic or error. For "Store and Notify", there should be a storage URL.
-           // If "message-url" is not present, we might need to construct it or use what's available.
-           // However, standard "Store and Notify" sends "message-url" or "storage.url".
-           throw new Error('No storage URL found in webhook payload and no direct attachments present');
-        }
-  
-        console.log(`[InboundEmail] Fetching message content from ${storageUrl}`);
-        
-        // Try original URL first, but retry on 404 (eventual consistency)
-        const response = await fetchMailgunJsonWithRetry(storageUrl, { maxAttempts: 5, initialDelayMs: 750 });
+// Hybrid model:
+// - Only use stagingAttachments when the webhook/controller explicitly confirms staging was used.
+// - If staging was skipped (too large) or the webhook isn't staging-aware, always use Store & Notify retrieval.
+const hybridMeta = rawPayload?.__hybrid || null;
+const stagingSkipped = rawPayload?.__staging_skipped === true;
 
-        if (response.status === 404) {
-          // Distinguish eventual-consistency (not ready) vs domain-level config (retrieval disabled)
-          let bodyTxt: string | null = null;
-          try {
-            bodyTxt = await response.clone().text();
-          } catch {
-            bodyTxt = null;
-          }
+const hasStagingAttachments =
+  Array.isArray(rawPayload?.stagingAttachments) && rawPayload.stagingAttachments.length > 0;
 
-          if (bodyTxt && bodyTxt.includes('Message retrieval disabled for domain')) {
-            const err: any = new Error(`MAILGUN_MESSAGE_RETRIEVAL_DISABLED: ${bodyTxt}`);
-            err.code = 'MAILGUN_MESSAGE_RETRIEVAL_DISABLED';
-            throw err;
-          }
+// Your webhook/controller should set: rawPayload.__hybrid = { mode: 'staging' | 'storage' }
+const stagingAllowedByMeta = hybridMeta?.mode === 'staging';
 
-          // Otherwise treat as transient and allow BullMQ to retry the job later.
-          const err: any = new Error(`MAILGUN_MESSAGE_NOT_READY: 404 from Mailgun after retries. url=${storageUrl}`);
-          err.code = 'MAILGUN_MESSAGE_NOT_READY';
-          throw err;
-        }
+if (hasStagingAttachments && stagingAllowedByMeta && !stagingSkipped) {
+  console.log(
+    `[InboundEmail] Using ${rawPayload.stagingAttachments.length} pre-uploaded staging attachments (hybrid mode=staging)`
+  );
+  stagingAttachments = rawPayload.stagingAttachments;
+} else {
+  if (hasStagingAttachments && (!stagingAllowedByMeta || stagingSkipped)) {
+    console.log(
+      `[InboundEmail] Ignoring stagingAttachments (hybrid mode=${hybridMeta?.mode || 'unknown'}, stagingSkipped=${stagingSkipped}). Falling back to Mailgun storage retrieval.`
+    );
+  }
 
-        if (!response.ok) {
-          throw new Error(`Mailgun API error: ${response.status} ${response.statusText}`);
-        }
+  // "Store and Notify" route case: Fetch from Storage URL
+  const storageUrl = rawPayload?.['storage']?.['url'] || rawPayload?.['message-url'];
 
-        const messageData = await response.json() as MailgunMessage;
-        attachments = messageData.attachments || [];
-      }
+  if (!storageUrl) {
+    throw new Error('No storage URL found in webhook payload and no usable stagingAttachments present');
+  }
+
+  console.log(`[InboundEmail] Fetching message content from ${storageUrl}`);
+
+  const response = await fetchMailgunJsonWithRetry(storageUrl, { maxAttempts: 5, initialDelayMs: 750 });
+
+  if (response.status === 404) {
+    let bodyTxt: string | null = null;
+    try {
+      bodyTxt = await response.clone().text();
+    } catch {
+      bodyTxt = null;
+    }
+
+    if (bodyTxt && bodyTxt.includes('Message retrieval disabled for domain')) {
+      const err: any = new Error(`MAILGUN_MESSAGE_RETRIEVAL_DISABLED: ${bodyTxt}`);
+      err.code = 'MAILGUN_MESSAGE_RETRIEVAL_DISABLED';
+      throw err;
+    }
+
+    const err: any = new Error(`MAILGUN_MESSAGE_NOT_READY: 404 from Mailgun after retries. url=${storageUrl}`);
+    err.code = 'MAILGUN_MESSAGE_NOT_READY';
+    throw err;
+  }
+
+  if (!response.ok) {
+    throw new Error(`Mailgun API error: ${response.status} ${response.statusText}`);
+  }
+
+  const messageData = (await response.json()) as MailgunMessage;
+  attachments = messageData.attachments || [];
+}
 
       console.log(`[InboundEmail] Found ${attachments.length + stagingAttachments.length} attachments to process`);
 
@@ -600,11 +639,16 @@ export const inboundEmailService = {
 
       // If message retrieval is disabled for the domain, this is a configuration issue.
       if (err?.code === 'MAILGUN_MESSAGE_RETRIEVAL_DISABLED') {
+        // Hybrid mode fallback:
+        // If Store & Notify retrieval is disabled, we may still receive a "forward" webhook event
+        // for the same message that includes stagingAttachments. Don't mark this event terminal;
+        // leave it PROCESSING so retries (or the duplicate forward event) can succeed.
         await prisma.inboundEmailEvent.update({
           where: { id: eventId },
           data: {
-            status: InboundEmailStatus.FAILED_PROCESSING,
-            failureReason: 'Mailgun message retrieval is disabled for this domain. Enable message storage/retrieval for inbound.thenxt.ai (Domains -> inbound.thenxt.ai -> Message storage/retrieval), or change the route to include attachments in the webhook payload.',
+            status: InboundEmailStatus.PROCESSING,
+            failureReason:
+              'Mailgun message retrieval is disabled for this domain. If using hybrid routes, the forward webhook may still process this email via stagingAttachments. Otherwise enable message storage/retrieval for inbound.thenxt.ai.',
           },
         });
         throw err;
