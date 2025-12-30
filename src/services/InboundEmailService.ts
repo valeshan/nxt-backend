@@ -53,7 +53,6 @@ const resolveMailgunApiUrl = (inputUrl: string): string => {
 };
 
 const fetchMailgunJson = async (url: string): Promise<Response> => {
-  console.log(`[InboundEmail] Using MAILGUN_API_KEY: ${redact(config.MAILGUN_API_KEY)}`);
 
   const originalUrl = url;
 
@@ -77,7 +76,6 @@ const fetchMailgunJson = async (url: string): Promise<Response> => {
     const fallbackUrl = resolveMailgunApiUrl(originalUrl);
     if (fallbackUrl !== originalUrl) {
       console.warn(`[InboundEmail] Mailgun fetch failed (${res.status}) for ${originalUrl}. Retrying via ${fallbackUrl}`);
-      console.log(`[InboundEmail] Using MAILGUN_API_KEY: ${redact(config.MAILGUN_API_KEY)}`);
       res = await fetch(fallbackUrl, { headers: mailgunAuthHeaders() });
     }
   }
