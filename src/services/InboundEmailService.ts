@@ -116,11 +116,6 @@ const fetchMailgunJsonWithRetry = async (
       } catch {
         bodyTxt = null;
       }
-
-      // This is NOT eventual consistency. It is a domain-level setting blocking message retrieval.
-      if (bodyTxt && bodyTxt.includes('Message retrieval disabled for domain')) {
-        return res;
-      }
     }
 
     // 404 can happen briefly right after inbound email arrives (storage not ready yet)
@@ -412,19 +407,6 @@ if (hasStagingAttachments && stagingAllowedByMeta && !stagingSkipped) {
   const response = await fetchMailgunJsonWithRetry(storageUrl, { maxAttempts: 5, initialDelayMs: 750 });
 
   if (response.status === 404) {
-    let bodyTxt: string | null = null;
-    try {
-      bodyTxt = await response.clone().text();
-    } catch {
-      bodyTxt = null;
-    }
-
-    if (bodyTxt && bodyTxt.includes('Message retrieval disabled for domain')) {
-      const err: any = new Error(`MAILGUN_MESSAGE_RETRIEVAL_DISABLED: ${bodyTxt}`);
-      err.code = 'MAILGUN_MESSAGE_RETRIEVAL_DISABLED';
-      throw err;
-    }
-
     const err: any = new Error(`MAILGUN_MESSAGE_NOT_READY: 404 from Mailgun after retries. url=${storageUrl}`);
     err.code = 'MAILGUN_MESSAGE_NOT_READY';
     throw err;
@@ -635,22 +617,6 @@ if (hasStagingAttachments && stagingAllowedByMeta && !stagingSkipped) {
         throw err;
       }
 
-      // If message retrieval is disabled for the domain, this is a configuration issue.
-      if (err?.code === 'MAILGUN_MESSAGE_RETRIEVAL_DISABLED') {
-        // Hybrid mode fallback:
-        // If Store & Notify retrieval is disabled, we may still receive a "forward" webhook event
-        // for the same message that includes stagingAttachments. Don't mark this event terminal;
-        // leave it PROCESSING so retries (or the duplicate forward event) can succeed.
-        await prisma.inboundEmailEvent.update({
-          where: { id: eventId },
-          data: {
-            status: InboundEmailStatus.PROCESSING,
-            failureReason:
-              'Mailgun message retrieval is disabled for this domain. If using hybrid routes, the forward webhook may still process this email via stagingAttachments. Otherwise enable message storage/retrieval for inbound.thenxt.ai.',
-          },
-        });
-        throw err;
-      }
 
       await prisma.inboundEmailEvent.update({
         where: { id: eventId },
