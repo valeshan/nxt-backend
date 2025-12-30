@@ -55,51 +55,35 @@ const resolveMailgunApiUrl = (inputUrl: string): string => {
 const fetchMailgunJson = async (url: string): Promise<Response> => {
   console.log(`[InboundEmail] Using MAILGUN_API_KEY: ${redact(config.MAILGUN_API_KEY)}`);
 
-  // Storage hosts are often flaky / eventually-consistent. Prefer the standard API host first.
-  const primaryUrl = (() => {
-    try {
-      const u = new URL(url);
-      const isStorage = u.hostname.startsWith('storage-') || u.hostname.includes('storage');
-      return isStorage ? resolveMailgunApiUrl(url) : url;
-    } catch {
-      return url;
-    }
-  })();
-
-  let res = await fetch(primaryUrl, { headers: mailgunAuthHeaders() });
+  const originalUrl = url;
 
   const isStorageHost = (() => {
     try {
-      const u = new URL(primaryUrl);
+      const u = new URL(originalUrl);
       return u.hostname.startsWith('storage-') || u.hostname.includes('storage');
     } catch {
       return false;
     }
   })();
 
-  // On auth errors, retry against the standard API host.
-  if (res.status === 401 || res.status === 403) {
-    const fallbackUrl = resolveMailgunApiUrl(primaryUrl);
-    if (fallbackUrl !== primaryUrl) {
-      console.warn(`[InboundEmail] Mailgun fetch failed (${res.status}) for ${primaryUrl}. Retrying via ${fallbackUrl}`);
-      console.log(`[InboundEmail] Using MAILGUN_API_KEY: ${redact(config.MAILGUN_API_KEY)}`);
-      res = await fetch(fallbackUrl, { headers: mailgunAuthHeaders() });
-    }
-  }
+  // IMPORTANT:
+  // If Mailgun gives us a storage URL (store() / store+notify), we should hit THAT URL first.
+  // Rewriting to api.mailgun.net can surface cached/propagation state (e.g. “retrieval disabled”) even when storage works.
+  let res = await fetch(originalUrl, { headers: mailgunAuthHeaders() });
 
-  // IMPORTANT: storage hosts can return 404 even when the message is retrievable via api.mailgun.net.
-  // If we got a 404 from a storage host, retry once via the standard API host.
-  if (res.status === 404 && isStorageHost) {
-    const fallbackUrl = resolveMailgunApiUrl(primaryUrl);
-    if (fallbackUrl !== primaryUrl) {
-      console.warn(`[InboundEmail] Mailgun storage 404 for ${primaryUrl}. Retrying via ${fallbackUrl}`);
+  // On auth errors only, retry against the standard API host.
+  // (We do NOT fallback on 404 here; 404 is commonly eventual consistency for storage and should be handled by the retry loop.)
+  if ((res.status === 401 || res.status === 403) && isStorageHost) {
+    const fallbackUrl = resolveMailgunApiUrl(originalUrl);
+    if (fallbackUrl !== originalUrl) {
+      console.warn(`[InboundEmail] Mailgun fetch failed (${res.status}) for ${originalUrl}. Retrying via ${fallbackUrl}`);
       console.log(`[InboundEmail] Using MAILGUN_API_KEY: ${redact(config.MAILGUN_API_KEY)}`);
       res = await fetch(fallbackUrl, { headers: mailgunAuthHeaders() });
     }
   }
 
   if (!res.ok) {
-    console.warn(`[InboundEmail] Mailgun fetch failed: ${res.status} ${res.statusText} url=${primaryUrl}`);
+    console.warn(`[InboundEmail] Mailgun fetch failed: ${res.status} ${res.statusText} url=${originalUrl}`);
   }
 
   return res;
@@ -127,7 +111,10 @@ const fetchMailgunJsonWithRetry = async (
     if (res.status === 404) {
       try {
         bodyTxt = await res.clone().text();
-        console.warn(`[InboundEmail] Mailgun 404 body: ${bodyTxt.slice(0, 200)}`);
+        const host = (() => {
+          try { return new URL(url).hostname; } catch { return 'unknown-host'; }
+        })();
+        console.warn(`[InboundEmail] Mailgun 404 body (host=${host}): ${bodyTxt.slice(0, 200)}`);
       } catch {
         bodyTxt = null;
       }
