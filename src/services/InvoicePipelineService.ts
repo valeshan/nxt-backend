@@ -30,7 +30,6 @@ export class BulkActionError extends Error {
 }
 
 import { pusherService } from './pusherService';
-import { normalizeSupplierName } from '../utils/normalizeSupplierName';
 
 const DEFAULT_CURRENCY_CODE = 'AUD';
 
