@@ -7,6 +7,60 @@ import { InvoiceSourceType, ProcessingStatus, ReviewStatus, InboundEmailStatus, 
 import { randomUUID } from 'crypto';
 import { isForwardingVerificationEmail, extractGmailVerificationLink } from '../utils/emailForwardingVerification';
 
+
+const redact = (v?: string | null) => {
+  if (!v) return 'null';
+  if (v.length <= 8) return '********';
+  return `${v.slice(0, 4)}…${v.slice(-4)}`;
+};
+
+const getMailgunApiKey = (): string => {
+  const key = config.MAILGUN_API_KEY as any;
+
+  if (!key || typeof key !== 'string') {
+    throw new Error('[InboundEmail] Missing MAILGUN_API_KEY (Mailgun API key secret).');
+  }
+
+  // Common misconfig: webhook signing key / wrong key type
+  if (!key.startsWith('key-')) {
+    console.warn(
+      `[InboundEmail] MAILGUN_API_KEY does not look like a Mailgun API key (expected 'key-...'). Got: ${redact(key)}`
+    );
+  }
+
+  return key;
+};
+
+const mailgunAuthHeaders = (): Record<string, string> => ({
+  Authorization: `Basic ${Buffer.from(`api:${getMailgunApiKey()}`).toString('base64')}`,
+  Accept: 'application/json',
+});
+
+const resolveMailgunApiUrl = (inputUrl: string): string => {
+  const u = new URL(inputUrl);
+
+  // If it’s a storage host, swap to the normal API host while preserving the path
+  const isEu = u.hostname.includes('eu') || u.hostname.includes('mailgun.eu');
+  u.hostname = isEu ? 'api.eu.mailgun.net' : 'api.mailgun.net';
+  u.protocol = 'https:';
+  return u.toString();
+};
+
+const fetchMailgunJson = async (url: string): Promise<Response> => {
+  // Try original URL first
+  let res = await fetch(url, { headers: mailgunAuthHeaders() });
+
+  // Retry against standard API host if storage URL rejects
+  if (res.status === 401 || res.status === 403 || res.status === 404) {
+    const fallbackUrl = resolveMailgunApiUrl(url);
+    if (fallbackUrl !== url) {
+      console.warn(`[InboundEmail] Mailgun fetch failed (${res.status}) for ${url}. Retrying via ${fallbackUrl}`);
+    }
+    res = await fetch(fallbackUrl, { headers: mailgunAuthHeaders() });
+  }
+
+  return res;
+};
 // Mailgun types (partial)
 interface MailgunAttachment {
   url: string;
@@ -128,24 +182,7 @@ export const inboundEmailService = {
           const storageUrl = rawPayload['storage']?.['url'] || rawPayload['message-url'];
           if (storageUrl) {
             try {
-              let response = await fetch(storageUrl, {
-                headers: {
-                  Authorization: `Basic ${Buffer.from(`api:${config.MAILGUN_API_KEY}`).toString('base64')}`,
-                  Accept: 'application/json'
-                }
-              });
-              
-              if (response.status === 401 || response.status === 403 || response.status === 404) {
-                const urlObj = new URL(storageUrl);
-                const standardApiUrl = `https://api.mailgun.net${urlObj.pathname}`;
-                response = await fetch(standardApiUrl, {
-                  headers: {
-                    Authorization: `Basic ${Buffer.from(`api:${config.MAILGUN_API_KEY}`).toString('base64')}`,
-                    Accept: 'application/json'
-                  }
-                });
-              }
-              
+              const response = await fetchMailgunJson(storageUrl);
               if (response.ok) {
                 const messageData = await response.json() as MailgunMessage;
                 bodyText = messageData['body-plain'] || null;
@@ -255,40 +292,12 @@ export const inboundEmailService = {
         console.log(`[InboundEmail] Fetching message content from ${storageUrl}`);
         
         // Try original URL first
-        let response = await fetch(storageUrl, {
-          headers: {
-            Authorization: `Basic ${Buffer.from(`api:${config.MAILGUN_API_KEY}`).toString('base64')}`,
-            Accept: 'application/json'
-          }
-        });
+        const response = await fetchMailgunJson(storageUrl);
 
-        // Fallback Logic for Storage URL Auth Issues
-        if (response.status === 401 || response.status === 403 || response.status === 404) {
-             console.warn(`[InboundEmail] Storage URL failed (${response.status}), attempting fallback to standard API endpoint...`);
-             
-             // Extract path from storage URL (e.g., /v3/domains/...)
-             // Storage URL format: https://storage-us-east4.api.mailgun.net/v3/domains/...
-             try {
-                 const urlObj = new URL(storageUrl);
-                 const standardApiUrl = `https://api.mailgun.net${urlObj.pathname}`;
-                 
-                 console.log(`[InboundEmail] Fallback URL: ${standardApiUrl}`);
-                 
-                 response = await fetch(standardApiUrl, {
-                    headers: {
-                        Authorization: `Basic ${Buffer.from(`api:${config.MAILGUN_API_KEY}`).toString('base64')}`,
-                        Accept: 'application/json'
-                    }
-                 });
-             } catch (urlErr) {
-                 console.error('[InboundEmail] Failed to construct fallback URL', urlErr);
-             }
-        }
-  
         if (!response.ok) {
           throw new Error(`Mailgun API error: ${response.status} ${response.statusText}`);
         }
-  
+
         const messageData = await response.json() as MailgunMessage;
         attachments = messageData.attachments || [];
       }
@@ -386,11 +395,7 @@ export const inboundEmailService = {
                     data: { status: InboundAttachmentStatus.DOWNLOADING }
                 });
     
-                const attResponse = await fetch(att.url, {
-                    headers: {
-                        Authorization: `Basic ${Buffer.from(`api:${config.MAILGUN_API_KEY}`).toString('base64')}`
-                    }
-                });
+                const attResponse = await fetchMailgunJson(att.url);
     
                 if (!attResponse.ok) throw new Error(`Failed to download attachment: ${attResponse.statusText}`);
     
