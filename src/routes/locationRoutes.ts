@@ -109,6 +109,105 @@ export default async function locationRoutes(fastify: FastifyInstance) {
     },
   }, locationController.handleAutoApprovePrompt);
 
+  app.post('/locations/:id/auto-approve-prompt/reset', {
+    schema: {
+      params: z.object({ id: z.string() }),
+      response: {
+        200: z.object({
+          ok: z.boolean(),
+        }),
+      },
+    },
+  }, async (request, reply) => {
+    const { id: locationId } = request.params;
+  
+    // 🔒 Test-only safety valve: require secret header
+    const resetSecret = request.headers['x-e2e-reset-secret'];
+    if (!resetSecret || resetSecret !== process.env.E2E_RESET_SECRET) {
+      return reply.status(404).send(); // hide existence in prod
+    }
+  
+    // Verify location exists
+    const location = await prisma.location.findUnique({
+      where: { id: locationId },
+      select: { id: true, organisationId: true },
+    });
+  
+    if (!location) {
+      return reply.status(404).send();
+    }
+  
+    // Log only in non-test environments
+    if (process.env.NODE_ENV !== 'test') {
+      console.log(`[E2E Reset] Resetting auto-approve prompt state for location ${locationId}`);
+    }
+  
+    // Perform all deletions and updates in a single transaction
+    await prisma.$transaction(async (tx) => {
+      // 1. Get all invoice files for this location (to delete related data)
+      const invoiceFiles = await tx.invoiceFile.findMany({
+        where: { locationId },
+        select: { id: true },
+      });
+      const invoiceFileIds = invoiceFiles.map(f => f.id);
+  
+      // 2. Get all invoices for this location (to delete line items)
+      const invoices = await tx.invoice.findMany({
+        where: { locationId },
+        select: { id: true },
+      });
+      const invoiceIds = invoices.map(i => i.id);
+  
+      // 3. Delete InvoiceLineItems (cascades from Invoice, but being explicit for clarity)
+      if (invoiceIds.length > 0) {
+        await tx.invoiceLineItem.deleteMany({
+          where: { invoiceId: { in: invoiceIds } },
+        });
+      }
+  
+      // 4. Delete Invoices
+      if (invoiceIds.length > 0) {
+        await tx.invoice.deleteMany({
+          where: { id: { in: invoiceIds } },
+        });
+      }
+  
+      // 5. Delete InvoiceOcrResult (linked to InvoiceFile)
+      if (invoiceFileIds.length > 0) {
+        await tx.invoiceOcrResult.deleteMany({
+          where: { invoiceFileId: { in: invoiceFileIds } },
+        });
+      }
+  
+      // 6. Delete InvoiceFiles
+      if (invoiceFileIds.length > 0) {
+        await tx.invoiceFile.deleteMany({
+          where: { id: { in: invoiceFileIds } },
+        });
+      }
+  
+      // 7. Delete OCR-created Suppliers for this organisation
+      // Only delete suppliers that were created by OCR (not manually created or from Xero)
+      await tx.supplier.deleteMany({
+        where: {
+          organisationId: location.organisationId,
+          sourceType: 'OCR',
+        },
+      });
+  
+      // 8. Update Location: reset auto-approve flags
+      await tx.location.update({
+        where: { id: locationId },
+        data: {
+          hasSeenAutoApprovePrompt: false,
+          autoApproveCleanInvoices: false,
+        },
+      });
+    });
+  
+    return reply.send({ ok: true });
+  });
+
   app.delete('/locations/:id', {
     schema: {
       params: z.object({ id: z.string() }),
