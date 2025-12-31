@@ -266,14 +266,23 @@ async function computeWeightedAveragePrices(
         for (const item of lineItems as any[]) {
             if (!item.productId || !item.invoice.date) continue;
 
-            const amount = Number(item.lineAmount || 0);
-            const qty = Number(item.quantity || 0);
+            // Convert Prisma Decimal to number properly
+            const amount = typeof item.lineAmount === 'object' && item.lineAmount !== null 
+                ? (item.lineAmount as any).toNumber() 
+                : Number(item.lineAmount || 0);
+            const qty = typeof item.quantity === 'object' && item.quantity !== null 
+                ? (item.quantity as any).toNumber() 
+                : Number(item.quantity || 0);
 
             if (qty <= 0) continue;
 
             const date = item.invoice.date;
-            const monthKey = `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}`;
-            // console.log(`[Debug] Processing item: ${item.productId} Date: ${date.toISOString()} Key: ${monthKey} Amt: ${amount} Qty: ${qty}`);
+            // Ensure date is a Date object
+            const invoiceDate = date instanceof Date ? date : new Date(date);
+            const year = invoiceDate.getFullYear();
+            const month = invoiceDate.getMonth() + 1; // getMonth() returns 0-11, we need 1-12
+            const monthKey = `${year}-${String(month).padStart(2, '0')}`;
+            // console.log(`[Debug] Processing item: ${item.productId} Date: ${invoiceDate.toISOString()} Key: ${monthKey} Amt: ${amount} Qty: ${qty}`);
 
             if (!buckets.has(item.productId)) {
                 buckets.set(item.productId, new Map());
@@ -2662,12 +2671,14 @@ export const supplierInsightsService = {
     const priceHistory: { monthLabel: string; averageUnitPrice: number | null }[] = [];
     const unitPriceHistory: { monthLabel: string; averageUnitPrice: number | null }[] = [];
     
-    // Iterate last 12 months
+    // Iterate last 12 months (11 months ago to current month)
+    // Use date-fns for reliable date calculations
     for (let i = 11; i >= 0; i--) {
-        const d = new Date();
-        d.setMonth(d.getMonth() - i);
-        const monthKey = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
-        const label = getMonthLabel(d);
+        const targetMonth = subMonths(startOfCurrentMonth, i);
+        const year = targetMonth.getFullYear();
+        const month = targetMonth.getMonth() + 1; // getMonth() returns 0-11, we need 1-12
+        const monthKey = `${year}-${String(month).padStart(2, '0')}`;
+        const label = getMonthLabel(targetMonth);
         
         const price = productPrices?.get(monthKey) || null;
         
