@@ -150,25 +150,15 @@ async function getSupersededXeroIds(
     startDate?: Date,
     endDate?: Date
 ): Promise<string[]> {
-    const where: Prisma.InvoiceWhereInput = {
-        organisationId,
-        ...(locationId ? { locationId } : {}),
-        isVerified: true,
-        invoiceFile: {
-            reviewStatus: 'VERIFIED',
-            deletedAt: null
-        },
-        deletedAt: null,
-        // Removed sourceReference: { not: null } to include manual uploads in the search
-        ...(startDate || endDate ? {
-            date: {
-                ...(startDate ? { gte: startDate } : {}),
-                ...(endDate ? { lte: endDate } : {})
-            }
-        } : {})
-    } as any;
+    const where = getVerifiedManualInvoiceWhere({
+        orgId: organisationId,
+        locationId,
+        startDate,
+        endDate
+    });
 
     // Fetch all verified invoices
+    // Note: Removed sourceReference: { not: null } to include manual uploads in the search
     const invoices = await prisma.invoice.findMany({
         where,
         select: { 
@@ -237,19 +227,22 @@ async function computeWeightedAveragePrices(
 
     // 1. Process Xero Products
     if (xeroProductIds.length > 0) {
+        // Get superseded Xero IDs to exclude from price calculations
+        const supersededIds = await getSupersededXeroIds(organisationId, locationId, startDate, endDate);
+        
         // Fetch all line items for these products in the window
         const lineItems = await prisma.xeroInvoiceLineItem.findMany({
             where: {
                 productId: { in: xeroProductIds },
                 quantity: { gt: 0 }, // Rule 1 & 4: Ignore zero/negative quantity
-                invoice: {
-                    organisationId,
-                    ...(locationId ? { locationId } : {}),
-                    status: { in: ['AUTHORISED', 'PAID'] },
-                    date: { gte: startDate, lte: endDate },
-                    deletedAt: null
-                } as any,
-                ...(accountCodes && accountCodes.length > 0 ? { accountCode: { in: accountCodes } } : {})
+                ...getXeroLineItemWhere({
+                    orgId: organisationId,
+                    locationId,
+                    startDate,
+                    endDate,
+                    supersededIds,
+                    accountCodes
+                })
             },
             select: {
                 productId: true,
@@ -334,21 +327,16 @@ async function computeWeightedAveragePrices(
 
         const manualLineItems = await prisma.invoiceLineItem.findMany({
             where: {
+                ...getVerifiedManualLineItemWhere({
+                    orgId: organisationId,
+                    locationId,
+                    startDate,
+                    endDate
+                }),
                 invoice: {
-                    organisationId,
-                    ...(locationId ? { locationId } : {}),
-                    supplierId: { in: Array.from(supplierIds) },
-                    date: { gte: startDate, lte: endDate },
-                    isVerified: true,
-                    invoiceFileId: { not: null },
-                    invoiceFile: {
-                        reviewStatus: 'VERIFIED',
-                        deletedAt: null
-                    },
-                    deletedAt: null
-                } as any,
-                // Optimization: only fetch verified items
-            },
+                    supplierId: { in: Array.from(supplierIds) }
+                } as any
+            } as any,
             select: {
                 invoice: { select: { date: true, supplierId: true } },
                 productCode: true,
@@ -434,8 +422,107 @@ function shouldIncludeManualData(accountCodes?: string[]): boolean {
 }
 
 /**
+ * Unified helper for verified manual/file-backed invoice eligibility.
+ * 
+ * Strict definition: Invoice.isVerified = true AND InvoiceFile.reviewStatus = 'VERIFIED' 
+ * AND InvoiceFile.deletedAt = null AND Invoice.deletedAt = null
+ * 
+ * This ensures consistent filtering across all manual invoice queries and prevents
+ * manual verification drift across queries.
+ */
+function getVerifiedManualInvoiceWhere(params: {
+  orgId: string;
+  locationId?: string;
+  startDate?: Date;
+  endDate?: Date;
+}): Prisma.InvoiceWhereInput {
+  const { orgId, locationId, startDate, endDate } = params;
+
+  return {
+    organisationId: orgId,
+    ...(locationId ? { locationId } : {}),
+    isVerified: true,
+    invoiceFileId: { not: null },
+    invoiceFile: {
+      reviewStatus: 'VERIFIED',
+      deletedAt: null
+    },
+    deletedAt: null,
+    ...(startDate || endDate ? {
+      date: {
+        ...(startDate ? { gte: startDate } : {}),
+        ...(endDate ? { lte: endDate } : {})
+      }
+    } : {})
+  };
+}
+
+/**
+ * Helper for verified manual invoice line items.
+ * Use this for InvoiceLineItem queries that need verified manual invoices.
+ */
+function getVerifiedManualLineItemWhere(params: {
+  orgId: string;
+  locationId?: string;
+  startDate?: Date;
+  endDate?: Date;
+}): Prisma.InvoiceLineItemWhereInput {
+  const { orgId, locationId, startDate, endDate } = params;
+
+  return {
+    invoice: getVerifiedManualInvoiceWhere({
+      orgId,
+      locationId,
+      startDate,
+      endDate
+    })
+  } as Prisma.InvoiceLineItemWhereInput;
+}
+
+/**
+ * Unified helper for Xero invoice line item eligibility.
+ * 
+ * Always includes:
+ * - invoice.status IN ('AUTHORISED', 'PAID')
+ * - invoice.deletedAt = null
+ * - invoice.xeroInvoiceId NOT IN supersededIds
+ * - date range / org / location filters
+ * - optional accountCodes filter
+ * 
+ * This ensures consistent filtering across all Xero line item queries.
+ */
+function getXeroLineItemWhere(params: {
+  orgId: string;
+  locationId?: string;
+  startDate?: Date;
+  endDate?: Date;
+  supersededIds: string[];
+  accountCodes?: string[];
+}): Prisma.XeroInvoiceLineItemWhereInput {
+  const { orgId, locationId, startDate, endDate, supersededIds, accountCodes } = params;
+
+  return {
+    invoice: {
+      organisationId: orgId,
+      ...(locationId ? { locationId } : {}),
+      status: { in: ['AUTHORISED', 'PAID'] },
+      deletedAt: null,
+      ...(supersededIds.length > 0 ? { xeroInvoiceId: { notIn: supersededIds } } : {}),
+      ...(startDate || endDate ? {
+        date: {
+          ...(startDate ? { gte: startDate } : {}),
+          ...(endDate ? { lte: endDate } : {})
+        }
+      } : {})
+    },
+    ...(accountCodes && accountCodes.length > 0 ? { accountCode: { in: accountCodes } } : {})
+  } as Prisma.XeroInvoiceLineItemWhereInput;
+}
+
+/**
  * Builds where clause for manual invoice line items
  * Note: This should only be called when shouldIncludeManualData returns true
+ * @deprecated Use getVerifiedManualLineItemWhere instead
  */
 function getManualLineItemWhere(
     organisationId: string,
@@ -443,25 +530,12 @@ function getManualLineItemWhere(
     startDate: Date,
     endDate?: Date
 ): Prisma.InvoiceLineItemWhereInput {
-    return {
-        invoice: {
-            organisationId,
-            ...(locationId ? { locationId } : {}),
-            date: { gte: startDate, ...(endDate ? { lte: endDate } : {}) },
-            isVerified: true,
-            invoiceFileId: { not: null }, // Explicitly require invoiceFileId
-            invoiceFile: {
-                reviewStatus: 'VERIFIED',
-                deletedAt: null
-            },
-            deletedAt: null,
-        },
-        // Relaxed: Don't force MANUAL_COGS_ACCOUNT_CODE if looking for "all"
-        // But shouldIncludeManualData checks if MANUAL_COGS_ACCOUNT_CODE is in list.
-        // If accountCodes is undefined, we want all.
-        // If this helper is called, we assume we want manual data.
-        // We'll leave it optional here to catch items with null accountCode
-    } as any;
+    return getVerifiedManualLineItemWhere({
+        orgId: organisationId,
+        locationId,
+        startDate,
+        endDate
+    });
 }
 
 
@@ -526,30 +600,23 @@ export const supplierInsightsService = {
     // Legacy spend: Xero lineAmount + Manual lineTotal
     const [legacyXeroAgg, legacyManualAgg] = await Promise.all([
       prisma.xeroInvoiceLineItem.aggregate({
-        where: {
-          invoice: {
-            organisationId,
-            locationId,
-            date: { gte: ninetyDaysAgo, lte: now },
-            status: { in: ['AUTHORISED', 'PAID'] },
-            deletedAt: null,
-            xeroInvoiceId: { notIn: supersededIds },
-          } as any,
-        },
+        where: getXeroLineItemWhere({
+          orgId: organisationId,
+          locationId,
+          startDate: ninetyDaysAgo,
+          endDate: now,
+          supersededIds,
+          accountCodes: undefined
+        }),
         _sum: { lineAmount: true },
       }),
       prisma.invoiceLineItem.aggregate({
-        where: {
-          invoice: {
-            organisationId,
-            locationId,
-            date: { gte: ninetyDaysAgo, lte: now },
-            isVerified: true,
-            invoiceFileId: { not: null },
-            invoiceFile: { reviewStatus: 'VERIFIED', deletedAt: null },
-            deletedAt: null,
-          } as any,
-        },
+        where: getVerifiedManualLineItemWhere({
+          orgId: organisationId,
+          locationId,
+          startDate: ninetyDaysAgo,
+          endDate: now
+        }),
         _sum: { lineTotal: true },
       }),
     ]);
@@ -864,26 +931,19 @@ export const supplierInsightsService = {
 
     const supersededIds = await getSupersededXeroIds(organisationId, locationId, ninetyDaysAgo);
 
-    // Helper for Xero line item filtering
-    const getLineItemWhere = (startDate: Date, endDate?: Date) => ({
-        invoice: {
-            organisationId,
-            ...(locationId ? { locationId } : {}),
-            date: { gte: startDate, ...(endDate ? { lte: endDate } : {}) },
-            status: { in: ['AUTHORISED', 'PAID'] },
-            deletedAt: null,
-            xeroInvoiceId: { notIn: supersededIds }
-        },
-        ...(accountCodes && accountCodes.length > 0 ? { accountCode: { in: accountCodes } } : {})
-    } as any);
-
     const safeSum = (agg: any) => agg?._sum?.lineAmount?.toNumber() || 0;
     const safeSumManual = (agg: any) => agg?._sum?.lineTotal?.toNumber() || 0;
     
     // Fetch Xero and Manual data in parallel
     const [recentSpendAgg, recentManualSpendAgg] = await Promise.all([
       prisma.xeroInvoiceLineItem.aggregate({
-        where: getLineItemWhere(ninetyDaysAgo),
+        where: getXeroLineItemWhere({
+          orgId: organisationId,
+          locationId,
+          startDate: ninetyDaysAgo,
+          supersededIds,
+          accountCodes
+        }),
         _sum: { lineAmount: true }
       }),
       shouldIncludeManualData(accountCodes) ? prisma.invoiceLineItem.aggregate({
@@ -911,21 +971,16 @@ export const supplierInsightsService = {
     // Fetch superseded IDs for the wider range (last 12m)
     const trendSupersededIds = await getSupersededXeroIds(organisationId, locationId, prev6mStart);
 
-    const getTrendLineItemWhere = (startDate: Date, endDate: Date) => ({
-        invoice: {
-            organisationId,
-            ...(locationId ? { locationId } : {}),
-            date: { gte: startDate, lte: endDate },
-            status: { in: ['AUTHORISED', 'PAID'] },
-            deletedAt: null,
-            xeroInvoiceId: { notIn: trendSupersededIds }
-        },
-        ...(accountCodes && accountCodes.length > 0 ? { accountCode: { in: accountCodes } } : {})
-    } as any);
-
     const [last6mAgg, last6mManualAgg, prev6mAgg, prev6mManualAgg] = await Promise.all([
       prisma.xeroInvoiceLineItem.aggregate({
-        where: getTrendLineItemWhere(last6m.start, last6m.end),
+        where: getXeroLineItemWhere({
+          orgId: organisationId,
+          locationId,
+          startDate: last6m.start,
+          endDate: last6m.end,
+          supersededIds: trendSupersededIds,
+          accountCodes
+        }),
         _sum: { lineAmount: true }
       }),
       shouldIncludeManualData(accountCodes) ? prisma.invoiceLineItem.aggregate({
@@ -933,7 +988,14 @@ export const supplierInsightsService = {
         _sum: { lineTotal: true }
       }) : Promise.resolve({ _sum: { lineTotal: null } }),
       prisma.xeroInvoiceLineItem.aggregate({
-        where: getTrendLineItemWhere(prev6mStart, prev6mEnd),
+        where: getXeroLineItemWhere({
+          orgId: organisationId,
+          locationId,
+          startDate: prev6mStart,
+          endDate: prev6mEnd,
+          supersededIds: trendSupersededIds,
+          accountCodes
+        }),
         _sum: { lineAmount: true }
       }),
       shouldIncludeManualData(accountCodes) ? prisma.invoiceLineItem.aggregate({
@@ -959,18 +1021,6 @@ export const supplierInsightsService = {
     trendStart.setMonth(trendStart.getMonth() - 12);
     const seriesSupersededIds = await getSupersededXeroIds(organisationId, locationId, trendStart);
 
-    const getSeriesLineItemWhere = (startDate: Date, endDate: Date) => ({
-        invoice: {
-            organisationId,
-            ...(locationId ? { locationId } : {}),
-            date: { gte: startDate, lte: endDate },
-            status: { in: ['AUTHORISED', 'PAID'] },
-            deletedAt: null,
-            xeroInvoiceId: { notIn: seriesSupersededIds }
-        },
-        ...(accountCodes && accountCodes.length > 0 ? { accountCode: { in: accountCodes } } : {})
-    } as any);
-
     // Build all month queries in parallel
     const monthQueries: Promise<{ monthLabel: string; xeroTotal: number; manualTotal: number }>[] = [];
     
@@ -984,7 +1034,14 @@ export const supplierInsightsService = {
       
       const query = Promise.all([
         prisma.xeroInvoiceLineItem.aggregate({
-          where: getSeriesLineItemWhere(start, end),
+          where: getXeroLineItemWhere({
+            orgId: organisationId,
+            locationId,
+            startDate: start,
+            endDate: end,
+            supersededIds: seriesSupersededIds,
+            accountCodes
+          }),
           _sum: { lineAmount: true }
         }),
         shouldIncludeManualData(accountCodes) ? prisma.invoiceLineItem.aggregate({
@@ -1053,17 +1110,16 @@ export const supplierInsightsService = {
     // Fetch all line items for the last 6 months
     const allLineItems = await prisma.xeroInvoiceLineItem.findMany({
       where: {
-        invoice: {
-          organisationId,
-          ...(locationId ? { locationId } : {}),
-          date: { gte: priceMovementStart, lte: priceMovementEnd },
-          status: { in: ['AUTHORISED', 'PAID'] },
-          deletedAt: null,
-          xeroInvoiceId: { notIn: priceSupersededIds }
-        } as any,
-        quantity: { gt: 0 },
-        ...(accountCodes && accountCodes.length > 0 ? { accountCode: { in: accountCodes } } : {})
-      },
+        ...getXeroLineItemWhere({
+          orgId: organisationId,
+          locationId,
+          startDate: priceMovementStart,
+          endDate: priceMovementEnd,
+          supersededIds: priceSupersededIds,
+          accountCodes
+        }),
+        quantity: { gt: 0 }
+      } as any,
       select: {
         description: true,
         quantity: true,
@@ -1191,27 +1247,19 @@ export const supplierInsightsService = {
     
     const supersededIds = await getSupersededXeroIds(organisationId, locationId, last3m.start);
 
-    const whereBase = {
-        organisationId,
-        ...(locationId ? { locationId } : {}),
-    };
-    
     // Fetch recent lines linked to Products - only from the last 3 months
     // Using both start and end to ensure we only get invoices within the 3-month window
     const recentLines = await prisma.xeroInvoiceLineItem.findMany({
       where: {
-        productId: { not: null },
-        invoice: {
-          ...whereBase,
-          date: { 
-            gte: last3m.start,
-            lte: now // Include current month up to now
-          },
-          status: { in: ['AUTHORISED', 'PAID'] },
-          deletedAt: null,
-          xeroInvoiceId: { notIn: supersededIds }
-        },
-        ...(accountCodes && accountCodes.length > 0 ? { accountCode: { in: accountCodes } } : {})
+        ...getXeroLineItemWhere({
+          orgId: organisationId,
+          locationId,
+          startDate: last3m.start,
+          endDate: now,
+          supersededIds,
+          accountCodes
+        }),
+        productId: { not: null }
       } as any,
       include: {
         product: true,
@@ -1228,16 +1276,12 @@ export const supplierInsightsService = {
     let manualLinesFormatted: any[] = [];
     if (shouldIncludeManualData(accountCodes)) {
       const manualLines = await prisma.invoiceLineItem.findMany({
-        where: {
-          invoice: {
-            ...whereBase,
-            date: { gte: last3m.start, lte: now },
-            isVerified: true,
-            invoiceFileId: { not: null },
-            invoiceFile: { reviewStatus: 'VERIFIED', deletedAt: null },
-            deletedAt: null,
-          }
-        },
+        where: getVerifiedManualLineItemWhere({
+          orgId: organisationId,
+          locationId,
+          startDate: last3m.start,
+          endDate: now
+        }),
         include: {
           invoice: {
             select: { date: true, supplier: true }
@@ -1562,16 +1606,16 @@ export const supplierInsightsService = {
         const aggs = await prisma.xeroInvoiceLineItem.groupBy({
             by: ['productId'],
             where: {
+                ...getXeroLineItemWhere({
+                    orgId: organisationId,
+                    locationId,
+                    startDate: start,
+                    endDate: end,
+                    supersededIds,
+                    accountCodes
+                }),
                 productId: { not: null },
-                invoice: {
-                    ...whereBase,
-                    date: { gte: start, lte: end },
-                    status: { in: ['AUTHORISED', 'PAID'] },
-                    deletedAt: null,
-                    xeroInvoiceId: { notIn: supersededIds }
-                },
-                quantity: { not: 0 },
-                ...(accountCodes && accountCodes.length > 0 ? { accountCode: { in: accountCodes } } : {})
+                quantity: { not: 0 }
             } as any,
             _sum: { lineAmount: true, quantity: true }
         });
@@ -1686,14 +1730,15 @@ export const supplierInsightsService = {
       ? await prisma.xeroInvoiceLineItem.groupBy({
           by: ['productId'],
           where: {
-            productId: { in: productIds },
-            invoice: {
-              ...whereInvoiceBase,
-              date: { gte: last12m.start, lte: new Date() },
-              status: { in: ['AUTHORISED', 'PAID'] },
-              xeroInvoiceId: { notIn: supersededIds },
-            },
-            ...(accountCodes && accountCodes.length > 0 ? { accountCode: { in: accountCodes } } : {}),
+            ...getXeroLineItemWhere({
+              orgId: organisationId,
+              locationId,
+              startDate: last12m.start,
+              endDate: new Date(),
+              supersededIds,
+              accountCodes
+            }),
+            productId: { in: productIds }
           } as any,
           _sum: { lineAmount: true },
         })
@@ -1707,14 +1752,12 @@ export const supplierInsightsService = {
     const manualStats = await prisma.invoiceLineItem.groupBy({
       by: ['productCode', 'description', 'invoiceId'],
       where: {
-        invoice: {
-          ...whereInvoiceBase,
-          date: { gte: last12m.start, lte: new Date() },
-          isVerified: true,
-          invoiceFileId: { not: null },
-          invoiceFile: { reviewStatus: 'VERIFIED', deletedAt: null },
-          deletedAt: null,
-        },
+        ...getVerifiedManualLineItemWhere({
+          orgId: organisationId,
+          locationId,
+          startDate: last12m.start,
+          endDate: new Date()
+        }),
         ...(accountCodes && accountCodes.length > 0
           ? {
               OR: [
@@ -1866,14 +1909,15 @@ export const supplierInsightsService = {
         const xeroStats = await prisma.xeroInvoiceLineItem.groupBy({
             by: ['productId'],
             where: {
-                productId: { in: productIds },
-                invoice: {
-                    ...whereInvoiceBase,
-                    date: { gte: last12m.start, lte: new Date() },
-                    status: { in: ['AUTHORISED', 'PAID'] },
-                    xeroInvoiceId: { notIn: supersededIds }
-                },
-                ...(params.accountCodes && params.accountCodes.length > 0 ? { accountCode: { in: params.accountCodes } } : {})
+                ...getXeroLineItemWhere({
+                    orgId: organisationId,
+                    locationId: undefined,
+                    startDate: last12m.start,
+                    endDate: new Date(),
+                    supersededIds,
+                    accountCodes: params.accountCodes
+                }),
+                productId: { in: productIds }
             } as any,
             _sum: { lineAmount: true }
         });
@@ -1881,14 +1925,12 @@ export const supplierInsightsService = {
         const manualStats = await prisma.invoiceLineItem.groupBy({
             by: ['productCode', 'description', 'invoiceId'],
             where: {
-                invoice: {
-                    ...whereInvoiceBase,
-                    date: { gte: last12m.start, lte: new Date() },
-                    isVerified: true,
-                    invoiceFileId: { not: null },
-                    invoiceFile: { reviewStatus: 'VERIFIED', deletedAt: null },
-                    deletedAt: null
-                },
+                ...getVerifiedManualLineItemWhere({
+                    orgId: organisationId,
+                    locationId: undefined,
+                    startDate: last12m.start,
+                    endDate: new Date()
+                }),
                 ...(params.accountCodes && params.accountCodes.length > 0
                     ? {
                         OR: [
@@ -2143,17 +2185,12 @@ export const supplierInsightsService = {
 
              const latestLine = await prisma.invoiceLineItem.findFirst({
                  where: {
+                     ...getVerifiedManualLineItemWhere({
+                         orgId: organisationId,
+                         locationId
+                     }),
                      invoice: {
-                         organisationId,
-                         supplierId,
-                         ...(locationId ? { locationId } : {}),
-                         isVerified: true,
-                         invoiceFileId: { not: null },
-                         invoiceFile: {
-                             reviewStatus: 'VERIFIED',
-                             deletedAt: null
-                         },
-                         deletedAt: null
+                         supplierId
                      } as any,
                      OR: [
                         { productCode: { equals: normalizedKey, mode: 'insensitive' } },
@@ -2341,19 +2378,14 @@ export const supplierInsightsService = {
         // We just need one item to confirm existence and get metadata
         const fallbackItems = await prisma.invoiceLineItem.findMany({
             where: {
+                ...getVerifiedManualLineItemWhere({
+                    orgId: organisationId,
+                    locationId,
+                    endDate: now
+                }),
                 invoice: {
-                    organisationId,
-                    supplierId,
-                    ...(locationId ? { locationId } : {}),
-                    isVerified: true,
-                    invoiceFileId: { not: null },
-                    invoiceFile: {
-                        reviewStatus: 'VERIFIED',
-                        deletedAt: null
-                    },
-                    deletedAt: null,
-                    date: { lte: now } // Any date up to now
-                },
+                    supplierId
+                } as any,
                  OR: [
                     { productCode: { equals: normalizedKey, mode: 'insensitive' } },
                     {
@@ -2633,25 +2665,29 @@ export const supplierInsightsService = {
 
     const last6mSpend = await prisma.xeroInvoiceLineItem.aggregate({
         where: {
-            productId: productId,
-            invoice: {
-                ...whereInvoiceBase,
-                date: { gte: last6m.start, lte: last6m.end },
-                status: { in: ['AUTHORISED', 'PAID'] },
-                xeroInvoiceId: { notIn: supersededIds }
-            }
+            ...getXeroLineItemWhere({
+                orgId: organisationId,
+                locationId,
+                startDate: last6m.start,
+                endDate: last6m.end,
+                supersededIds,
+                accountCodes: undefined
+            }),
+            productId: productId
         } as any,
         _sum: { lineAmount: true }
     });
     const prev6mSpend = await prisma.xeroInvoiceLineItem.aggregate({
         where: {
-            productId: productId,
-            invoice: {
-                ...whereInvoiceBase,
-                date: { gte: prev6mStart, lte: prev6mEnd },
-                status: { in: ['AUTHORISED', 'PAID'] },
-                xeroInvoiceId: { notIn: supersededIds }
-            }
+            ...getXeroLineItemWhere({
+                orgId: organisationId,
+                locationId,
+                startDate: prev6mStart,
+                endDate: prev6mEnd,
+                supersededIds,
+                accountCodes: undefined
+            }),
+            productId: productId
         } as any,
         _sum: { lineAmount: true }
     });
@@ -3031,21 +3067,15 @@ export const supplierInsightsService = {
     // 2. Fetch Manual/OCR Line Items
     const manualLines = await prisma.invoiceLineItem.findMany({
       where: {
-        invoice: {
-          organisationId,
-          date: { gte: historyStart },
-          isVerified: true,
-          invoiceFileId: { not: null },
-          invoiceFile: {
-            reviewStatus: 'VERIFIED',
-            deletedAt: null
-          },
-          deletedAt: null
-        } as any,
+        ...getVerifiedManualLineItemWhere({
+          orgId: organisationId,
+          locationId: undefined,
+          startDate: historyStart
+        }),
         // Ensure valid price data
         unitPrice: { gt: 0 },
         quantity: { gt: 0 }
-      },
+      } as any,
       select: {
         id: true,
         description: true,

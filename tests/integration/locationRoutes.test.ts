@@ -141,5 +141,39 @@ describe('Location Routes Integration', () => {
     const locations = listRes.json();
     expect(locations[0].name).toBe(newName);
   });
+
+  it('should always return autoApproveCleanInvoices and hasSeenAutoApprovePrompt as booleans from all GET endpoints', async () => {
+    // Test GET /locations endpoint
+    const res1 = await app.inject({
+      method: 'GET',
+      url: '/locations',
+      headers: { Authorization: `Bearer ${authToken}` }
+    });
+
+    expect(res1.statusCode).toBe(200);
+    const locations1 = res1.json();
+    expect(locations1).toHaveLength(1);
+    expect(locations1[0].id).toBe(locId);
+    
+    // Assert both fields are booleans
+    expect(typeof locations1[0].autoApproveCleanInvoices).toBe('boolean');
+    expect(typeof locations1[0].hasSeenAutoApprovePrompt).toBe('boolean');
+
+    // Test GET /organisations/:organisationId/locations endpoint
+    const res2 = await app.inject({
+      method: 'GET',
+      url: `/organisations/${orgId}/locations`,
+      headers: { Authorization: `Bearer ${authToken}` }
+    });
+
+    expect(res2.statusCode).toBe(200);
+    const locations2 = res2.json();
+    expect(locations2).toHaveLength(1);
+    expect(locations2[0].id).toBe(locId);
+    
+    // Assert both fields are booleans
+    expect(typeof locations2[0].autoApproveCleanInvoices).toBe('boolean');
+    expect(typeof locations2[0].hasSeenAutoApprovePrompt).toBe('boolean');
+  });
 });
 

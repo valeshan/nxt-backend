@@ -20,6 +20,7 @@ import invoiceRoutes from './routes/invoiceRoutes';
 import diagnosticsRoutes from './routes/diagnosticsRoutes';
 import debugRoutes from './routes/debugRoutes';
 import adminRoutes from './routes/adminRoutes';
+import e2eRoutes from './routes/e2eRoutes';
 import xeroWebhookRoutes from './controllers/xeroWebhookController'; // Assuming we'll create this
 import webhookRoutes from './routes/webhookRoutes';
 import settingsRoutes from './routes/settingsRoutes';
@@ -195,6 +196,8 @@ export function buildApp(): FastifyInstance {
   // - disabled unless ENABLE_ADMIN_ENDPOINTS=true
   // - require x-internal-api-key
   app.register(adminRoutes, { prefix: '/admin' });
+  // E2E test routes (only available in non-production)
+  app.register(e2eRoutes, { prefix: '/e2e' });
   
   // Register Webhook Routes
   // Note: These routes might need special handling for multipart/form-data which is handled by the controller

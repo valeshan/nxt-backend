@@ -47,6 +47,7 @@ export default async function locationRoutes(fastify: FastifyInstance) {
           industry: z.enum(['CAFE', 'RESTAURANT', 'BAR', 'BAKERY', 'RETAIL', 'HOTEL', 'CATERING', 'OTHER']).nullable(),
           region: z.string().nullable(),
           autoApproveCleanInvoices: z.boolean(),
+          hasSeenAutoApprovePrompt: z.boolean(),
           integrations: z.array(z.object({
             type: z.string(),
             name: z.string(),
@@ -72,6 +73,7 @@ export default async function locationRoutes(fastify: FastifyInstance) {
           industry: z.enum(['CAFE', 'RESTAURANT', 'BAR', 'BAKERY', 'RETAIL', 'HOTEL', 'CATERING', 'OTHER']).nullable(),
           region: z.string().nullable(),
           autoApproveCleanInvoices: z.boolean(),
+          hasSeenAutoApprovePrompt: z.boolean(),
           integrations: z.array(z.object({
             type: z.string(),
             name: z.string(),

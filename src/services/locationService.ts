@@ -106,6 +106,9 @@ export const locationService = {
     
     if (enable) {
       updateData.autoApproveCleanInvoices = true;
+    } else {
+      // "Keep off for now" - explicitly set to false
+      updateData.autoApproveCleanInvoices = false;
     }
 
     const updated = await locationRepository.update(locationId, updateData);
