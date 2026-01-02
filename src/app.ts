@@ -24,6 +24,7 @@ import e2eRoutes from './routes/e2eRoutes';
 import xeroWebhookRoutes from './controllers/xeroWebhookController'; // Assuming we'll create this
 import webhookRoutes from './routes/webhookRoutes';
 import settingsRoutes from './routes/settingsRoutes';
+import feedbackRoutes from './routes/feedbackRoutes';
 import { config } from './config/env';
 import { getRedisClient, pingWithTimeout } from './infrastructure/redis';
 import { runWithRequestContext, getRequestContext } from './infrastructure/requestContext';
@@ -192,6 +193,7 @@ export function buildApp(): FastifyInstance {
   app.register(invoiceRoutes, { prefix: '/invoices' });
   app.register(diagnosticsRoutes, { prefix: '/diagnostics' });
   app.register(settingsRoutes, { prefix: '/settings' });
+  app.register(feedbackRoutes, { prefix: '/feedback' });
   // Admin routes are safe-by-default:
   // - disabled unless ENABLE_ADMIN_ENDPOINTS=true
   // - require x-internal-api-key

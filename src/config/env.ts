@@ -69,6 +69,7 @@ const envSchema = z.object({
   GMAIL_APP_PASSWORD: z.string().optional(),
   EMAIL_FROM_NAME: z.string().optional().default('the nxt alerts'),
   EMAIL_REPLY_TO: z.string().optional(),
+  FEEDBACK_TO_EMAIL: z.string().email().optional(),
 
   // Debug Routes
   DEBUG_ROUTE_SECRET: z.string().optional(),
