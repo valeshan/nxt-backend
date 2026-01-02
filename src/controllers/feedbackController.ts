@@ -14,7 +14,7 @@ export const feedbackController = {
   ) {
     try {
       const feedback = request.body;
-      const { userId, email: userEmail } = request.authContext;
+      const { userId } = request.authContext;
 
       // Validate required fields
       if (!feedback.referenceType || !feedback.message) {
@@ -27,18 +27,21 @@ export const feedbackController = {
       // Get recipient email from env var
       const recipientEmail = config.FEEDBACK_TO_EMAIL;
       if (!recipientEmail) {
-        request.log.error('FEEDBACK_TO_EMAIL not configured');
+        request.log.error({ msg: 'FEEDBACK_TO_EMAIL not configured' });
         return reply.code(500).send({
           success: false,
           message: 'Feedback email recipient not configured',
         });
       }
 
+      // Use client-provided email for debugging, fallback to unknown
+      const userEmail = feedback.userEmail || 'unknown@example.com';
+
       // Build email
       const { subject, html, text } = buildFeedbackEmail(
         feedback,
         userId,
-        userEmail || 'unknown@example.com'
+        userEmail
       );
 
       // Send email
@@ -49,7 +52,8 @@ export const feedbackController = {
         text,
       });
 
-      request.log.info('Feedback submitted', {
+      request.log.info({
+        msg: 'Feedback submitted',
         referenceType: feedback.referenceType,
         userId,
         organisationId: feedback.organisationId,
@@ -61,7 +65,8 @@ export const feedbackController = {
         message: 'Feedback submitted successfully',
       });
     } catch (error: any) {
-      request.log.error('Failed to submit feedback', {
+      request.log.error({
+        msg: 'Failed to submit feedback',
         error: error.message,
         stack: error.stack,
       });
