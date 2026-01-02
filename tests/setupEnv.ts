@@ -13,5 +13,11 @@ if (!process.env.ENABLE_RATE_LIMIT) {
   process.env.ENABLE_RATE_LIMIT = 'false';
 }
 
+// Provide default Xero config for tests (tests don't need real Xero credentials)
+if (!process.env.XERO_CLIENT_ID) {
+  process.env.XERO_CLIENT_ID = 'test-client-id';
+}
 
-
+if (!process.env.XERO_REDIRECT_URI) {
+  process.env.XERO_REDIRECT_URI = 'http://localhost:3000/xero/authorise';
+}

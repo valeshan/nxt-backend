@@ -1,3 +1,5 @@
+BEGIN;
+
 -- CreateEnum
 DO $$ BEGIN
   CREATE TYPE "ProductStatsSource" AS ENUM ('XERO', 'MANUAL');
@@ -36,22 +38,29 @@ CREATE INDEX IF NOT EXISTS "ProductStats_org_loc_hash_source_spend_idx"
 ON "ProductStats"("organisationId", "locationId", "accountCodesHash", "source", "spend12m");
 
 -- AddForeignKey
-DO $$ BEGIN
-  ALTER TABLE "ProductStats"
-  ADD CONSTRAINT "ProductStats_organisationId_fkey"
-  FOREIGN KEY ("organisationId") REFERENCES "Organisation"("id") ON DELETE RESTRICT ON UPDATE CASCADE;
-EXCEPTION
-  WHEN duplicate_object THEN NULL;
+DO $$ 
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_constraint 
+    WHERE conname = 'ProductStats_organisationId_fkey'
+  ) THEN
+    ALTER TABLE "ProductStats"
+    ADD CONSTRAINT "ProductStats_organisationId_fkey"
+    FOREIGN KEY ("organisationId") REFERENCES "Organisation"("id") ON DELETE RESTRICT ON UPDATE CASCADE;
+  END IF;
 END $$;
 
 -- AddForeignKey
-DO $$ BEGIN
-  ALTER TABLE "ProductStats"
-  ADD CONSTRAINT "ProductStats_locationId_fkey"
-  FOREIGN KEY ("locationId") REFERENCES "Location"("id") ON DELETE RESTRICT ON UPDATE CASCADE;
-EXCEPTION
-  WHEN duplicate_object THEN NULL;
+DO $$ 
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_constraint 
+    WHERE conname = 'ProductStats_locationId_fkey'
+  ) THEN
+    ALTER TABLE "ProductStats"
+    ADD CONSTRAINT "ProductStats_locationId_fkey"
+    FOREIGN KEY ("locationId") REFERENCES "Location"("id") ON DELETE RESTRICT ON UPDATE CASCADE;
+  END IF;
 END $$;
 
-
-
+COMMIT;

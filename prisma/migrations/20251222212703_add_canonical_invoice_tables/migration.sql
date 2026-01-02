@@ -1,3 +1,5 @@
+BEGIN;
+
 -- CreateEnum
 CREATE TYPE "CanonicalSource" AS ENUM ('OCR', 'XERO', 'MANUAL');
 
@@ -123,4 +125,6 @@ ALTER TABLE "CanonicalInvoiceLineItem" ADD CONSTRAINT "CanonicalInvoiceLineItem_
 
 -- RenameIndex
 ALTER INDEX "ProductStats_org_loc_hash_source_productId_key" RENAME TO "ProductStats_organisationId_locationId_accountCodesHash_sou_key";
+
+COMMIT;
 

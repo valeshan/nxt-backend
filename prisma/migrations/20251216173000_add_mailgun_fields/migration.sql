@@ -1,3 +1,5 @@
+BEGIN;
+
 -- CreateEnum
 DO $$
 BEGIN
@@ -15,7 +17,7 @@ EXCEPTION
 END $$;
 
 -- AlterTable
-ALTER TABLE "Location" ADD COLUMN     "mailgunAlias" TEXT;
+ALTER TABLE "Location" ADD COLUMN IF NOT EXISTS "mailgunAlias" TEXT;
 
 -- CreateTable
 CREATE TABLE "InboundEmailEvent" (
@@ -78,4 +80,6 @@ CREATE UNIQUE INDEX "Location_mailgunAlias_key" ON "Location"("mailgunAlias");
 
 -- AddForeignKey
 ALTER TABLE "InboundAttachment" ADD CONSTRAINT "InboundAttachment_inboundEmailEventId_fkey" FOREIGN KEY ("inboundEmailEventId") REFERENCES "InboundEmailEvent"("id") ON DELETE RESTRICT ON UPDATE CASCADE;
+
+COMMIT;
 

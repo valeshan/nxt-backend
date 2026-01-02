@@ -1,3 +1,5 @@
+BEGIN;
+
 -- CreateEnum
 CREATE TYPE "SupplierSourceType" AS ENUM ('XERO', 'OCR', 'MANUAL', 'MERGED');
 
@@ -135,3 +137,5 @@ ALTER TABLE "XeroInvoice" ADD CONSTRAINT "XeroInvoice_organisationId_fkey" FOREI
 
 -- AddForeignKey
 ALTER TABLE "XeroInvoiceLineItem" ADD CONSTRAINT "XeroInvoiceLineItem_invoiceId_fkey" FOREIGN KEY ("invoiceId") REFERENCES "XeroInvoice"("id") ON DELETE CASCADE ON UPDATE CASCADE;
+
+COMMIT;

@@ -1,6 +1,8 @@
 -- Migration: Refactor OrganisationLexiconEntry to use single-row model with isOrgWide flag
 -- Replaces scopeKey-based duplicate ORG rows with ownerSupplierId + isOrgWide pattern
 
+BEGIN;
+
 -- Step 1: Add new columns (temporarily nullable for migration)
 ALTER TABLE "OrganisationLexiconEntry" 
   ADD COLUMN "ownerSupplierId" TEXT,
@@ -103,4 +105,6 @@ CREATE INDEX "OrganisationLexiconEntry_organisationId_isOrgWide_idx"
 
 CREATE INDEX "OrganisationLexiconEntry_organisationId_ownerSupplierId_idx" 
   ON "OrganisationLexiconEntry"("organisationId", "ownerSupplierId");
+
+COMMIT;
 
