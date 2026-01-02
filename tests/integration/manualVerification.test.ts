@@ -100,13 +100,21 @@ describe('Manual Invoice Verification Integration', () => {
   }, 30000); // Increased timeout
 
   it('should persist verified items and delete old OCR items', async () => {
+    // Get actual line item IDs from database
+    const existingLineItems = await prisma.invoiceLineItem.findMany({
+      where: { invoiceId }
+    });
+    expect(existingLineItems.length).toBeGreaterThan(0);
+    const lineItemId = existingLineItems[0].id;
+
     // Verify with NEW values
     const payload = {
         supplierName: 'New Supplier',
         total: 50,
         date: new Date().toISOString(),
+        selectedLineItemIds: [lineItemId],
         items: [
-            { id: 'temp-1', description: 'Verified Item 1 1kg', quantity: 5, lineTotal: 50, productCode: 'PROD-A' }
+            { id: lineItemId, description: 'Verified Item 1 1kg', quantity: 5, lineTotal: 50, productCode: 'PROD-A' }
         ]
     };
 
@@ -149,11 +157,23 @@ describe('Manual Invoice Verification Integration', () => {
     expect(canonicalInvoice.lineItems[0].normalizedDescription).toContain('verified item 1');
 
     // Idempotency: re-verify should not create duplicate canonical lines
+    // Get the updated line item ID (might have changed after verification)
+    const updatedLineItems = await prisma.invoiceLineItem.findMany({
+      where: { invoiceId }
+    });
+    const updatedLineItemId = updatedLineItems[0].id;
+    
     const res2 = await app.inject({
       method: 'PATCH',
       url: `/invoices/${invoiceId}/verify`,
       headers: { Authorization: `Bearer ${authToken}` },
-      payload
+      payload: {
+        ...payload,
+        selectedLineItemIds: [updatedLineItemId],
+        items: [
+          { id: updatedLineItemId, description: 'Verified Item 1 1kg', quantity: 5, lineTotal: 50, productCode: 'PROD-A' }
+        ]
+      }
     });
     expect(res2.statusCode).toBe(200);
 
@@ -195,11 +215,19 @@ describe('Manual Invoice Verification Integration', () => {
   }, 30000);
 
   it('should handle empty product codes by normalizing them to null', async () => {
+    // Get actual line item IDs from database
+    const existingLineItems = await prisma.invoiceLineItem.findMany({
+      where: { invoiceId }
+    });
+    expect(existingLineItems.length).toBeGreaterThan(0);
+    const lineItemId = existingLineItems[0].id;
+
     const payload = {
         supplierName: 'Supplier B',
         total: 100,
+        selectedLineItemIds: [lineItemId],
         items: [
-            { id: 'temp-2', description: 'Item No Code', quantity: 1, lineTotal: 100, productCode: '' }
+            { id: lineItemId, description: 'Item No Code', quantity: 1, lineTotal: 100, productCode: '' }
         ]
     };
 
@@ -218,6 +246,13 @@ describe('Manual Invoice Verification Integration', () => {
   }, 30000);
 
   it('should display verified products in supplier products endpoint', async () => {
+    // Get actual line item IDs from database
+    const existingLineItems = await prisma.invoiceLineItem.findMany({
+      where: { invoiceId }
+    });
+    expect(existingLineItems.length).toBeGreaterThan(0);
+    const lineItemId = existingLineItems[0].id;
+
     // 1. Verify Invoice
     await app.inject({
         method: 'PATCH',
@@ -226,16 +261,28 @@ describe('Manual Invoice Verification Integration', () => {
         payload: {
             supplierName: 'Visible Supplier',
             total: 200,
+            selectedLineItemIds: [lineItemId],
             items: [
-                { id: 'temp-3', description: 'Visible Product', quantity: 2, lineTotal: 200, productCode: 'VIS-1' }
+                { id: lineItemId, description: 'Visible Product', quantity: 2, lineTotal: 200, productCode: 'VIS-1' }
             ]
         }
     });
 
-    // Get Supplier ID
-    const invoice = await prisma.invoice.findUnique({ where: { id: invoiceId } });
+    // Get Supplier ID - ensure invoice is refreshed after verification
+    const invoice = await prisma.invoice.findUnique({ 
+      where: { id: invoiceId },
+      include: { supplier: true }
+    });
     const supplierId = invoice?.supplierId;
     expect(supplierId).toBeDefined();
+    
+    // Verify supplier exists and belongs to organization
+    const supplier = await prisma.supplier.findUnique({ 
+      where: { id: supplierId! },
+      select: { id: true, organisationId: true }
+    });
+    expect(supplier).toBeDefined();
+    expect(supplier?.organisationId).toBe(orgId);
 
     // 2. Fetch Supplier Products (Simulate Dashboard Drilldown)
     const res = await app.inject({
@@ -255,6 +302,13 @@ describe('Manual Invoice Verification Integration', () => {
   }, 30000);
 
   it('should mirror soft delete + restore onto canonical invoice header', async () => {
+    // Get actual line item IDs from database
+    const existingLineItems = await prisma.invoiceLineItem.findMany({
+      where: { invoiceId }
+    });
+    expect(existingLineItems.length).toBeGreaterThan(0);
+    const lineItemId = existingLineItems[0].id;
+
     // 1) Verify (creates canonical)
     const verifyRes = await app.inject({
       method: 'PATCH',
@@ -263,7 +317,8 @@ describe('Manual Invoice Verification Integration', () => {
       payload: {
         supplierName: 'Delete Restore Supplier',
         total: 10,
-        items: [{ id: 'temp-del', description: 'Milk 1L', quantity: 1, lineTotal: 10, productCode: 'MILK' }],
+        selectedLineItemIds: [lineItemId],
+        items: [{ id: lineItemId, description: 'Milk 1L', quantity: 1, lineTotal: 10, productCode: 'MILK' }],
       },
     });
     expect(verifyRes.statusCode).toBe(200);

@@ -213,6 +213,56 @@ export const invoiceController = {
       }
   },
 
+  async revert(req: FastifyRequest, reply: FastifyReply) {
+      const { id } = req.params as { id: string };
+      const auth = req.authContext;
+      
+      if (!auth?.organisationId) {
+        return reply.status(401).send({ error: 'Unauthorized' });
+      }
+      
+      // Verify invoice belongs to org before processing
+      const invoice = await getInvoiceIfOwned(id, auth.organisationId);
+      if (!invoice) {
+        return reply.status(404).send({ error: 'Invoice not found' });
+      }
+
+      req.log.info({ 
+        msg: 'Revert invoice verification requested',
+        invoiceId: id,
+        params: req.params
+      });
+
+      try {
+          const result = await invoicePipelineService.revertVerification(
+              id, 
+              auth.organisationId
+          );
+          
+          if (!result) {
+            req.log.warn({ msg: 'Invoice not found during revert', invoiceId: id });
+            return reply.status(404).send({ error: 'Invoice not found' });
+          }
+
+          return result;
+      } catch (e: any) {
+          req.log.error({ error: e }, 'Revert verification failed');
+          
+          const statusCode = e.statusCode || 500;
+          const errorMessage = e.message || 'An error occurred while reverting the invoice';
+          
+          if (statusCode === 404 || errorMessage.includes('not found')) {
+              return reply.status(404).send({ error: errorMessage });
+          }
+          
+          if (statusCode === 400 || errorMessage.includes('not verified')) {
+              return reply.status(400).send({ error: errorMessage });
+          }
+          
+          return reply.status(500).send({ error: 'Internal server error' });
+      }
+  },
+
   async list(req: FastifyRequest, reply: FastifyReply) {
       const { locationId } = req.params as { locationId: string };
       const { page, limit, search, sourceType, startDate, endDate, status, refreshProcessing } = req.query as { 

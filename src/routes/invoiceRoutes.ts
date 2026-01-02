@@ -64,6 +64,25 @@ export default async function invoiceRoutes(fastify: FastifyInstance) {
       }
   }, invoiceController.verify);
 
+  // PATCH /invoices/:id/revert
+  app.patch('/:id/revert', {
+      schema: {
+          params: z.object({ id: z.string() }),
+          response: {
+              200: z.object({
+                  invoice: z.any(), // Invoice type
+                  invoiceFile: z.object({
+                      id: z.string(),
+                      reviewStatus: z.string(),
+                      verificationSource: z.string().nullable(),
+                      verifiedAt: z.string().nullable(),
+                      locationId: z.string(),
+                  }).nullable(),
+              }),
+          },
+      }
+  }, invoiceController.revert);
+
   // GET /invoices/locations/:locationId/review-count
   app.get('/locations/:locationId/review-count', {
       schema: {

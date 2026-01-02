@@ -475,7 +475,8 @@ function getVerifiedManualLineItemWhere(params: {
       locationId,
       startDate,
       endDate
-    })
+    }),
+    isIncludedInAnalytics: true // Only include items marked for inclusion in analytics
   } as Prisma.InvoiceLineItemWhereInput;
 }
 
@@ -2334,6 +2335,7 @@ export const supplierInsightsService = {
                 date: { gte: windowStart, lte: now },
                 deletedAt: null
             },
+            isIncludedInAnalytics: true, // Only include items marked for inclusion in analytics
             OR: [
                 { productCode: { equals: normalizedKey, mode: 'insensitive' } },
                 {

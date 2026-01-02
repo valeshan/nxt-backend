@@ -407,6 +407,194 @@ export const invoicePipelineService = {
   },
 
   /**
+   * Ensure all OCR line items exist in DB (lazy backfill for legacy invoices).
+   * Called when reopening a verified invoice to ensure all items are visible.
+   * 
+   * Uses upsert to prevent duplicates if called multiple times.
+   * Backfilled items are marked as excluded (isIncludedInAnalytics=false) since
+   * they weren't selected during the original verification.
+   */
+  async ensureAllOcrItemsExist(
+    invoiceId: string,
+    invoiceFileId: string,
+    tx: any
+  ) {
+    // Check if we need to backfill
+    const invoice = await tx.invoice.findUnique({
+      where: { id: invoiceId },
+      include: {
+        lineItems: {
+          where: { source: 'OCR' }
+        },
+        invoiceFile: {
+          include: {
+            ocrResult: true
+          }
+        }
+      }
+    });
+    
+    if (!invoice || !invoice.invoiceFile?.ocrResult) return;
+    
+    const ocrLineItems = invoice.invoiceFile.ocrResult.parsedJson?.lineItems || [];
+    const existingOcrItems = invoice.lineItems;
+    
+    // If we have fewer OCR items than in the OCR result, backfill
+    if (existingOcrItems.length < ocrLineItems.length) {
+      for (let index = 0; index < ocrLineItems.length; index++) {
+        const ocrItem = ocrLineItems[index];
+        const sourceKey = `ocr:${index}`;
+        
+        const qty = Number(ocrItem.quantity) || 1;
+        const total = Number(ocrItem.lineTotal) || 0;
+        const unitPrice = qty > 0 ? total / qty : 0;
+        
+        // Use upsert to prevent duplicates if backfill is called multiple times
+        await tx.invoiceLineItem.upsert({
+          where: {
+            invoiceId_sourceKey: {
+              invoiceId: invoiceId,
+              sourceKey: sourceKey
+            }
+          },
+          create: {
+            invoiceId: invoiceId,
+            description: (ocrItem.description ?? '').trim(),
+            quantity: qty,
+            lineTotal: total,
+            unitPrice: unitPrice,
+            productCode: ocrItem.productCode?.trim() || null,
+            accountCode: MANUAL_COGS_ACCOUNT_CODE,
+            confidenceScore: ocrItem.confidenceScore || null,
+            textWarnReasons: ocrItem.warnReasons || [],
+            isIncludedInAnalytics: false, // Backfilled items start as excluded (user previously didn't select them)
+            source: 'OCR',
+            sourceKey: sourceKey
+          },
+          update: {
+            // If item already exists, don't overwrite (preserve any edits or inclusion flags)
+            // This handles the case where backfill is called multiple times
+          }
+        });
+      }
+    }
+  },
+
+  /**
+   * Upsert invoice line items from OCR data.
+   * Creates all OCR line items with stable sourceKey, preserving user edits.
+   * Called when OCR completes or retries.
+   * 
+   * CRITICAL: sourceKey = ocr:${index} stability depends on OCR ordering being frozen.
+   * - OCR parsing must NOT sort or reorder lineItems array
+   * - If OCR provider changes ordering on retry, sourceKey will drift and edits will attach to wrong rows
+   * - If ordering drifts, consider stronger sourceKey (e.g., hash of normalized description+qty+total + occurrence index)
+   */
+  async upsertInvoiceLineItemsFromOcr(
+    invoiceId: string,
+    ocrLineItems: any[],
+    tx: any
+  ) {
+    // IMPORTANT: Preserve the exact order from OCR - don't sort or reorder
+    // The index in the array becomes the stable sourceKey
+    // If OCR provider changes ordering, sourceKey will drift and user edits will attach to wrong items
+    
+    // First, mark all existing OCR items as inactive (soft-retire)
+    // We'll reactivate the ones that still exist in the new OCR result
+    await tx.invoiceLineItem.updateMany({
+      where: {
+        invoiceId: invoiceId,
+        source: 'OCR'
+      },
+      data: {
+        isIncludedInAnalytics: false // Soft-retire: exclude from analytics but don't delete
+      }
+    });
+    
+    // Upsert each OCR line item
+    for (let index = 0; index < ocrLineItems.length; index++) {
+      const ocrItem = ocrLineItems[index];
+      const sourceKey = `ocr:${index}`;
+      
+      const qty = Number(ocrItem.quantity) || 1;
+      const total = Number(ocrItem.lineTotal) || 0;
+      const unitPrice = qty > 0 ? total / qty : 0;
+      
+      // Check if item exists to determine if we should preserve user edits
+      const existing = await tx.invoiceLineItem.findUnique({
+        where: {
+          invoiceId_sourceKey: {
+            invoiceId: invoiceId,
+            sourceKey: sourceKey
+          }
+        },
+        select: {
+          id: true,
+          description: true,
+          quantity: true,
+          lineTotal: true,
+          productCode: true,
+          isIncludedInAnalytics: true
+        }
+      });
+      
+      // Determine if fields were manually edited (not null/empty and differ from OCR)
+      const wasManuallyEdited = existing && (
+        (existing.description && existing.description !== (ocrItem.description ?? '').trim()) ||
+        (existing.quantity && Number(existing.quantity) !== qty) ||
+        (existing.lineTotal && Number(existing.lineTotal) !== total) ||
+        (existing.productCode !== (ocrItem.productCode?.trim() || null))
+      );
+      
+      // Upsert by (invoiceId, sourceKey)
+      await tx.invoiceLineItem.upsert({
+        where: {
+          invoiceId_sourceKey: {
+            invoiceId: invoiceId,
+            sourceKey: sourceKey
+          }
+        },
+        create: {
+          invoiceId: invoiceId,
+          description: (ocrItem.description ?? '').trim(),
+          quantity: qty,
+          lineTotal: total,
+          unitPrice: unitPrice,
+          productCode: ocrItem.productCode?.trim() || null,
+          accountCode: MANUAL_COGS_ACCOUNT_CODE,
+          confidenceScore: ocrItem.confidenceScore || null,
+          textWarnReasons: ocrItem.warnReasons || [],
+          isIncludedInAnalytics: true, // Default to included on first create
+          source: 'OCR',
+          sourceKey: sourceKey
+        },
+        update: {
+          // Only update OCR-derived fields if item wasn't manually edited
+          // Preserve user edits to description, quantity, lineTotal, productCode
+          ...(wasManuallyEdited ? {
+            // Preserve user edits - only update confidence/trust fields
+            confidenceScore: ocrItem.confidenceScore || undefined,
+            textWarnReasons: ocrItem.warnReasons || undefined,
+            // Restore inclusion flag (was soft-retired above)
+            isIncludedInAnalytics: existing.isIncludedInAnalytics !== false ? true : false
+          } : {
+            // No user edits - allow OCR to update core fields
+            description: (ocrItem.description ?? '').trim(),
+            quantity: qty,
+            lineTotal: total,
+            unitPrice: unitPrice,
+            productCode: ocrItem.productCode?.trim() || null,
+            confidenceScore: ocrItem.confidenceScore || null,
+            textWarnReasons: ocrItem.warnReasons || [],
+            // Restore inclusion flag (was soft-retired above)
+            isIncludedInAnalytics: existing?.isIncludedInAnalytics !== false ? true : false
+          })
+        }
+      });
+    }
+  },
+
+  /**
    * Compute reconciliation and analytics exclusion summary for a legacy (OCR/MANUAL) invoice
    * using canonical line items.
    *
@@ -1204,7 +1392,7 @@ export const invoicePipelineService = {
                                 subtotal: parsed.subtotal,
                                 sourceType: file.sourceType,
                                 lineItems: {
-                                    create: parsed.lineItems.map(item => {
+                                    create: parsed.lineItems.map((item, index) => {
                                         // Recompute text warnings with lexicon to suppress false positives
                                         // Use phraseKey normalization for matching
                                         const normalizedPhrase = normalizePhraseKey(item.description ?? '');
@@ -1243,7 +1431,10 @@ export const invoicePipelineService = {
                                             productCode: item.productCode,
                                             accountCode: MANUAL_COGS_ACCOUNT_CODE,
                                             confidenceScore: item.confidenceScore ?? null,
-                                            textWarnReasons: textWarnReasons.length > 0 ? textWarnReasons : []
+                                            textWarnReasons: textWarnReasons.length > 0 ? textWarnReasons : [],
+                                            isIncludedInAnalytics: true, // Default to included
+                                            source: 'OCR',
+                                            sourceKey: `ocr:${index}` // Stable key based on position
                                         };
                                     })
                                 }
@@ -1409,6 +1600,26 @@ export const invoicePipelineService = {
                   },
                 });
                 if (res.count === 0) return this.enrichStatus(file);
+
+                // Upsert all OCR line items with stable sourceKey
+                // This ensures all items exist in DB even if user hasn't verified yet
+                const fileWithOcr = await prisma.invoiceFile.findUnique({
+                  where: { id: file.id },
+                  include: { invoice: true, ocrResult: true }
+                });
+                
+                if (fileWithOcr?.invoice?.id && fileWithOcr?.ocrResult?.parsedJson) {
+                  const parsedJson = fileWithOcr.ocrResult.parsedJson as any;
+                  if (parsedJson?.lineItems && Array.isArray(parsedJson.lineItems)) {
+                    await prisma.$transaction(async (tx) => {
+                      await this.upsertInvoiceLineItemsFromOcr(
+                        fileWithOcr!.invoice!.id,
+                        parsedJson.lineItems,
+                        tx
+                      );
+                    });
+                  }
+                }
 
                 // Fetch the updated file with relations for auto-approval check
                 const updatedFile = await prisma.invoiceFile.findUnique({
@@ -1823,74 +2034,101 @@ export const invoicePipelineService = {
 
           // Suppression set is already built above (org-wide only, no supplier filtering needed)
 
-          // 4. Delete All Existing Line Items
-          // We replace them entirely with the verified list to ensure source of truth
-          console.log(`[InvoicePipeline] Clearing existing line items for invoice ${invoiceId}...`);
-          await tx.invoiceLineItem.deleteMany({
-              where: { invoiceId: invoiceId }
-          });
-
-          // 5. Validate and Create New Line Items (Normalized)
-          if (!data.items || data.items.length === 0) {
-              const err: any = new Error("At least one line item is required");
+          // 4. Handle line items: apply edits and toggle inclusion flags
+          // Use selectedLineItemIds as the source of truth (not data.items IDs)
+          const selectedIds = new Set(data.selectedLineItemIds || []);
+          
+          // Validate that at least one item is selected
+          if (selectedIds.size === 0) {
+              const err: any = new Error("At least one line item must be selected");
               err.statusCode = 400;
-              err.code = 'LINE_ITEMS_REQUIRED';
+              err.code = 'NO_ITEMS_SELECTED';
               throw err;
           }
 
-          console.log(`[InvoicePipeline] Creating ${data.items.length} verified line items...`);
-          
-          // Validate required fields for each line item
-          const validationErrors: string[] = [];
-          data.items.forEach((item, index) => {
-              const trimmedDescription = String(item.description || '').trim();
-              const qty = item.quantity != null ? Number(item.quantity) : null;
-              const lineTotal = item.lineTotal != null ? Number(item.lineTotal) : null;
-
-              if (trimmedDescription.length === 0) {
-                  validationErrors.push(`Line item ${index + 1}: description is required`);
-              }
-              
-              if (qty === null || isNaN(qty) || qty <= 0) {
-                  validationErrors.push(`Line item ${index + 1}: quantity must be greater than 0`);
-              }
-              
-              if (lineTotal === null || isNaN(lineTotal)) {
-                  validationErrors.push(`Line item ${index + 1}: line total is required`);
+          // Batch-fetch existing items to avoid N+1 queries
+          const existingItems = await tx.invoiceLineItem.findMany({
+              where: { invoiceId: invoiceId },
+              select: {
+                  id: true,
+                  description: true,
+                  quantity: true,
+                  lineTotal: true,
+                  productCode: true
               }
           });
+          
+          const existingItemsMap = new Map(existingItems.map(item => [item.id, item]));
 
-          if (validationErrors.length > 0) {
-              const err: any = new Error(`Line item validation failed: ${validationErrors.join('; ')}`);
-              err.statusCode = 400;
-              err.code = 'INVALID_LINE_ITEMS';
-              err.details = validationErrors;
-              throw err;
+          // Only update items that are in selectedLineItemIds AND have edits in data.items
+          if (data.items && data.items.length > 0) {
+              const itemsToUpdate = data.items.filter(item => 
+                  selectedIds.has(item.id) // Only update selected items
+              );
+              
+              for (const item of itemsToUpdate) {
+                  const existing = existingItemsMap.get(item.id);
+                  if (!existing) continue; // Skip if item doesn't exist
+                  
+                  const updates: any = {};
+                  
+                  // Only update if field is provided AND differs
+                  if (item.description !== undefined && item.description.trim() !== existing.description) {
+                      updates.description = item.description.trim();
+                  }
+                  
+                  if (item.quantity !== undefined && Number(item.quantity) !== Number(existing.quantity)) {
+                      const qty = Number(item.quantity) || 1;
+                      updates.quantity = qty;
+                      // Recalculate unitPrice if quantity or lineTotal changed
+                      const total = item.lineTotal !== undefined ? Number(item.lineTotal) : Number(existing.lineTotal);
+                      updates.unitPrice = qty > 0 ? total / qty : 0;
+                  }
+                  
+                  if (item.lineTotal !== undefined && Number(item.lineTotal) !== Number(existing.lineTotal)) {
+                      const total = Number(item.lineTotal);
+                      updates.lineTotal = total;
+                      // Recalculate unitPrice if quantity or lineTotal changed
+                      const qty = Number(item.quantity) || Number(existing.quantity) || 1;
+                      updates.unitPrice = qty > 0 ? total / qty : 0;
+                  }
+                  
+                  if (item.productCode !== undefined && (item.productCode?.trim() || null) !== existing.productCode) {
+                      updates.productCode = item.productCode?.trim() || null;
+                  }
+                  
+                  // Only update if there are actual changes
+                  if (Object.keys(updates).length > 0) {
+                      await tx.invoiceLineItem.update({
+                          where: { id: item.id },
+                          data: updates
+                      });
+                  }
+              }
           }
+
+          // 5. Set inclusion flags: exclude all, then include selected
+          // Two simple updateMany calls - no loops, no matching logic
           
-          const newItems = data.items.map(item => {
-              // Data Normalization & Divide-by-Zero Guard
-              const qty = Number(item.quantity) || 1; // Default to 1 if 0/missing (shouldn't happen after validation)
-              const total = Number(item.lineTotal) || 0; // Shouldn't happen after validation
-              const unitPrice = qty > 0 ? total / qty : 0;
-
-              return {
-                  invoiceId: invoiceId,
-                  description: (item.description ?? '').trim(),
-                  quantity: qty,
-                  lineTotal: total,
-                  unitPrice: unitPrice,
-                  productCode: item.productCode?.trim() || null,
-                  accountCode: MANUAL_COGS_ACCOUNT_CODE,
-                  // Explicit trust fields for manual items (null/empty since not from OCR)
-                  confidenceScore: null,
-                  textWarnReasons: []
-              };
+          // First, set all items to excluded
+          await tx.invoiceLineItem.updateMany({
+              where: { invoiceId: invoiceId },
+              data: { isIncludedInAnalytics: false }
           });
 
-          await tx.invoiceLineItem.createMany({
-              data: newItems
-          });
+          // Then, set selected items to included and ensure accountCode is set
+          if (selectedIds.size > 0) {
+              await tx.invoiceLineItem.updateMany({
+                  where: {
+                      invoiceId: invoiceId,
+                      id: { in: Array.from(selectedIds) }
+                  },
+                  data: { 
+                      isIncludedInAnalytics: true,
+                      accountCode: MANUAL_COGS_ACCOUNT_CODE // Ensure accountCode is set for verified items
+                  }
+              });
+          }
 
           // C) Lexicon learning logic - org-wide only
           // Learn phrases that have typo warnings but not hard garbage warnings
@@ -2011,10 +2249,12 @@ export const invoicePipelineService = {
           // This ensures single DB write per phrase per verify request
           // Use phraseKey normalization (aggressive) for matching
           const uniquePhrases = new Set<string>();
-          for (const item of data.items) {
-              const finalText = (item.description ?? '').trim();
-              if (finalText) {
-                  uniquePhrases.add(normalizePhraseKey(finalText));
+          if (data.items && Array.isArray(data.items)) {
+              for (const item of data.items) {
+                  const finalText = (item.description ?? '').trim();
+                  if (finalText) {
+                      uniquePhrases.add(normalizePhraseKey(finalText));
+                  }
               }
           }
 
@@ -2053,7 +2293,7 @@ export const invoicePipelineService = {
               // No entry exists - run learning decision
               // Find the original item text for this normalized phrase to compute warnings
               // normalizedPhrase is already phraseKey-normalized
-              const originalItem = data.items.find(item => {
+              const originalItem = data.items?.find(item => {
                   const text = (item.description ?? '').trim();
                   return text && normalizePhraseKey(text) === normalizedPhrase;
               });
@@ -3114,6 +3354,116 @@ export const invoicePipelineService = {
       // Non-blocking: log but don't throw
       console.warn(`[InvoicePipeline] Failed to emit review count update for location ${locationId}:`, error);
     }
+  },
+
+  /**
+   * Reverts a verified invoice back to NEEDS_REVIEW status, allowing it to be edited.
+   * This removes the invoice from analytics until it is re-verified.
+   * 
+   * Minimal implementation: Only updates status flags (isVerified, reviewStatus).
+   * Does NOT touch canonical records to avoid breaking canonical analytics.
+   */
+  async revertVerification(invoiceId: string, organisationId: string) {
+    const result = await prisma.$transaction(async (tx) => {
+      // 1. Fetch invoice and verify ownership
+      const invoice = await tx.invoice.findFirst({
+        where: { 
+          id: invoiceId, 
+          organisationId, 
+          deletedAt: null,
+          isVerified: true // Only allow reverting verified invoices
+        } as any,
+        include: { invoiceFile: true }
+      });
+
+      if (!invoice) {
+        throw new Error('Verified invoice not found or access denied');
+      }
+
+      if (!invoice.invoiceFile) {
+        throw new Error('Invoice file not found');
+      }
+
+      if (invoice.invoiceFile.reviewStatus !== ReviewStatus.VERIFIED) {
+        throw new Error('Invoice is not verified');
+      }
+
+      // 2. Revert InvoiceFile status
+      await tx.invoiceFile.update({
+        where: { id: invoice.invoiceFile.id },
+        data: {
+          reviewStatus: ReviewStatus.NEEDS_REVIEW,
+          verificationSource: null,
+          verifiedAt: null
+        }
+      });
+
+      // 3. Revert Invoice status
+      const updatedInvoice = await tx.invoice.update({
+        where: { id: invoiceId },
+        data: {
+          isVerified: false
+        },
+        include: { supplier: true, lineItems: true }
+      });
+
+      // 3.5. Lazy backfill: ensure all OCR items exist for legacy invoices
+      // This ensures that when reopening, all items are visible (not just the ones that were verified)
+      await this.ensureAllOcrItemsExist(invoiceId, invoice.invoiceFile.id, tx);
+
+      // 4. Emit review count update (increment count)
+      await this.emitReviewCountUpdate(invoice.locationId, organisationId);
+
+      // 5. Fetch full invoiceFile with all relations for response
+      const fullInvoiceFile = await tx.invoiceFile.findUnique({
+        where: { id: invoice.invoiceFile.id },
+        include: { 
+          invoice: { include: { supplier: true, lineItems: true } },
+          ocrResult: true
+        },
+      });
+
+      if (!fullInvoiceFile) {
+        throw new Error('Invoice file not found after revert');
+      }
+
+      // 6. Emit invoice-status-updated event for UI updates
+      try {
+        const channel = pusherService.getOrgChannel(organisationId);
+        await pusherService.triggerEvent(channel, 'invoice-status-updated', {
+          invoiceFileId: fullInvoiceFile.id,
+          organisationId: organisationId,
+          locationId: fullInvoiceFile.locationId,
+          status: fullInvoiceFile.processingStatus,
+          reviewStatus: fullInvoiceFile.reviewStatus,
+          updatedAt: fullInvoiceFile.updatedAt.toISOString(),
+          verificationSource: fullInvoiceFile.verificationSource,
+          verifiedAt: fullInvoiceFile.verifiedAt ? fullInvoiceFile.verifiedAt.toISOString() : null,
+        });
+      } catch (e) {
+        console.warn(`[InvoicePipeline] Failed to emit invoice-status-updated for ${invoice.invoiceFile.id}:`, e);
+      }
+
+      console.log('[InvoicePipeline] revertVerification completed', {
+        event: 'invoice.reverted',
+        invoiceId,
+        invoiceFileId: invoice.invoiceFile.id,
+        locationId: invoice.locationId,
+      });
+
+      return {
+        invoice: updatedInvoice,
+        invoiceFile: fullInvoiceFile,
+      };
+    }, { timeout: 10000 });
+
+    // Enrich the invoiceFile outside the transaction (add presignedUrl, lineItemQualitySummary, etc.)
+    const enrichedFile = await this.enrichStatus(result.invoiceFile);
+
+    return {
+      invoice: result.invoice,
+      invoiceFile: enrichedFile,
+    };
   },
 };
 

@@ -795,6 +795,7 @@ export class SupplierController {
         AND f."deletedAt" IS NULL
         AND i."organisationId" = ${orgId}
         AND i."deletedAt" IS NULL
+        AND li."isIncludedInAnalytics" = true
         ${locationFilter}
         GROUP BY COALESCE(NULLIF("productCode", ''), LOWER(TRIM("description")))
         ORDER BY "totalSpend" DESC

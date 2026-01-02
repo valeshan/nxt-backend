@@ -600,6 +600,9 @@ model InvoiceLineItem {
   accountCode String?
   confidenceScore Float?
   textWarnReasons String[] @default([])
+  isIncludedInAnalytics Boolean @default(true) // Controls whether item is included in analytics/spend calculations
+  source      String   @default("OCR") // 'OCR' | 'MANUAL' - source of the line item
+  sourceKey   String?  // Stable key for matching (e.g., "ocr:3" for OCR items)
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt
   invoice     Invoice  @relation(fields: [invoiceId], references: [id], onDelete: Cascade)
@@ -609,6 +612,8 @@ model InvoiceLineItem {
   @@index([invoiceId])
   // Supplier insights / forecasting often filter by accountCode
   @@index([accountCode])
+  @@index([isIncludedInAnalytics]) // For analytics filtering
+  @@unique([invoiceId, sourceKey]) // Ensures stable identity for OCR items
 }
 
 // Canonical header: derived from legacy invoices; used for defaults + soft-delete mirror

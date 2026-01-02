@@ -26,3 +26,4 @@ CREATE INDEX IF NOT EXISTS "InvoiceLineItem_accountCode_idx"
 ON "InvoiceLineItem" ("accountCode");
 
 
+

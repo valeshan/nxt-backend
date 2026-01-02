@@ -200,6 +200,9 @@ export const ocrService = {
       };
     };
 
+    // CRITICAL: Preserve exact order from Textract - DO NOT sort or reorder
+    // The index in this array becomes the stable sourceKey (ocr:${index}) in InvoiceLineItem
+    // If ordering changes, sourceKey will drift and user edits will attach to wrong items
     for (const group of lineItemGroups) {
       for (const item of group.LineItems || []) {
         const fields = item.LineItemExpenseFields || [];

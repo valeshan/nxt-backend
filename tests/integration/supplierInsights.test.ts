@@ -311,6 +311,7 @@ describe('Supplier Insights Service Integration', () => {
         supplierId: verificationSupplierId,
         supplierName: 'Verification Test Supplier',
         total: 5000,
+        selectedLineItemIds: invoice!.lineItems.map(item => item.id),
         items: invoice!.lineItems.map(item => ({
           id: item.id,
           description: item.description || '',
@@ -404,6 +405,7 @@ describe('Supplier Insights Service Integration', () => {
         supplierId: verificationSupplierId,
         supplierName: 'Verification Test Supplier',
         total: 1000,
+        selectedLineItemIds: invoice2.lineItems.map(item => item.id),
         items: invoice2.lineItems.map(item => ({
           id: item.id,
           description: item.description || '',
