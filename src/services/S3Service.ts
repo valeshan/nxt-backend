@@ -48,7 +48,16 @@ export const s3Service = {
       await s3Client.send(command);
       return key;
     } catch (error: any) {
-      console.error(`[S3 Upload Failed] Bucket=${config.S3_INVOICE_BUCKET} Key=${key} Error=${error.name} Message=${error.message}`);
+      console.error(`[S3 Upload Failed] Bucket=${config.S3_INVOICE_BUCKET} Key=${key} Region=${config.AWS_REGION} Error=${error.name} Message=${error.message}`);
+      
+      // Handle PermanentRedirect - bucket is in different region
+      if (error.name === 'PermanentRedirect' || error.Code === 'PermanentRedirect') {
+        const enhancedError = new Error(`S3 bucket "${config.S3_INVOICE_BUCKET}" is in a different region than configured (${config.AWS_REGION}). Update AWS_REGION in .env.local to match the bucket's region.`);
+        (enhancedError as any).code = error.name;
+        (enhancedError as any).originalError = error;
+        throw enhancedError;
+      }
+      
       const enhancedError = new Error(`S3 Upload Failed: ${error.message}`);
       (enhancedError as any).code = error.name;
       (enhancedError as any).originalError = error;

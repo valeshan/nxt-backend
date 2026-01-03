@@ -27,7 +27,20 @@ const formatDate = (dateString: string) => {
   }
 };
 
-export const buildFeedbackEmail = (feedback: FeedbackRequestType, authUserId: string, authUserEmail: string) => {
+type UserInfo = {
+  userName: string;
+  userEmail: string;
+  organisationName: string | null;
+  locationName: string | null;
+};
+
+export const buildFeedbackEmail = (
+  feedback: FeedbackRequestType,
+  authUserId: string,
+  authUserEmail: string,
+  feedbackId: string,
+  userInfo: UserInfo
+) => {
   const subject = `Feedback submitted - ${feedback.referenceType}`;
 
   const html = `
@@ -70,6 +83,9 @@ export const buildFeedbackEmail = (feedback: FeedbackRequestType, authUserId: st
                 <p style="margin: 10px 0 0; color: #666; font-size: 16px; line-height: 1.5;">
                   Reference Type: <strong>${escapeHtml(feedback.referenceType)}</strong>
                 </p>
+                <p style="margin: 8px 0 0; color: #999; font-size: 12px; font-family: 'Menlo', 'Consolas', monospace;">
+                  Feedback ID: ${escapeHtml(feedbackId)}
+                </p>
               </div>
             </td>
           </tr>
@@ -94,35 +110,45 @@ export const buildFeedbackEmail = (feedback: FeedbackRequestType, authUserId: st
                 </p>
                 <table width="100%" border="0" cellpadding="0" cellspacing="0" style="font-size: 13px;">
                   <tr>
-                    <td style="padding: 8px 0; color: #666; width: 40%;">User ID (Auth):</td>
-                    <td style="padding: 8px 0; color: #111; font-family: 'Menlo', monospace; font-size: 11px;">${escapeHtml(authUserId)}</td>
+                    <td style="padding: 8px 0; color: #666; width: 40%;">User Name:</td>
+                    <td style="padding: 8px 0; color: #111; font-weight: 500;">${escapeHtml(userInfo.userName)}</td>
                   </tr>
                   <tr>
-                    <td style="padding: 8px 0; color: #666;">User Email (Auth):</td>
-                    <td style="padding: 8px 0; color: #111;">${escapeHtml(authUserEmail)}</td>
+                    <td style="padding: 8px 0; color: #666;">User Email:</td>
+                    <td style="padding: 8px 0; color: #111;">${escapeHtml(userInfo.userEmail)}</td>
+                  </tr>
+                  ${userInfo.organisationName ? `
+                  <tr>
+                    <td style="padding: 8px 0; color: #666;">Organisation:</td>
+                    <td style="padding: 8px 0; color: #111; font-weight: 500;">${escapeHtml(userInfo.organisationName)}</td>
+                  </tr>
+                  ` : ''}
+                  ${userInfo.locationName ? `
+                  <tr>
+                    <td style="padding: 8px 0; color: #666;">Location:</td>
+                    <td style="padding: 8px 0; color: #111; font-weight: 500;">${escapeHtml(userInfo.locationName)}</td>
+                  </tr>
+                  ` : ''}
+                  <tr>
+                    <td style="padding: 8px 0; color: #999; font-size: 11px;">User ID (Auth):</td>
+                    <td style="padding: 8px 0; color: #999; font-family: 'Menlo', monospace; font-size: 11px;">${escapeHtml(authUserId)}</td>
                   </tr>
                   ${feedback.userId ? `
                   <tr>
-                    <td style="padding: 8px 0; color: #666;">User ID (Client):</td>
+                    <td style="padding: 8px 0; color: #999; font-size: 11px;">User ID (Client):</td>
                     <td style="padding: 8px 0; color: #999; font-family: 'Menlo', monospace; font-size: 11px;">${escapeHtml(feedback.userId)}</td>
-                  </tr>
-                  ` : ''}
-                  ${feedback.userEmail ? `
-                  <tr>
-                    <td style="padding: 8px 0; color: #666;">User Email (Client):</td>
-                    <td style="padding: 8px 0; color: #999;">${escapeHtml(feedback.userEmail)}</td>
                   </tr>
                   ` : ''}
                   ${feedback.organisationId ? `
                   <tr>
-                    <td style="padding: 8px 0; color: #666;">Organisation ID:</td>
-                    <td style="padding: 8px 0; color: #111; font-family: 'Menlo', monospace; font-size: 11px;">${escapeHtml(feedback.organisationId)}</td>
+                    <td style="padding: 8px 0; color: #999; font-size: 11px;">Organisation ID:</td>
+                    <td style="padding: 8px 0; color: #999; font-family: 'Menlo', monospace; font-size: 11px;">${escapeHtml(feedback.organisationId)}</td>
                   </tr>
                   ` : ''}
                   ${feedback.locationId ? `
                   <tr>
-                    <td style="padding: 8px 0; color: #666;">Location ID:</td>
-                    <td style="padding: 8px 0; color: #111; font-family: 'Menlo', monospace; font-size: 11px;">${escapeHtml(feedback.locationId)}</td>
+                    <td style="padding: 8px 0; color: #999; font-size: 11px;">Location ID:</td>
+                    <td style="padding: 8px 0; color: #999; font-family: 'Menlo', monospace; font-size: 11px;">${escapeHtml(feedback.locationId)}</td>
                   </tr>
                   ` : ''}
                 </table>
@@ -167,6 +193,10 @@ export const buildFeedbackEmail = (feedback: FeedbackRequestType, authUserId: st
                     <td style="padding: 8px 0; color: #666;">Timestamp:</td>
                     <td style="padding: 8px 0; color: #111; font-family: 'Menlo', monospace; font-size: 11px;">${formatDate(feedback.timestamp)}</td>
                   </tr>
+                  <tr>
+                    <td style="padding: 8px 0; color: #666;">Feedback ID:</td>
+                    <td style="padding: 8px 0; color: #111; font-family: 'Menlo', monospace; font-size: 11px;">${escapeHtml(feedbackId)}</td>
+                  </tr>
                 </table>
               </div>
 
@@ -197,16 +227,21 @@ export const buildFeedbackEmail = (feedback: FeedbackRequestType, authUserId: st
 
   let text = `Feedback Submitted\n\n`;
   text += `Reference Type: ${feedback.referenceType}\n`;
+  text += `Feedback ID: ${feedbackId}\n`;
   text += `Timestamp: ${formatDate(feedback.timestamp)}\n\n`;
   text += `Message:\n`;
   text += `${'='.repeat(50)}\n`;
   text += `${feedback.message}\n\n`;
   text += `User Context:\n`;
   text += `${'='.repeat(50)}\n`;
+  text += `User Name: ${userInfo.userName}\n`;
+  text += `User Email: ${userInfo.userEmail}\n`;
+  if (userInfo.organisationName) text += `Organisation: ${userInfo.organisationName}\n`;
+  if (userInfo.locationName) text += `Location: ${userInfo.locationName}\n`;
+  text += `\nTechnical Details:\n`;
+  text += `${'='.repeat(50)}\n`;
   text += `User ID (Auth): ${authUserId}\n`;
-  text += `User Email (Auth): ${authUserEmail}\n`;
   if (feedback.userId) text += `User ID (Client): ${feedback.userId}\n`;
-  if (feedback.userEmail) text += `User Email (Client): ${feedback.userEmail}\n`;
   if (feedback.organisationId) text += `Organisation ID: ${feedback.organisationId}\n`;
   if (feedback.locationId) text += `Location ID: ${feedback.locationId}\n`;
   text += `\nTechnical Context:\n`;

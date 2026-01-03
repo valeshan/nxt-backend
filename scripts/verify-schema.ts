@@ -29,6 +29,11 @@ const CRITICAL_CHECKS: ColumnCheck[] = [
     expectedColumns: ['isIncludedInAnalytics', 'source', 'sourceKey'],
     description: 'InvoiceLineItem analytics and source tracking columns',
   },
+  {
+    tableName: 'Feedback',
+    expectedColumns: ['id', 'referenceType', 'message', 'createdAt'],
+    description: 'Feedback table core columns',
+  },
 ];
 
 async function verifySchema() {

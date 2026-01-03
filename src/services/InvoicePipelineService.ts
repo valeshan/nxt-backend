@@ -6,6 +6,7 @@ import { imagePreprocessingService } from './ImagePreprocessingService';
 import { InvoiceSourceType, ProcessingStatus, ReviewStatus, SupplierSourceType, SupplierStatus as PrismaSupplierStatus, OcrFailureCategory, VerificationSource } from '@prisma/client';
 import { randomUUID } from 'crypto';
 import { MANUAL_COGS_ACCOUNT_CODE } from '../config/constants';
+import { config } from '../config/env';
 import { assertDateRangeOrThrow, assertWindowIfDeepPagination, getOffsetPaginationOrThrow, parseDateOrThrow } from '../utils/paginationGuards';
 
 import { getProductKeyFromLineItem } from './helpers/productKey';
@@ -1094,6 +1095,15 @@ export const invoicePipelineService = {
     
     // 1. Upload to S3
     console.log(`[InvoicePipeline] Starting S3 upload for ${key}`);
+    
+    // Check for AWS credentials before attempting upload
+    if (!config.AWS_ACCESS_KEY_ID || !config.AWS_SECRET_ACCESS_KEY) {
+        const err = new Error('AWS credentials not configured. Set AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY in .env.local for local E2E tests.');
+        (err as any).stage = 's3-upload';
+        (err as any).code = 'AWS_CREDENTIALS_MISSING';
+        throw err;
+    }
+    
     try {
         await s3Service.uploadFile(fileStream, key, metadata.mimeType);
         console.log(`[InvoicePipeline] S3 upload complete for ${key}`);

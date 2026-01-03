@@ -836,3 +836,26 @@ model OrganisationLexiconEntry {
   @@index([phraseKey])
   @@index([lastSeenAt])
 }
+
+model Feedback {
+  id            String   @id @default(uuid())
+  referenceType String   // 'Invoices', 'Auto-approval', 'Suppliers', 'Analytics / Insights', 'Integrations', 'Performance / Bugs', 'Feature request', 'Other'
+  message       String
+  userId        String?  // Client-provided user ID
+  orgId         String?  // Organisation ID
+  locationId   String?  // Location ID
+  pageUrl      String?  // Full URL where feedback was submitted
+  userAgent     String?  // Browser user agent
+  screenWidth   Int?     // Screen width in pixels
+  screenHeight  Int?     // Screen height in pixels
+  environment   String?  // Environment (prod/staging/local)
+  status        String   @default("new") // 'new', 'read', 'archived', etc.
+  emailStatus   String?  // 'sent' | 'failed' | null
+  emailError    String?  // Error message if email send failed
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+
+  @@index([createdAt])
+  @@index([status])
+  @@index([emailStatus])
+}

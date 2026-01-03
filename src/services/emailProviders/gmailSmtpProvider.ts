@@ -7,6 +7,7 @@ type SendEmailParams = {
   text: string;
   html?: string;
   replyTo?: string;
+  headers?: Record<string, string>;
 };
 
 const requireEnv = (key: string): string => {
@@ -47,6 +48,7 @@ export class GmailSmtpProvider {
       text: params.text,
       html: params.html,
       replyTo: params.replyTo || this.defaultReplyTo || this.fromEmail,
+      headers: params.headers,
     });
   }
 }

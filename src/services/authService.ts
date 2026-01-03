@@ -52,7 +52,13 @@ export const authService = {
   },
 
   async getMe(userId: string, context?: { organisationId?: string | null; locationId?: string | null; tokenType?: AuthTokenType }) {
+    // #region agent log
+    fetch('http://127.0.0.1:7242/ingest/613ef4ed-1e5c-4ea7-9c91-6649f4706354',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'authService.ts:54',message:'getMe entry',data:{userId,hasContext:!!context,organisationId:context?.organisationId,locationId:context?.locationId,tokenType:context?.tokenType},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'O'})}).catch(()=>{});
+    // #endregion
     const user = await userRepository.findById(userId);
+    // #region agent log
+    fetch('http://127.0.0.1:7242/ingest/613ef4ed-1e5c-4ea7-9c91-6649f4706354',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'authService.ts:56',message:'After findById',data:{userFound:!!user,userEmail:user?.email},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'O'})}).catch(()=>{});
+    // #endregion
     if (!user) {
       console.error(`[AuthService] getMe: User not found for id ${userId}`);
       throw { statusCode: 404, message: 'User not found' };
@@ -68,7 +74,7 @@ export const authService = {
       role: m.role,
     }));
 
-    return {
+    const result = {
       user_id: user.id,
       name: user.name,
       firstName: user.firstName,
@@ -82,6 +88,10 @@ export const authService = {
       currentLocationId: context?.locationId ?? null,
       tokenType: context?.tokenType ?? 'login',
     };
+    // #region agent log
+    fetch('http://127.0.0.1:7242/ingest/613ef4ed-1e5c-4ea7-9c91-6649f4706354',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'authService.ts:75',message:'getMe result',data:{hasResult:!!result,companiesCount:companies.length,currentOrgId:result.currentOrganisationId,currentLocId:result.currentLocationId},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'O'})}).catch(()=>{});
+    // #endregion
+    return result;
   },
 
   async updateProfile(userId: string, data: { firstName: string; lastName: string }) {
