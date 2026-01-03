@@ -729,12 +729,6 @@ export const invoicePipelineService = {
           take: 50 // Batch size limit
       });
 
-      // #region agent log
-      const fs = require('fs');
-      const logPath = '/Users/valeshannaidoo/Desktop/Projects/nxt/.cursor/debug.log';
-      fs.appendFileSync(logPath, JSON.stringify({location:'InvoicePipelineService.ts:721',message:'processPendingOcrJobs called',data:{processingFilesCount:processingFiles.length,fileIds:processingFiles.map(f=>f.id)},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'K'})+'\n');
-      // #endregion
-
       if (processingFiles.length === 0) return;
 
       console.log(`[InvoicePipeline] Checking ${processingFiles.length} pending OCR jobs...`);
@@ -749,14 +743,8 @@ export const invoicePipelineService = {
               const updated = await this.pollProcessing(file.id);
               
               // 3. If status changed (e.g., to OCR_COMPLETE or OCR_FAILED), trigger Pusher
-              if (updated.processingStatus !== originalStatus) {
-                  console.log(`[InvoicePipeline] Status changed for ${file.id}: ${originalStatus} -> ${updated.processingStatus}`);
-                  // #region agent log
-                  const fs = require('fs');
-                  const logPath = '/Users/valeshannaidoo/Desktop/Projects/nxt/.cursor/debug.log';
-                  fs.appendFileSync(logPath, JSON.stringify({location:'InvoicePipelineService.ts:746',message:'Status change detected in processPendingOcrJobs',data:{invoiceFileId:file.id,originalStatus,newStatus:updated.processingStatus,organisationId:updated.organisationId,locationId:updated.locationId},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'K'})+'\n');
-                  // #endregion
-                  
+            if (updated.processingStatus !== originalStatus) {
+                console.log(`[InvoicePipeline] Status changed for ${file.id}: ${originalStatus} -> ${updated.processingStatus}`);
                   const channel = pusherService.getOrgChannel(updated.organisationId);
                   
                   try {
@@ -776,21 +764,10 @@ export const invoicePipelineService = {
                           lineItemQualitySummary: updated.lineItemQualitySummary ?? null,
                           lineItemQualityIssues: updated.lineItemQualityIssues ?? null,
                       });
-                      // #region agent log
-                      fs.appendFileSync(logPath, JSON.stringify({location:'InvoicePipelineService.ts:767',message:'Pusher invoice-status-updated triggered after status change',data:{invoiceFileId:updated.id,status:updated.processingStatus,channel},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'K'})+'\n');
-                      // #endregion
                   } catch (pusherError) {
-                      // #region agent log
-                      fs.appendFileSync(logPath, JSON.stringify({location:'InvoicePipelineService.ts:770',message:'Pusher event failed after status change',data:{invoiceFileId:updated.id,error:pusherError instanceof Error?pusherError.message:String(pusherError)},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'K'})+'\n');
-                      // #endregion
                       console.warn(`[InvoicePipeline] Failed to trigger Pusher event for status change ${file.id}:`, pusherError);
                   }
               } else {
-                  // #region agent log
-                  const fs = require('fs');
-                  const logPath = '/Users/valeshannaidoo/Desktop/Projects/nxt/.cursor/debug.log';
-                  fs.appendFileSync(logPath, JSON.stringify({location:'InvoicePipelineService.ts:775',message:'No status change detected',data:{invoiceFileId:file.id,status:originalStatus,organisationId:file.organisationId},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'K'})+'\n');
-                  // #endregion
               }
           } catch (err) {
               console.error(`[InvoicePipeline] Error processing pending OCR job for file ${file.id}:`, err);
@@ -1158,14 +1135,6 @@ export const invoicePipelineService = {
             }
         });
         console.log(`[InvoicePipeline] InvoiceFile created: ${invoiceFile.id}`);
-        // #region agent log
-        if (metadata.sourceType === InvoiceSourceType.XERO) {
-            const fs = require('fs');
-            const logPath = '/Users/valeshannaidoo/Desktop/Projects/nxt/.cursor/debug.log';
-            fs.appendFileSync(logPath, JSON.stringify({location:'InvoicePipelineService.ts:1133',message:'InvoiceFile created from Xero',data:{invoiceFileId:invoiceFile.id,organisationId:metadata.organisationId,locationId:metadata.locationId,sourceReference:metadata.sourceReference},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'D'})+'\n');
-        }
-        // #endregion
-
         // Trigger Pusher event for real-time UI update when InvoiceFile is created
         try {
             const channel = pusherService.getOrgChannel(metadata.organisationId);
@@ -2851,12 +2820,6 @@ export const invoicePipelineService = {
           refreshProcessing?: boolean;
       }
   ) {
-      // #region agent log
-      const fs = require('fs');
-      const logPath = '/Users/valeshannaidoo/Desktop/Projects/nxt/.cursor/debug.log';
-      fs.appendFileSync(logPath, JSON.stringify({location:'InvoicePipelineService.ts:2774',message:'listInvoices called',data:{locationId,page,limit,filters},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'B,C,D,E'})+'\n');
-      // #endregion
-
       const { skip: rawSkip, page: safePage, limit: safeLimit } = getOffsetPaginationOrThrow({ page, limit, maxLimit: 100, maxOffset: 5000 });
 
       const start = parseDateOrThrow(filters?.startDate, 'startDate');

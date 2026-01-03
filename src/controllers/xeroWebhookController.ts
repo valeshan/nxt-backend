@@ -66,11 +66,6 @@ const xeroWebhookController: FastifyPluginAsync = async (fastify) => {
 
     const tenantIds = [...new Set(body.events.map(e => e.tenantId))];
     request.log.info(`[XeroWebhook] Received events for tenants: ${tenantIds.join(', ')}`);
-    // #region agent log
-    const fs = require('fs');
-    const logPath = '/Users/valeshannaidoo/Desktop/Projects/nxt/.cursor/debug.log';
-    fs.appendFileSync(logPath, JSON.stringify({location:'xeroWebhookController.ts:68',message:'Webhook received',data:{tenantIds,eventsCount:body.events.length,eventTypes:body.events.map(e=>e.eventType)},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'J'})+'\n');
-    // #endregion
 
     // 3. Process per Tenant (Fire-and-Forget)
     for (const tenantId of tenantIds) {
@@ -83,9 +78,6 @@ const xeroWebhookController: FastifyPluginAsync = async (fastify) => {
 
         if (!connection) {
             request.log.warn(`[XeroWebhook] No connection found for tenant ${tenantId}. Skipping.`);
-            // #region agent log
-            fs.appendFileSync(logPath, JSON.stringify({location:'xeroWebhookController.ts:79',message:'No connection found for tenant',data:{tenantId},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'J'})+'\n');
-            // #endregion
             continue;
         }
 

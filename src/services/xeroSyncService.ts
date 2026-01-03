@@ -29,11 +29,6 @@ export class XeroSyncService {
   private readonly MAX_RETRIES = 3;
 
   async syncConnection(params: SyncConnectionParams): Promise<XeroConnection> {
-    // #region agent log
-    const fs = require('fs');
-    const logPath = '/Users/valeshannaidoo/Desktop/Projects/nxt/.cursor/debug.log';
-    // #endregion
-    
     const { connectionId, organisationId, scope, runId, triggerType } = params;
     console.log(`[XeroSync] Starting sync for org ${organisationId}, connection ${connectionId}, scope ${scope}, runId ${runId}, trigger ${triggerType}`);
     
@@ -430,17 +425,8 @@ export class XeroSyncService {
             where: { xeroInvoiceId: invoice.invoiceID }
         });
 
-        // #region agent log
-        const fs = require('fs');
-        const logPath = '/Users/valeshannaidoo/Desktop/Projects/nxt/.cursor/debug.log';
-        fs.appendFileSync(logPath, JSON.stringify({location:'xeroSyncService.ts:429',message:'Checking for existing XeroInvoice',data:{invoiceId:invoice.invoiceID,invoiceNumber:invoice.invoiceNumber,exists:!!existingXeroInvoice,isDeleted:!!existingXeroInvoice?.deletedAt},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'L'})+'\n');
-        // #endregion
-
         if (existingXeroInvoice && existingXeroInvoice.deletedAt) {
             console.log(`[XeroSync] Skipping Xero invoice ${invoice.invoiceNumber} (${invoice.invoiceID}): locally deleted (tombstone).`);
-            // #region agent log
-            fs.appendFileSync(logPath, JSON.stringify({location:'xeroSyncService.ts:435',message:'Skipping deleted XeroInvoice',data:{invoiceId:invoice.invoiceID,invoiceNumber:invoice.invoiceNumber},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'L'})+'\n');
-            // #endregion
             return; // Skip processing this invoice
         }
 

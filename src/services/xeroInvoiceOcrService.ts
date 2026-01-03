@@ -10,15 +10,7 @@ const xeroServiceInstance = new XeroService();
 
 export const xeroInvoiceOcrService = {
     async syncInvoicePdfsForOrg(organisationId: string, connectionId: string) {
-        // #region agent log
-        const fs = require('fs');
-        const logPath = '/Users/valeshannaidoo/Desktop/Projects/nxt/.cursor/debug.log';
-        // #endregion
-        
         console.log(`[XeroOCR] Starting PDF sync for org ${organisationId}`);
-        // #region agent log
-        fs.appendFileSync(logPath, JSON.stringify({location:'xeroInvoiceOcrService.ts:12',message:'syncInvoicePdfsForOrg started',data:{organisationId,connectionId},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'A,D'})+'\n');
-        // #endregion
 
         // 1. Get Valid Connection (handles token refresh automatically)
         const connection = await xeroServiceInstance.getValidConnection(connectionId);
@@ -102,21 +94,11 @@ export const xeroInvoiceOcrService = {
             if (links.length > 0) {
                 console.warn(`[XeroOCR] Ambiguous location for connection ${connectionId} (${links.length} links). Defaulting to first location ${links[0].locationId}.`);
                 locationId = links[0].locationId;
-                // #region agent log
-                fs.appendFileSync(logPath, JSON.stringify({location:'xeroInvoiceOcrService.ts:95',message:'Ambiguous location, using first',data:{connectionId,linksCount:links.length,selectedLocationId:locationId},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'B'})+'\n');
-                // #endregion
             } else {
                 console.warn(`[XeroOCR] No location linked for connection ${connectionId}. Skipping PDF sync.`);
-                // #region agent log
-                fs.appendFileSync(logPath, JSON.stringify({location:'xeroInvoiceOcrService.ts:98',message:'No location linked, skipping',data:{connectionId},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'B'})+'\n');
-                // #endregion
                 return;
             }
         }
-        
-        // #region agent log
-        fs.appendFileSync(logPath, JSON.stringify({location:'xeroInvoiceOcrService.ts:101',message:'Location resolved for PDF sync',data:{connectionId,locationId,linksCount:links.length},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'B'})+'\n');
-        // #endregion
 
         // 3. Initialize Client
         const xero = new XeroClient({
