@@ -97,12 +97,11 @@ export class XeroController {
         return reply.status(200).send(result);
     } catch (error: any) {
         request.log.error(error);
-        // Return 500 with specific error message to help debugging
+        // Return 500 without exposing internal details (stack traces, etc.)
         return reply.status(500).send({
             error: {
                 code: 'INTERNAL_SERVER_ERROR',
-                message: error.message || 'Failed to generate Xero auth URL',
-                details: error.stack // CAUTION: Remove in production
+                message: 'Failed to generate Xero auth URL'
             }
         });
     }

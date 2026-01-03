@@ -15,6 +15,26 @@ Backend service for Xero integration metadata.
   - Never run `migrate dev` / `reset` / `db push`.
   - To apply migrations: `npm run prisma:migrate:deploy`.
 
+## Environment Variables
+
+### Required Variables
+
+- `DATABASE_URL`: PostgreSQL connection string
+- `JWT_VERIFY_SECRET`: Secret for signing/verifying access tokens
+- `JWT_REFRESH_SECRET`: Secret for signing/verifying refresh tokens
+- `TOKEN_ENCRYPTION_KEY`: Key for encrypting sensitive tokens (min 32 chars)
+
+### Optional Variables
+
+- `SENTRY_DSN`: Sentry DSN URL for error tracking (if not set, Sentry is disabled)
+- `SENTRY_SEND_DEFAULT_PII`: Set to `'true'` to enable PII collection (default: `'false'` for privacy/compliance)
+- `NODE_ENV`: Environment mode (`development`, `production`, `test`)
+- `PORT`: Server port (default: 4001)
+- `FRONTEND_URL`: Frontend URL for CORS (default: `https://app.thenxt.ai`)
+- `REDIS_URL`: Redis connection string (required in production for rate limiting and queues)
+
+See `src/config/env.ts` for the complete list of supported environment variables.
+
 ## Prisma Schemas (Dev vs Prod)
 
 We intentionally keep two Prisma schemas:

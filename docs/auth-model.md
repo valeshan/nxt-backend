@@ -9,7 +9,7 @@ The system uses a secure, stateful-frontend / stateless-backend authentication m
 1.  **Login**:
     *   Frontend sends credentials to Next.js Proxy (`/api/auth/login`).
     *   Proxy forwards to Backend (`/auth/login`).
-    *   Backend validates and returns `access_token` (15m) and `refresh_token` (30d).
+    *   Backend validates and returns `access_token` (90m) and `refresh_token` (30d).
     *   Proxy sets these tokens as **HttpOnly, Secure, SameSite=Lax** cookies.
     *   Client JS **never** sees the raw tokens.
 

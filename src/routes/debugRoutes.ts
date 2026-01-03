@@ -1,6 +1,7 @@
 import { FastifyInstance } from 'fastify';
 import { config } from '../config/env';
 import { supplierInsightsService } from '../services/supplierInsightsService';
+import * as Sentry from '@sentry/node';
 
 export default async function debugRoutes(fastify: FastifyInstance) {
   // Only register routes if enabled
@@ -66,6 +67,40 @@ export default async function debugRoutes(fastify: FastifyInstance) {
         error: {
           code: 'INTERNAL_ERROR',
           message: error.message || 'Failed to scan alerts',
+        },
+      });
+    }
+  });
+
+  // Sentry test endpoint - triggers a test error to verify Sentry is working
+  fastify.post('/debug/sentry/test', {
+    preHandler: [requireSecret],
+  }, async (request, reply) => {
+    const { message } = request.body as { message?: string };
+    const testMessage = message || 'Test error from debug route';
+    
+    try {
+      // Capture a test exception
+      const testError = new Error(testMessage);
+      Sentry.captureException(testError);
+      
+      // Also capture a test message
+      Sentry.captureMessage(`[DEBUG] Sentry test: ${testMessage}`, 'info');
+      
+      // Flush to ensure events are sent
+      await Sentry.flush(2000);
+      
+      return reply.send({
+        success: true,
+        message: 'Sentry test events sent. Check your Sentry dashboard.',
+        sentryDsnConfigured: !!config.SENTRY_DSN,
+      });
+    } catch (error: any) {
+      console.error('[DebugRoute] Sentry test error:', error);
+      return reply.status(500).send({
+        error: {
+          code: 'SENTRY_TEST_FAILED',
+          message: error.message || 'Failed to send Sentry test',
         },
       });
     }

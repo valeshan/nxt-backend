@@ -201,7 +201,24 @@ export class XeroService {
 
     const clientId = config.XERO_CLIENT_ID;
     const clientSecret = config.XERO_CLIENT_SECRET;
-    const redirectUri = config.XERO_REDIRECT_URI || '';
+    
+    // Smart redirect URI detection: prefer XERO_REDIRECT_URI, fallback to APP_URL/FRONTEND_URL, then localhost
+    let redirectUri = config.XERO_REDIRECT_URI;
+    if (!redirectUri) {
+        const appUrl = process.env.APP_URL || config.FRONTEND_URL;
+        if (appUrl) {
+            redirectUri = `${appUrl.replace(/\/$/, '')}/xero/authorise`;
+        } else {
+            // Default to localhost for development
+            redirectUri = 'http://localhost:3000/xero/authorise';
+        }
+    }
+
+    // #region agent log
+    const fs = require('fs');
+    const logPath = '/Users/valeshannaidoo/Desktop/Projects/nxt/.cursor/debug.log';
+    fs.appendFileSync(logPath, JSON.stringify({location:'xeroService.ts:189',message:'generateAuthUrl redirect URI',data:{xeroRedirectUri:config.XERO_REDIRECT_URI,appUrl:process.env.APP_URL,frontendUrl:config.FRONTEND_URL,selectedRedirectUri:redirectUri,nodeEnv:config.NODE_ENV},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'H'})+'\n');
+    // #endregion
 
     if (!clientId || !redirectUri) {
       throw new Error('Missing Xero configuration: CLIENT_ID or REDIRECT_URI');
@@ -214,6 +231,10 @@ export class XeroService {
     const state = `onboard_${onboardingSessionId}_${Date.now()}`; 
     
     const url = `https://login.xero.com/identity/connect/authorize?response_type=code&client_id=${clientId}&redirect_uri=${encodeURIComponent(redirectUri)}&scope=${encodeURIComponent(scopes)}&state=${state}`;
+    
+    // #region agent log
+    fs.appendFileSync(logPath, JSON.stringify({location:'xeroService.ts:216',message:'Xero auth URL generated',data:{redirectUri,url:url.substring(0,200)},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'H'})+'\n');
+    // #endregion
     
     return { redirectUrl: url };
   }

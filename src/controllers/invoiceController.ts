@@ -142,11 +142,19 @@ export const invoiceController = {
           return reply.status(400).send({ error: 'approveTerms must be a boolean' });
       }
 
+      // Log invoice verification request without sensitive payload data
       req.log.info({ 
         msg: 'Verify invoice requested',
         invoiceId: id,
-        params: req.params,
-        body: req.body 
+        hasSupplierId: !!supplierId,
+        hasSupplierName: !!supplierName,
+        hasTotal: !!total,
+        hasDate: !!date,
+        itemsCount: items?.length,
+        selectedLineItemIdsCount: selectedLineItemIds?.length,
+        hasManuallyAddedItems,
+        approveTerms,
+        approvedPhrasesCount: approvedPhrases?.length
       });
 
       req.log.info({ approveTerms, approvedPhrasesCount: approvedPhrases?.length });

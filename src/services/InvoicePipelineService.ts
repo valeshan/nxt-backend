@@ -729,6 +729,12 @@ export const invoicePipelineService = {
           take: 50 // Batch size limit
       });
 
+      // #region agent log
+      const fs = require('fs');
+      const logPath = '/Users/valeshannaidoo/Desktop/Projects/nxt/.cursor/debug.log';
+      fs.appendFileSync(logPath, JSON.stringify({location:'InvoicePipelineService.ts:721',message:'processPendingOcrJobs called',data:{processingFilesCount:processingFiles.length,fileIds:processingFiles.map(f=>f.id)},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'K'})+'\n');
+      // #endregion
+
       if (processingFiles.length === 0) return;
 
       console.log(`[InvoicePipeline] Checking ${processingFiles.length} pending OCR jobs...`);
@@ -745,25 +751,46 @@ export const invoicePipelineService = {
               // 3. If status changed (e.g., to OCR_COMPLETE or OCR_FAILED), trigger Pusher
               if (updated.processingStatus !== originalStatus) {
                   console.log(`[InvoicePipeline] Status changed for ${file.id}: ${originalStatus} -> ${updated.processingStatus}`);
+                  // #region agent log
+                  const fs = require('fs');
+                  const logPath = '/Users/valeshannaidoo/Desktop/Projects/nxt/.cursor/debug.log';
+                  fs.appendFileSync(logPath, JSON.stringify({location:'InvoicePipelineService.ts:746',message:'Status change detected in processPendingOcrJobs',data:{invoiceFileId:file.id,originalStatus,newStatus:updated.processingStatus,organisationId:updated.organisationId,locationId:updated.locationId},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'K'})+'\n');
+                  // #endregion
                   
                   const channel = pusherService.getOrgChannel(updated.organisationId);
                   
-                  await pusherService.triggerEvent(channel, 'invoice-status-updated', {
-                      invoiceFileId: updated.id,
-                      organisationId: updated.organisationId,
-                      locationId: updated.locationId,
-                      status: updated.processingStatus,
-                      reviewStatus: updated.reviewStatus,
-                      updatedAt: updated.updatedAt,
-                      verificationSource: updated.verificationSource ?? null,
-                      verifiedAt: updated.verifiedAt ?? null,
-                      invoice: updated.invoice ?? null,
-                      ocrFailureCategory: updated.ocrFailureCategory ?? null,
-                      ocrFailureDetail: updated.ocrFailureDetail ?? null,
-                      // Canonicalization quality data (available after OCR_COMPLETE)
-                      lineItemQualitySummary: updated.lineItemQualitySummary ?? null,
-                      lineItemQualityIssues: updated.lineItemQualityIssues ?? null,
-                  });
+                  try {
+                      await pusherService.triggerEvent(channel, 'invoice-status-updated', {
+                          invoiceFileId: updated.id,
+                          organisationId: updated.organisationId,
+                          locationId: updated.locationId,
+                          status: updated.processingStatus,
+                          reviewStatus: updated.reviewStatus,
+                          updatedAt: updated.updatedAt,
+                          verificationSource: updated.verificationSource ?? null,
+                          verifiedAt: updated.verifiedAt ?? null,
+                          invoice: updated.invoice ?? null,
+                          ocrFailureCategory: updated.ocrFailureCategory ?? null,
+                          ocrFailureDetail: updated.ocrFailureDetail ?? null,
+                          // Canonicalization quality data (available after OCR_COMPLETE)
+                          lineItemQualitySummary: updated.lineItemQualitySummary ?? null,
+                          lineItemQualityIssues: updated.lineItemQualityIssues ?? null,
+                      });
+                      // #region agent log
+                      fs.appendFileSync(logPath, JSON.stringify({location:'InvoicePipelineService.ts:767',message:'Pusher invoice-status-updated triggered after status change',data:{invoiceFileId:updated.id,status:updated.processingStatus,channel},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'K'})+'\n');
+                      // #endregion
+                  } catch (pusherError) {
+                      // #region agent log
+                      fs.appendFileSync(logPath, JSON.stringify({location:'InvoicePipelineService.ts:770',message:'Pusher event failed after status change',data:{invoiceFileId:updated.id,error:pusherError instanceof Error?pusherError.message:String(pusherError)},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'K'})+'\n');
+                      // #endregion
+                      console.warn(`[InvoicePipeline] Failed to trigger Pusher event for status change ${file.id}:`, pusherError);
+                  }
+              } else {
+                  // #region agent log
+                  const fs = require('fs');
+                  const logPath = '/Users/valeshannaidoo/Desktop/Projects/nxt/.cursor/debug.log';
+                  fs.appendFileSync(logPath, JSON.stringify({location:'InvoicePipelineService.ts:775',message:'No status change detected',data:{invoiceFileId:file.id,status:originalStatus,organisationId:file.organisationId},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'K'})+'\n');
+                  // #endregion
               }
           } catch (err) {
               console.error(`[InvoicePipeline] Error processing pending OCR job for file ${file.id}:`, err);
@@ -1131,6 +1158,29 @@ export const invoicePipelineService = {
             }
         });
         console.log(`[InvoicePipeline] InvoiceFile created: ${invoiceFile.id}`);
+        // #region agent log
+        if (metadata.sourceType === InvoiceSourceType.XERO) {
+            const fs = require('fs');
+            const logPath = '/Users/valeshannaidoo/Desktop/Projects/nxt/.cursor/debug.log';
+            fs.appendFileSync(logPath, JSON.stringify({location:'InvoicePipelineService.ts:1133',message:'InvoiceFile created from Xero',data:{invoiceFileId:invoiceFile.id,organisationId:metadata.organisationId,locationId:metadata.locationId,sourceReference:metadata.sourceReference},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'D'})+'\n');
+        }
+        // #endregion
+
+        // Trigger Pusher event for real-time UI update when InvoiceFile is created
+        try {
+            const channel = pusherService.getOrgChannel(metadata.organisationId);
+            await pusherService.triggerEvent(channel, 'invoice-status-updated', {
+                invoiceFileId: invoiceFile.id,
+                organisationId: metadata.organisationId,
+                locationId: metadata.locationId,
+                status: ProcessingStatus.PENDING_OCR,
+                reviewStatus: ReviewStatus.NONE,
+                updatedAt: invoiceFile.createdAt.toISOString(),
+            });
+        } catch (pusherError) {
+            // Log but don't throw - Pusher failure shouldn't break the creation
+            console.warn(`[InvoicePipeline] Failed to trigger Pusher event for new InvoiceFile ${invoiceFile.id}:`, pusherError);
+        }
     } catch (err: any) {
         err.stage = 'db-create';
         throw err;
@@ -1149,6 +1199,23 @@ export const invoicePipelineService = {
             }
         });
         console.log(`[InvoicePipeline] OCR started for ${invoiceFile.id}, JobId: ${jobId}`);
+
+        // Trigger Pusher event for status change to OCR_PROCESSING
+        try {
+            const channel = pusherService.getOrgChannel(metadata.organisationId);
+            await pusherService.triggerEvent(channel, 'invoice-status-updated', {
+                invoiceFileId: updated.id,
+                organisationId: metadata.organisationId,
+                locationId: metadata.locationId,
+                status: ProcessingStatus.OCR_PROCESSING,
+                reviewStatus: updated.reviewStatus,
+                updatedAt: updated.updatedAt.toISOString(),
+            });
+        } catch (pusherError) {
+            // Log but don't throw - Pusher failure shouldn't break OCR start
+            console.warn(`[InvoicePipeline] Failed to trigger Pusher event for OCR start ${updated.id}:`, pusherError);
+        }
+
         return updated;
     } catch (error: any) {
         console.error(`[InvoicePipeline] Failed to start OCR for ${invoiceFile.id}:`, error);
@@ -2784,6 +2851,12 @@ export const invoicePipelineService = {
           refreshProcessing?: boolean;
       }
   ) {
+      // #region agent log
+      const fs = require('fs');
+      const logPath = '/Users/valeshannaidoo/Desktop/Projects/nxt/.cursor/debug.log';
+      fs.appendFileSync(logPath, JSON.stringify({location:'InvoicePipelineService.ts:2774',message:'listInvoices called',data:{locationId,page,limit,filters},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'B,C,D,E'})+'\n');
+      // #endregion
+
       const { skip: rawSkip, page: safePage, limit: safeLimit } = getOffsetPaginationOrThrow({ page, limit, maxLimit: 100, maxOffset: 5000 });
 
       const start = parseDateOrThrow(filters?.startDate, 'startDate');
@@ -2870,6 +2943,10 @@ export const invoicePipelineService = {
           }
       }
 
+      // #region agent log
+      fs.appendFileSync(logPath, JSON.stringify({location:'InvoicePipelineService.ts:2873',message:'listInvoices query where clause',data:{where:JSON.stringify(where)},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'B,C,D,E'})+'\n');
+      // #endregion
+
       let [items, count] = await Promise.all([
           prisma.invoiceFile.findMany({
               where,
@@ -2883,6 +2960,10 @@ export const invoicePipelineService = {
           }),
           prisma.invoiceFile.count({ where })
       ]);
+      
+      // #region agent log
+      fs.appendFileSync(logPath, JSON.stringify({location:'InvoicePipelineService.ts:2886',message:'listInvoices query results',data:{count,itemsCount:items.length,sourceTypes:items.map(i=>i.sourceType),xeroCount:items.filter(i=>i.sourceType==='XERO').length,locationIds:items.map(i=>i.locationId)},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'B,C,D,E'})+'\n');
+      // #endregion
       
       // Realtime-first: list should be cheap by default.
       // If explicitly requested, refresh a capped number of processing items.

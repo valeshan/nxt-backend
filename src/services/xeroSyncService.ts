@@ -29,6 +29,11 @@ export class XeroSyncService {
   private readonly MAX_RETRIES = 3;
 
   async syncConnection(params: SyncConnectionParams): Promise<XeroConnection> {
+    // #region agent log
+    const fs = require('fs');
+    const logPath = '/Users/valeshannaidoo/Desktop/Projects/nxt/.cursor/debug.log';
+    // #endregion
+    
     const { connectionId, organisationId, scope, runId, triggerType } = params;
     console.log(`[XeroSync] Starting sync for org ${organisationId}, connection ${connectionId}, scope ${scope}, runId ${runId}, trigger ${triggerType}`);
     
@@ -140,6 +145,9 @@ export class XeroSyncService {
         // If FULL, lastModified stays undefined (syncs everything available or default window)
 
         console.log(`[XeroSync] Syncing with LastModified: ${lastModified?.toISOString() ?? 'FULL SYNC'}`);
+        // #region agent log
+        fs.appendFileSync(logPath, JSON.stringify({location:'xeroSyncService.ts:142',message:'Sync window determined',data:{effectiveScope,lastSuccessfulSyncAt:connection.lastSuccessfulSyncAt?.toISOString(),lastModified:lastModified?.toISOString(),connectionId},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'I'})+'\n');
+        // #endregion
 
         // 5. Initialize Xero Client
         const xero = new XeroClient({
@@ -221,9 +229,15 @@ export class XeroSyncService {
 
             const invoices: Invoice[] = invoicesResponse.body.invoices;
             console.log(`[XeroSync] Page ${page} returned ${invoices.length} invoices.`);
+            // #region agent log
+            fs.appendFileSync(logPath, JSON.stringify({location:'xeroSyncService.ts:222',message:'Xero API returned invoices',data:{page,invoicesCount:invoices.length,invoiceIds:invoices.map(i=>i.invoiceID),invoiceNumbers:invoices.map(i=>i.invoiceNumber),lastModified:lastModified?.toISOString()},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'I'})+'\n');
+            // #endregion
             
             if (invoices.length === 0) {
                 console.log(`[XeroSync] Zero invoices on page ${page}, stopping.`);
+                // #region agent log
+                fs.appendFileSync(logPath, JSON.stringify({location:'xeroSyncService.ts:225',message:'No invoices returned, stopping sync',data:{page,lastModified:lastModified?.toISOString()},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'I'})+'\n');
+                // #endregion
                 hasMore = false;
                 break;
             }
@@ -282,11 +296,17 @@ export class XeroSyncService {
         // 6b. Trigger PDF Sync (Fire and forget, or await if critical)
         // We wrap in try/catch so it doesn't fail the main data sync
         console.log(`[XeroSync] Checking OCR Flag: ${config.ENABLE_XERO_OCR} (Type: ${typeof config.ENABLE_XERO_OCR})`);
+        // #region agent log
+        fs.appendFileSync(logPath, JSON.stringify({location:'xeroSyncService.ts:284',message:'ENABLE_XERO_OCR flag check',data:{enabled:config.ENABLE_XERO_OCR==='true',value:config.ENABLE_XERO_OCR,type:typeof config.ENABLE_XERO_OCR,organisationId,connectionId},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'A'})+'\n');
+        // #endregion
         if (config.ENABLE_XERO_OCR === 'true') {
             try {
                 await xeroInvoiceOcrService.syncInvoicePdfsForOrg(organisationId, connectionId);
             } catch (ocrError) {
                 console.error('[XeroSync] PDF OCR sync failed (non-fatal)', ocrError);
+                // #region agent log
+                fs.appendFileSync(logPath, JSON.stringify({location:'xeroSyncService.ts:288',message:'PDF OCR sync error',data:{error:ocrError instanceof Error?ocrError.message:String(ocrError)},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'A'})+'\n');
+                // #endregion
             }
         }
         
@@ -410,8 +430,17 @@ export class XeroSyncService {
             where: { xeroInvoiceId: invoice.invoiceID }
         });
 
+        // #region agent log
+        const fs = require('fs');
+        const logPath = '/Users/valeshannaidoo/Desktop/Projects/nxt/.cursor/debug.log';
+        fs.appendFileSync(logPath, JSON.stringify({location:'xeroSyncService.ts:429',message:'Checking for existing XeroInvoice',data:{invoiceId:invoice.invoiceID,invoiceNumber:invoice.invoiceNumber,exists:!!existingXeroInvoice,isDeleted:!!existingXeroInvoice?.deletedAt},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'L'})+'\n');
+        // #endregion
+
         if (existingXeroInvoice && existingXeroInvoice.deletedAt) {
             console.log(`[XeroSync] Skipping Xero invoice ${invoice.invoiceNumber} (${invoice.invoiceID}): locally deleted (tombstone).`);
+            // #region agent log
+            fs.appendFileSync(logPath, JSON.stringify({location:'xeroSyncService.ts:435',message:'Skipping deleted XeroInvoice',data:{invoiceId:invoice.invoiceID,invoiceNumber:invoice.invoiceNumber},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'L'})+'\n');
+            // #endregion
             return; // Skip processing this invoice
         }
 

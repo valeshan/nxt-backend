@@ -94,6 +94,10 @@ const envSchema = z.object({
   REDIS_HOST: z.string().optional(),
   REDIS_PORT: z.coerce.number().optional(),
   REDIS_PASSWORD: z.string().optional(),
+
+  // Sentry Configuration
+  SENTRY_DSN: z.string().url().optional(),
+  SENTRY_SEND_DEFAULT_PII: z.string().optional().default('false'),
 });
 
 const parsed = envSchema.safeParse(process.env);

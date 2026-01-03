@@ -66,6 +66,11 @@ const xeroWebhookController: FastifyPluginAsync = async (fastify) => {
 
     const tenantIds = [...new Set(body.events.map(e => e.tenantId))];
     request.log.info(`[XeroWebhook] Received events for tenants: ${tenantIds.join(', ')}`);
+    // #region agent log
+    const fs = require('fs');
+    const logPath = '/Users/valeshannaidoo/Desktop/Projects/nxt/.cursor/debug.log';
+    fs.appendFileSync(logPath, JSON.stringify({location:'xeroWebhookController.ts:68',message:'Webhook received',data:{tenantIds,eventsCount:body.events.length,eventTypes:body.events.map(e=>e.eventType)},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'J'})+'\n');
+    // #endregion
 
     // 3. Process per Tenant (Fire-and-Forget)
     for (const tenantId of tenantIds) {
@@ -78,6 +83,9 @@ const xeroWebhookController: FastifyPluginAsync = async (fastify) => {
 
         if (!connection) {
             request.log.warn(`[XeroWebhook] No connection found for tenant ${tenantId}. Skipping.`);
+            // #region agent log
+            fs.appendFileSync(logPath, JSON.stringify({location:'xeroWebhookController.ts:79',message:'No connection found for tenant',data:{tenantId},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'J'})+'\n');
+            // #endregion
             continue;
         }
 
@@ -95,6 +103,9 @@ const xeroWebhookController: FastifyPluginAsync = async (fastify) => {
 
         if (activeRun) {
             request.log.info(`[XeroWebhook] Sync already in progress for connection ${connection.id}. Ignoring webhook.`);
+            // #region agent log
+            fs.appendFileSync(logPath, JSON.stringify({location:'xeroWebhookController.ts:96',message:'Webhook ignored - sync in progress',data:{connectionId:connection.id,activeRunId:activeRun.id,activeRunStatus:activeRun.status},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'J'})+'\n');
+            // #endregion
             // Do NOT create a new run.
             continue;
         }
@@ -112,6 +123,9 @@ const xeroWebhookController: FastifyPluginAsync = async (fastify) => {
         });
 
         request.log.info(`[XeroWebhook] Queued sync run ${newRun.id} for connection ${connection.id}`);
+        // #region agent log
+        fs.appendFileSync(logPath, JSON.stringify({location:'xeroWebhookController.ts:114',message:'Webhook queued sync run',data:{runId:newRun.id,connectionId:connection.id,organisationId:connection.organisationId,scope:'INCREMENTAL'},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'J'})+'\n');
+        // #endregion
 
         // Notify frontend via Pusher
         await pusherService.triggerEvent(
@@ -132,6 +146,9 @@ const xeroWebhookController: FastifyPluginAsync = async (fastify) => {
             scope: XeroSyncScope.INCREMENTAL,
             runId: newRun.id
         }).catch(async (err) => {
+            // #region agent log
+            fs.appendFileSync(logPath, JSON.stringify({location:'xeroWebhookController.ts:134',message:'Webhook sync failed',data:{runId:newRun.id,error:err instanceof Error?err.message:String(err)},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'J'})+'\n');
+            // #endregion
             request.log.error(`[XeroWebhook] Background sync failed for run ${newRun.id}`, err);
             const message = err instanceof Error ? err.message : typeof err === 'string' ? err : 'Unknown error';
             

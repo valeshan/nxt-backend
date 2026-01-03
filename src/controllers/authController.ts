@@ -42,7 +42,6 @@ export const authController = {
 
   async me(request: FastifyRequest, reply: FastifyReply) {
     // #region agent log
-    fetch('http://127.0.0.1:7242/ingest/613ef4ed-1e5c-4ea7-9c91-6649f4706354',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'authController.ts:52',message:'/me endpoint entry',data:{hasAuthContext:!!request.authContext,userId:request.authContext?.userId,organisationId:request.authContext?.organisationId,locationId:request.authContext?.locationId,tokenType:request.authContext?.tokenType},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'M'})}).catch(()=>{});
     // #endregion
     const { userId, organisationId, locationId, tokenType } = request.authContext;
     console.log(`[AuthController] me called for userId: ${userId}`, {
@@ -57,12 +56,10 @@ export const authController = {
         tokenType,
       });
       // #region agent log
-      fetch('http://127.0.0.1:7242/ingest/613ef4ed-1e5c-4ea7-9c91-6649f4706354',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'authController.ts:59',message:'/me endpoint success',data:{hasResult:!!result,hasUser:!!result?.user_id,hasCompanies:!!result?.companies,companiesCount:result?.companies?.length,hasCurrentOrg:!!result?.currentOrganisationId,hasCurrentLoc:!!result?.currentLocationId},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'M'})}).catch(()=>{});
       // #endregion
       return reply.send(result);
     } catch (error: any) {
       // #region agent log
-      fetch('http://127.0.0.1:7242/ingest/613ef4ed-1e5c-4ea7-9c91-6649f4706354',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'authController.ts:61',message:'/me endpoint error',data:{errorStatusCode:error.statusCode,errorMessage:error.message,errorName:error.name},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'N'})}).catch(()=>{});
       // #endregion
       throw error;
     }

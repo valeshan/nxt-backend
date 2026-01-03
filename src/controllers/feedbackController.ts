@@ -28,12 +28,10 @@ export const feedbackController = {
 
       // Get recipient email from env var
       // #region agent log
-      fetch('http://127.0.0.1:7242/ingest/613ef4ed-1e5c-4ea7-9c91-6649f4706354',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'feedbackController.ts:30',message:'Checking FEEDBACK_TO_EMAIL',data:{feedbackEmail:config.FEEDBACK_TO_EMAIL,type:typeof config.FEEDBACK_TO_EMAIL,isEmpty:!config.FEEDBACK_TO_EMAIL,rawProcessEnv:process.env.FEEDBACK_TO_EMAIL},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'D'})}).catch(()=>{});
       // #endregion
       const recipientEmail = config.FEEDBACK_TO_EMAIL;
       if (!recipientEmail) {
         // #region agent log
-        fetch('http://127.0.0.1:7242/ingest/613ef4ed-1e5c-4ea7-9c91-6649f4706354',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'feedbackController.ts:32',message:'FEEDBACK_TO_EMAIL missing',data:{configKeys:Object.keys(config).filter(k=>k.includes('EMAIL')||k.includes('FEEDBACK')),allConfigKeys:Object.keys(config)},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'D'})}).catch(()=>{});
         // #endregion
         request.log.error({ msg: 'FEEDBACK_TO_EMAIL not configured' });
         return reply.code(500).send({
