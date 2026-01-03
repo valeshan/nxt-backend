@@ -95,9 +95,6 @@ const xeroWebhookController: FastifyPluginAsync = async (fastify) => {
 
         if (activeRun) {
             request.log.info(`[XeroWebhook] Sync already in progress for connection ${connection.id}. Ignoring webhook.`);
-            // #region agent log
-            fs.appendFileSync(logPath, JSON.stringify({location:'xeroWebhookController.ts:96',message:'Webhook ignored - sync in progress',data:{connectionId:connection.id,activeRunId:activeRun.id,activeRunStatus:activeRun.status},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'J'})+'\n');
-            // #endregion
             // Do NOT create a new run.
             continue;
         }
@@ -115,9 +112,6 @@ const xeroWebhookController: FastifyPluginAsync = async (fastify) => {
         });
 
         request.log.info(`[XeroWebhook] Queued sync run ${newRun.id} for connection ${connection.id}`);
-        // #region agent log
-        fs.appendFileSync(logPath, JSON.stringify({location:'xeroWebhookController.ts:114',message:'Webhook queued sync run',data:{runId:newRun.id,connectionId:connection.id,organisationId:connection.organisationId,scope:'INCREMENTAL'},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'J'})+'\n');
-        // #endregion
 
         // Notify frontend via Pusher
         await pusherService.triggerEvent(
@@ -138,9 +132,6 @@ const xeroWebhookController: FastifyPluginAsync = async (fastify) => {
             scope: XeroSyncScope.INCREMENTAL,
             runId: newRun.id
         }).catch(async (err) => {
-            // #region agent log
-            fs.appendFileSync(logPath, JSON.stringify({location:'xeroWebhookController.ts:134',message:'Webhook sync failed',data:{runId:newRun.id,error:err instanceof Error?err.message:String(err)},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'J'})+'\n');
-            // #endregion
             request.log.error(`[XeroWebhook] Background sync failed for run ${newRun.id}`, err);
             const message = err instanceof Error ? err.message : typeof err === 'string' ? err : 'Unknown error';
             

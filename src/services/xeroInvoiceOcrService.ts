@@ -127,9 +127,6 @@ export const xeroInvoiceOcrService = {
 
         const invoices = invoicesResponse.body.invoices || [];
         console.log(`[XeroOCR] Found ${invoices.length} recent bills to check.`);
-        // #region agent log
-        fs.appendFileSync(logPath, JSON.stringify({location:'xeroInvoiceOcrService.ts:147',message:'Xero API returned invoices for PDF check',data:{invoicesCount:invoices.length,invoiceIds:invoices.map(i=>i.invoiceID),invoiceNumbers:invoices.map(i=>i.invoiceNumber),thirtyDaysAgo:thirtyDaysAgo.toISOString()},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'I'})+'\n');
-        // #endregion
 
         let processedCount = 0;
         let skippedCount = 0;
@@ -160,25 +157,15 @@ export const xeroInvoiceOcrService = {
                 where: { xeroInvoiceId: invoice.invoiceID }
             });
 
-            // #region agent log
-            fs.appendFileSync(logPath, JSON.stringify({location:'xeroInvoiceOcrService.ts:168',message:'Duplicate check for invoice',data:{invoiceId:invoice.invoiceID,invoiceNumber:invoice.invoiceNumber,hasInvoiceFile:!!existingFile,hasXeroInvoice:!!existingXeroInvoice,invoiceFileId:existingFile?.id,xeroInvoiceId:existingXeroInvoice?.id},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'L'})+'\n');
-            // #endregion
-
             if (existingFile) {
                 if (existingFile.deletedAt) {
                     console.log(`[XeroOCR] Skipping ${invoice.invoiceNumber}: Explicitly deleted (Soft Delete).`);
                     skippedCount++;
                     skippedReasons['deleted'] = (skippedReasons['deleted'] || 0) + 1;
-                    // #region agent log
-                    fs.appendFileSync(logPath, JSON.stringify({location:'xeroInvoiceOcrService.ts:175',message:'Skipping deleted invoice',data:{invoiceId:invoice.invoiceID,invoiceNumber:invoice.invoiceNumber,existingFileId:existingFile.id},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'I'})+'\n');
-                    // #endregion
                 } else {
                     console.log(`[XeroOCR] Skipping ${invoice.invoiceNumber}: Already processed (FileID: ${existingFile.id})`);
                     skippedCount++;
                     skippedReasons['already_exists'] = (skippedReasons['already_exists'] || 0) + 1;
-                    // #region agent log
-                    fs.appendFileSync(logPath, JSON.stringify({location:'xeroInvoiceOcrService.ts:181',message:'Skipping already processed invoice',data:{invoiceId:invoice.invoiceID,invoiceNumber:invoice.invoiceNumber,existingFileId:existingFile.id,existingFileStatus:existingFile.processingStatus},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'I'})+'\n');
-                    // #endregion
                 }
                 continue; // Already processed or deleted
             }
@@ -191,9 +178,6 @@ export const xeroInvoiceOcrService = {
                     console.log(`[XeroOCR] Skipping invoice ${invoice.invoiceNumber} - already has ${invoice.lineItems.length} line items.`);
                     skippedCount++;
                     skippedReasons['has_line_items'] = (skippedReasons['has_line_items'] || 0) + 1;
-                    // #region agent log
-                    fs.appendFileSync(logPath, JSON.stringify({location:'xeroInvoiceOcrService.ts:182',message:'Skipping invoice with line items',data:{invoiceId:invoice.invoiceID,invoiceNumber:invoice.invoiceNumber,lineItemsCount:invoice.lineItems.length},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'I'})+'\n');
-                    // #endregion
                     continue;
                 }
 
@@ -206,9 +190,6 @@ export const xeroInvoiceOcrService = {
 
                     const attachments = attachmentsResponse.body.attachments || [];
                     console.log(`[XeroOCR] Found ${attachments.length} attachments for ${invoice.invoiceNumber}`);
-                    // #region agent log
-                    fs.appendFileSync(logPath, JSON.stringify({location:'xeroInvoiceOcrService.ts:194',message:'Invoice attachments found',data:{invoiceId:invoice.invoiceID,invoiceNumber:invoice.invoiceNumber,attachmentsCount:attachments.length,attachmentTypes:attachments.map(a=>a.mimeType),hasPdf:attachments.some(a=>a.mimeType==='application/pdf'),hasImage:attachments.some(a=>['image/jpeg','image/jpg','image/png'].includes(a.mimeType?.toLowerCase()||''))},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'I'})+'\n');
-                    // #endregion
                     
                     // Filter for supported document types (PDF, JPEG, PNG)
                     // AWS Textract supports: PDF, JPEG, PNG, TIFF, BMP
@@ -236,9 +217,6 @@ export const xeroInvoiceOcrService = {
 
                         // 7. Submit to Pipeline
                         // attachmentContent.body is typically a Buffer
-                        // #region agent log
-                        fs.appendFileSync(logPath, JSON.stringify({location:'xeroInvoiceOcrService.ts:195',message:'Submitting Xero invoice document to pipeline',data:{organisationId,locationId,invoiceId:invoice.invoiceID,invoiceNumber:invoice.invoiceNumber,fileName:documentAttachment.fileName,mimeType:documentAttachment.mimeType},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'D'})+'\n');
-                        // #endregion
                         await invoicePipelineService.submitForProcessing(
                             attachmentContent.body, 
                             {
@@ -251,9 +229,6 @@ export const xeroInvoiceOcrService = {
                             }
                         );
                         
-                        // #region agent log
-                        fs.appendFileSync(logPath, JSON.stringify({location:'xeroInvoiceOcrService.ts:207',message:'Xero invoice document submitted successfully',data:{organisationId,locationId,invoiceId:invoice.invoiceID,mimeType:documentAttachment.mimeType},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'D'})+'\n');
-                        // #endregion
                         processedCount++;
                     } else {
                         // No supported document attachment found (PDF, JPEG, PNG)
@@ -262,37 +237,22 @@ export const xeroInvoiceOcrService = {
                             console.log(`[XeroOCR] Skipping ${invoice.invoiceNumber}: XeroInvoice exists (metadata sync), no supported document attachment (PDF/JPEG/PNG), no InvoiceFile needed`);
                             skippedCount++;
                             skippedReasons['xero_invoice_no_document'] = (skippedReasons['xero_invoice_no_document'] || 0) + 1;
-                            // #region agent log
-                            fs.appendFileSync(logPath, JSON.stringify({location:'xeroInvoiceOcrService.ts:245',message:'Skipping - XeroInvoice exists, no supported document',data:{invoiceId:invoice.invoiceID,invoiceNumber:invoice.invoiceNumber,xeroInvoiceId:existingXeroInvoice.id,attachmentTypes:attachments.map(a=>a.mimeType)},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'L'})+'\n');
-                            // #endregion
                         } else {
                             skippedCount++;
                             skippedReasons['no_document_attachment'] = (skippedReasons['no_document_attachment'] || 0) + 1;
-                            // #region agent log
-                            fs.appendFileSync(logPath, JSON.stringify({location:'xeroInvoiceOcrService.ts:250',message:'No supported document attachment found',data:{invoiceId:invoice.invoiceID,invoiceNumber:invoice.invoiceNumber,attachmentsCount:attachments.length,attachmentTypes:attachments.map(a=>a.mimeType)},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'I'})+'\n');
-                            // #endregion
                         }
                     }
                 } catch (err) {
                     console.error(`[XeroOCR] Failed to process attachments for ${invoice.invoiceNumber}`, err);
                     skippedCount++;
                     skippedReasons['error'] = (skippedReasons['error'] || 0) + 1;
-                    // #region agent log
-                    fs.appendFileSync(logPath, JSON.stringify({location:'xeroInvoiceOcrService.ts:238',message:'Error processing attachments',data:{invoiceId:invoice.invoiceID,invoiceNumber:invoice.invoiceNumber,error:err instanceof Error?err.message:String(err)},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'I'})+'\n');
-                    // #endregion
                 }
             } else {
                 skippedCount++;
                 skippedReasons['no_attachments'] = (skippedReasons['no_attachments'] || 0) + 1;
-                // #region agent log
-                fs.appendFileSync(logPath, JSON.stringify({location:'xeroInvoiceOcrService.ts:179',message:'Invoice has no attachments',data:{invoiceId:invoice.invoiceID,invoiceNumber:invoice.invoiceNumber},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'I'})+'\n');
-                // #endregion
             }
         }
 
         console.log(`[XeroOCR] Sync complete. Processed ${processedCount} new documents (PDF/JPEG/PNG).`);
-        // #region agent log
-        fs.appendFileSync(logPath, JSON.stringify({location:'xeroInvoiceOcrService.ts:244',message:'Document sync complete',data:{organisationId,connectionId,processedCount,skippedCount,skippedReasons,totalInvoices:invoices.length},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'A,D,I'})+'\n');
-        // #endregion
     }
 };

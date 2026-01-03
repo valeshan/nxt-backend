@@ -2906,10 +2906,6 @@ export const invoicePipelineService = {
           }
       }
 
-      // #region agent log
-      fs.appendFileSync(logPath, JSON.stringify({location:'InvoicePipelineService.ts:2873',message:'listInvoices query where clause',data:{where:JSON.stringify(where)},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'B,C,D,E'})+'\n');
-      // #endregion
-
       let [items, count] = await Promise.all([
           prisma.invoiceFile.findMany({
               where,
@@ -2923,10 +2919,6 @@ export const invoicePipelineService = {
           }),
           prisma.invoiceFile.count({ where })
       ]);
-      
-      // #region agent log
-      fs.appendFileSync(logPath, JSON.stringify({location:'InvoicePipelineService.ts:2886',message:'listInvoices query results',data:{count,itemsCount:items.length,sourceTypes:items.map(i=>i.sourceType),xeroCount:items.filter(i=>i.sourceType==='XERO').length,locationIds:items.map(i=>i.locationId)},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'B,C,D,E'})+'\n');
-      // #endregion
       
       // Realtime-first: list should be cheap by default.
       // If explicitly requested, refresh a capped number of processing items.
