@@ -119,6 +119,9 @@ const getEnv = (): Env => {
       const n = Number(v);
       return Number.isFinite(n) ? n : fallback;
     };
+    const lvl = process.env.LOG_LEVEL;
+    const logLevel: Env['LOG_LEVEL'] =
+      lvl === 'debug' || lvl === 'info' || lvl === 'warn' || lvl === 'error' ? lvl : 'info';
     const testDefaults: Partial<Env> = {
       DATABASE_URL: process.env.DATABASE_URL || 'postgresql://postgres:password@localhost:5432/nxt_test_db',
       JWT_VERIFY_SECRET: process.env.JWT_VERIFY_SECRET || 'ci-verify-secret',
@@ -151,7 +154,7 @@ const getEnv = (): Env => {
       DEBUG_ROUTES_ENABLED: process.env.DEBUG_ROUTES_ENABLED || 'false',
       ENABLE_XERO_OCR: process.env.ENABLE_XERO_OCR || 'false',
       ENABLE_DIAGNOSTICS: process.env.ENABLE_DIAGNOSTICS || 'false',
-      LOG_LEVEL: process.env.LOG_LEVEL || 'info',
+      LOG_LEVEL: logLevel,
       SENTRY_DSN: process.env.SENTRY_DSN,
       REDIS_URL: process.env.REDIS_URL,
       XERO_SYNC_TIMEOUT_MINUTES: num(process.env.XERO_SYNC_TIMEOUT_MINUTES, 60),
