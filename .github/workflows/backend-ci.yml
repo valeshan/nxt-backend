@@ -39,8 +39,10 @@ jobs:
         with:
           node-version: "20"
           cache: "npm"
-          # Use explicit relative path so setup-node resolves the lockfile for caching
-          cache-dependency-path: ./nxt-backend/package-lock.json
+          # Use glob so setup-node resolves lockfiles regardless of location
+          cache-dependency-path: |
+            **/package-lock.json
+            **/npm-shrinkwrap.json
 
       - name: Cache Prisma Engines
         uses: actions/cache@v4
@@ -116,8 +118,10 @@ jobs:
         with:
           node-version: "20"
           cache: "npm"
-          # Use explicit relative path so setup-node resolves the lockfile for caching
-          cache-dependency-path: ./nxt-backend/package-lock.json
+          # Use glob so setup-node resolves lockfiles regardless of location
+          cache-dependency-path: |
+            **/package-lock.json
+            **/npm-shrinkwrap.json
 
       - name: Cache Prisma Engines
         uses: actions/cache@v4
@@ -236,8 +240,10 @@ jobs:
         with:
           node-version: "20"
           cache: "npm"
-          # Use explicit relative path so setup-node resolves the lockfile for caching
-          cache-dependency-path: ./nxt-backend/package-lock.json
+          # Use glob so setup-node resolves lockfiles regardless of location
+          cache-dependency-path: |
+            **/package-lock.json
+            **/npm-shrinkwrap.json
 
       - name: Cache Prisma Engines
         uses: actions/cache@v4
