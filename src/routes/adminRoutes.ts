@@ -5,6 +5,7 @@ import { getRedisClient } from '../infrastructure/redis';
 import { enqueueCanonicalBackfill, enqueueProductStatsRefresh, getAdminJobStatus } from '../services/AdminProductStatsQueueService';
 import { supplierInsightsService } from '../services/supplierInsightsService';
 import { getRequestContext } from '../infrastructure/requestContext';
+import { xeroLocationBackfillService } from '../services/xeroLocationBackfillService';
 import prisma from '../infrastructure/prismaClient';
 
 const refreshBodySchema = z.object({
@@ -26,6 +27,20 @@ const canonicalBackfillBodySchema = z.object({
 
 const jobStatusQuerySchema = z.object({
   jobId: z.string().min(1),
+});
+
+const xeroLocationBackfillBodySchema = z.object({
+  organisationId: z.string().min(1),
+  connectionId: z.string().optional(),
+  locationId: z.string().optional(),
+  dryRun: z.boolean().default(true),
+  batchSize: z.coerce.number().min(1).max(5000).default(1000),
+  maxBatches: z.coerce.number().min(1).optional(),
+});
+
+const supplierInsightsDiagnosticsQuerySchema = z.object({
+  organisationId: z.string().min(1),
+  locationId: z.string().optional(),
 });
 
 function isAdminEnabled(): boolean {
@@ -279,6 +294,233 @@ export default async function adminRoutes(app: FastifyInstance) {
     }
 
     return reply.send(status);
+  });
+
+  // POST /admin/xero-location/backfill
+  // Backfill locationId for historical Xero invoices based on connection ↔ location mapping
+  app.post('/xero-location/backfill', async (request: FastifyRequest, reply: FastifyReply) => {
+    if (!isAdminEnabled()) return replyAdminDisabled(reply);
+    if (!requireInternalApiKey(request, reply)) return;
+
+    const parsed = xeroLocationBackfillBodySchema.safeParse(request.body);
+    if (!parsed.success) {
+      return reply.status(400).send({ error: { code: 'BAD_REQUEST', message: parsed.error.issues[0]?.message || 'Invalid body' } });
+    }
+
+    const { organisationId, connectionId, locationId, dryRun, batchSize, maxBatches } = parsed.data;
+
+    // Verify org exists
+    const org = await prisma.organisation.findUnique({
+      where: { id: organisationId },
+      select: { id: true },
+    });
+    if (!org) {
+      return reply.status(404).send({ error: { code: 'NOT_FOUND', message: 'Organisation not found' } });
+    }
+
+    try {
+      const result = await xeroLocationBackfillService.backfillLocationIds({
+        organisationId,
+        connectionId,
+        locationId,
+        dryRun,
+        batchSize,
+        maxBatches,
+      });
+
+      request.log.info(
+        {
+          audit: true,
+          event: 'admin.xeroLocation.backfill.completed',
+          organisationId,
+          connectionId,
+          locationId,
+          dryRun,
+          result,
+        },
+        'admin.xeroLocation.backfill.completed'
+      );
+
+      return reply.send(result);
+    } catch (error: any) {
+      request.log.error(
+        {
+          audit: true,
+          event: 'admin.xeroLocation.backfill.failed',
+          organisationId,
+          connectionId,
+          locationId,
+          error: error.message,
+        },
+        'admin.xeroLocation.backfill.failed'
+      );
+      return reply.status(500).send({
+        error: { code: 'BACKFILL_FAILED', message: error.message || 'Backfill failed' },
+      });
+    }
+  });
+
+  // GET /admin/supplier-insights/diagnostics
+  // Diagnostic endpoint to check Supplier Insights data consistency
+  app.get('/supplier-insights/diagnostics', async (request: FastifyRequest, reply: FastifyReply) => {
+    if (!isAdminEnabled()) return replyAdminDisabled(reply);
+    if (!requireInternalApiKey(request, reply)) return;
+
+    const parsed = supplierInsightsDiagnosticsQuerySchema.safeParse(request.query);
+    if (!parsed.success) {
+      return reply.status(400).send({ error: { code: 'BAD_REQUEST', message: parsed.error.issues[0]?.message || 'Invalid query' } });
+    }
+
+    const { organisationId, locationId } = parsed.data;
+
+    // Verify org exists
+    const org = await prisma.organisation.findUnique({
+      where: { id: organisationId },
+      select: { id: true },
+    });
+    if (!org) {
+      return reply.status(404).send({ error: { code: 'NOT_FOUND', message: 'Organisation not found' } });
+    }
+
+    try {
+      // Count Xero invoices
+      const xeroInvoiceWhere: any = {
+        organisationId,
+        deletedAt: null,
+        status: { in: ['AUTHORISED', 'PAID'] },
+      };
+
+      if (locationId) {
+        xeroInvoiceWhere.locationId = locationId;
+      }
+
+      const [totalXeroInvoices, xeroInvoicesByLocation, xeroInvoicesNullLocation, productStatsCounts] = await Promise.all([
+        // Total invoices (matching Supplier Insights filters)
+        prisma.xeroInvoice.count({
+          where: xeroInvoiceWhere,
+        }),
+        // Count by location
+        prisma.xeroInvoice.groupBy({
+          by: ['locationId'],
+          where: {
+            organisationId,
+            deletedAt: null,
+            status: { in: ['AUTHORISED', 'PAID'] },
+          },
+          _count: true,
+        }),
+        // Count with NULL locationId
+        prisma.xeroInvoice.count({
+          where: {
+            organisationId,
+            deletedAt: null,
+            status: { in: ['AUTHORISED', 'PAID'] },
+            locationId: null,
+          },
+        }),
+        // ProductStats counts (if locationId provided)
+        locationId
+          ? (prisma as any).productStats.groupBy({
+              by: ['accountCodesHash'],
+              where: {
+                organisationId,
+                locationId,
+              },
+              _count: true,
+            })
+          : Promise.resolve([]),
+      ]);
+
+      // Get ProductStats statsAsOf for the location (if provided)
+      let productStatsAsOf: string | null = null;
+      if (locationId) {
+        const latestStats = await (prisma as any).productStats.findFirst({
+          where: {
+            organisationId,
+            locationId,
+          },
+          orderBy: {
+            statsAsOf: 'desc',
+          },
+          select: {
+            statsAsOf: true,
+          },
+        });
+        productStatsAsOf = latestStats?.statsAsOf?.toISOString() || null;
+      }
+
+      // Get connection ↔ location mapping status
+      const connections = await prisma.xeroConnection.findMany({
+        where: { organisationId },
+        include: {
+          locationLinks: {
+            include: {
+              location: {
+                select: { id: true, name: true },
+              },
+            },
+          },
+        },
+      });
+
+      const connectionMappingStatus = connections.map(conn => ({
+        connectionId: conn.id,
+        tenantId: conn.xeroTenantId,
+        tenantName: conn.tenantName,
+        locationLinkCount: conn.locationLinks.length,
+        locations: conn.locationLinks.map(link => ({
+          locationId: link.locationId,
+          locationName: link.location.name,
+        })),
+        isValid: conn.locationLinks.length === 1, // Exactly 1 link = valid mapping
+      }));
+
+      const diagnostics = {
+        organisationId,
+        locationId: locationId || null,
+        xeroInvoices: {
+          total: totalXeroInvoices,
+          byLocation: xeroInvoicesByLocation.map((item: any) => ({
+            locationId: item.locationId,
+            count: item._count,
+          })),
+          nullLocationCount: xeroInvoicesNullLocation,
+        },
+        productStats: locationId
+          ? {
+              locationId,
+              statsAsOf: productStatsAsOf,
+              byAccountCodesHash: productStatsCounts.map((item: any) => ({
+                accountCodesHash: item.accountCodesHash,
+                count: item._count,
+              })),
+            }
+          : null,
+        connectionMappings: connectionMappingStatus,
+        summary: {
+          totalConnections: connections.length,
+          validMappings: connectionMappingStatus.filter(c => c.isValid).length,
+          invalidMappings: connectionMappingStatus.filter(c => !c.isValid).length,
+          invoicesNeedingBackfill: xeroInvoicesNullLocation,
+        },
+      };
+
+      return reply.send(diagnostics);
+    } catch (error: any) {
+      request.log.error(
+        {
+          audit: true,
+          event: 'admin.supplierInsights.diagnostics.failed',
+          organisationId,
+          locationId,
+          error: error.message,
+        },
+        'admin.supplierInsights.diagnostics.failed'
+      );
+      return reply.status(500).send({
+        error: { code: 'DIAGNOSTICS_FAILED', message: error.message || 'Diagnostics failed' },
+      });
+    }
   });
 }
 

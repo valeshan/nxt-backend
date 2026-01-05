@@ -4,6 +4,7 @@ import prisma from '../../src/infrastructure/prismaClient';
 import { resetDb, teardown } from './testApp';
 import { getProductKeyFromLineItem } from '../../src/services/helpers/productKey';
 import { MANUAL_COGS_ACCOUNT_CODE } from '../../src/config/constants';
+import { InvoiceSourceType, ReviewStatus } from '@prisma/client';
 
 describe('Supplier Insights Service Integration', () => {
   const orgId = 'test-org-id';
@@ -791,6 +792,207 @@ describe('Supplier Insights Service Integration', () => {
       // Verify that the Xero line item is excluded by checking the product detail stats
       // The product should have 0 spend from Xero since the invoice is superseded
       expect(productDetail?.stats12m.totalSpend12m).toBe(0); // No Xero spend because invoice is superseded
+    });
+  });
+
+  describe('Xero invoice attachment filtering', () => {
+    const attachmentOrgId = 'attachment-org-id';
+    const attachmentLocationId = 'attachment-loc-id';
+    const attachmentSupplierId = 'attachment-supplier-id';
+    const xeroInvoiceIdNoAttachment = 'xero-inv-no-attachment';
+    const xeroInvoiceIdUnverifiedAttachment = 'xero-inv-unverified-attachment';
+    const xeroInvoiceIdVerifiedAttachment = 'xero-inv-verified-attachment';
+
+    beforeAll(async () => {
+      const lastMonth = new Date();
+      lastMonth.setMonth(lastMonth.getMonth() - 1);
+      lastMonth.setDate(15);
+
+      // Create org, location, supplier
+      await prisma.organisation.create({
+        data: {
+          id: attachmentOrgId,
+          name: 'Attachment Test Org',
+          locations: {
+            create: { id: attachmentLocationId, name: 'Attachment Location' }
+          },
+          suppliers: {
+            create: {
+              id: attachmentSupplierId,
+              name: 'Attachment Supplier',
+              normalizedName: 'attachment supplier',
+              sourceType: 'MANUAL'
+            }
+          }
+        }
+      });
+
+      // Create product
+      const product = await prisma.product.create({
+        data: {
+          organisationId: attachmentOrgId,
+          locationId: attachmentLocationId,
+          productKey: 'test-product',
+          name: 'Test Product',
+          supplierId: attachmentSupplierId
+        }
+      });
+
+      // 1. Xero invoice WITHOUT attachment (should be included)
+      await prisma.xeroInvoice.create({
+        data: {
+          organisationId: attachmentOrgId,
+          locationId: attachmentLocationId,
+          xeroInvoiceId: xeroInvoiceIdNoAttachment,
+          supplierId: attachmentSupplierId,
+          status: 'AUTHORISED',
+          date: lastMonth,
+          total: 1000,
+          lineItems: {
+            create: {
+              productId: product.id,
+              description: 'Test Item',
+              quantity: 10,
+              unitAmount: 100,
+              lineAmount: 1000,
+              accountCode: 'EXP'
+            }
+          }
+        }
+      });
+
+      // 2. Xero invoice WITH unverified attachment (should be EXCLUDED)
+      await prisma.xeroInvoice.create({
+        data: {
+          organisationId: attachmentOrgId,
+          locationId: attachmentLocationId,
+          xeroInvoiceId: xeroInvoiceIdUnverifiedAttachment,
+          supplierId: attachmentSupplierId,
+          status: 'AUTHORISED',
+          date: lastMonth,
+          total: 2000,
+          lineItems: {
+            create: {
+              productId: product.id,
+              description: 'Test Item 2',
+              quantity: 20,
+              unitAmount: 100,
+              lineAmount: 2000,
+              accountCode: 'EXP'
+            }
+          }
+        }
+      });
+
+      // Create InvoiceFile with NEEDS_REVIEW status (unverified)
+      await prisma.invoiceFile.create({
+        data: {
+          organisationId: attachmentOrgId,
+          locationId: attachmentLocationId,
+          sourceType: 'XERO',
+          sourceReference: xeroInvoiceIdUnverifiedAttachment,
+          storageKey: 'test-key-unverified',
+          fileName: 'test-unverified.pdf',
+          mimeType: 'application/pdf',
+          processingStatus: 'OCR_COMPLETE',
+          reviewStatus: 'NEEDS_REVIEW'
+        }
+      });
+
+      // 3. Xero invoice WITH verified attachment (should be INCLUDED)
+      await prisma.xeroInvoice.create({
+        data: {
+          organisationId: attachmentOrgId,
+          locationId: attachmentLocationId,
+          xeroInvoiceId: xeroInvoiceIdVerifiedAttachment,
+          supplierId: attachmentSupplierId,
+          status: 'AUTHORISED',
+          date: lastMonth,
+          total: 3000,
+          lineItems: {
+            create: {
+              productId: product.id,
+              description: 'Test Item 3',
+              quantity: 30,
+              unitAmount: 100,
+              lineAmount: 3000,
+              accountCode: 'EXP'
+            }
+          }
+        }
+      });
+
+      // Create InvoiceFile with VERIFIED status
+      await prisma.invoiceFile.create({
+        data: {
+          organisationId: attachmentOrgId,
+          locationId: attachmentLocationId,
+          sourceType: 'XERO',
+          sourceReference: xeroInvoiceIdVerifiedAttachment,
+          storageKey: 'test-key-verified',
+          fileName: 'test-verified.pdf',
+          mimeType: 'application/pdf',
+          processingStatus: 'OCR_COMPLETE',
+          reviewStatus: 'VERIFIED'
+        }
+      });
+    }, 30000);
+
+    it('should include Xero invoices without attachments in Supplier Insights', async () => {
+      const summary = await supplierInsightsService.getSupplierSpendSummary(
+        attachmentOrgId,
+        attachmentLocationId
+      );
+      
+      // Should include invoice without attachment (1000) + invoice with verified attachment (3000)
+      // Should NOT include invoice with unverified attachment (2000)
+      expect(summary.totalSupplierSpendPerMonth).toBeGreaterThan(0);
+      
+      // Verify the spend breakdown includes the correct invoices
+      const breakdown = await supplierInsightsService.getSpendBreakdown(
+        attachmentOrgId,
+        attachmentLocationId
+      );
+      
+      // Should have spend from invoices without attachments and verified attachments
+      const totalSpend = breakdown.bySupplier.reduce((sum, s) => sum + (s.totalSpend12m || 0), 0);
+      expect(totalSpend).toBeGreaterThanOrEqual(4000); // 1000 + 3000
+      expect(totalSpend).toBeLessThan(5000); // Should not include 2000 from unverified
+    });
+
+    it('should exclude Xero invoices with unverified attachments from Supplier Insights', async () => {
+      // Get products to verify they don't include data from unverified attachment invoice
+      const products = await supplierInsightsService.getProducts(
+        attachmentOrgId,
+        attachmentLocationId,
+        { page: 1, pageSize: 10 }
+      );
+      
+      // The product should have spend from invoices without attachments and verified attachments
+      // but NOT from the unverified attachment invoice
+      const product = products.items.find(p => p.productName === 'Test Product');
+      expect(product).toBeDefined();
+      if (product) {
+        // Should include spend from no-attachment (1000) + verified attachment (3000) = 4000
+        // Should NOT include unverified attachment (2000)
+        expect(product.spend12m).toBeGreaterThanOrEqual(4000);
+        expect(product.spend12m).toBeLessThan(5000);
+      }
+    });
+
+    it('should include Xero invoices with verified attachments in Supplier Insights', async () => {
+      // The verified attachment invoice should be included
+      const breakdown = await supplierInsightsService.getSpendBreakdown(
+        attachmentOrgId,
+        attachmentLocationId
+      );
+      
+      const supplierSpend = breakdown.bySupplier.find(s => s.supplierName === 'Attachment Supplier');
+      expect(supplierSpend).toBeDefined();
+      if (supplierSpend) {
+        // Should include verified attachment invoice (3000)
+        expect(supplierSpend.totalSpend12m).toBeGreaterThanOrEqual(3000);
+      }
     });
   });
 });

@@ -10,8 +10,26 @@ import { Prisma, XeroSyncScope, XeroSyncStatus, XeroSyncTriggerType, XeroConnect
 import { getProductKeyFromLineItem } from './helpers/productKey';
 import { xeroInvoiceOcrService } from './xeroInvoiceOcrService';
 import { assertCanonicalInvoiceLegacyLink, canonicalizeLine } from './canonical';
+import * as Sentry from '@sentry/node';
 
 const DEFAULT_CURRENCY_CODE = 'AUD';
+
+/**
+ * SINGLE SOURCE OF TRUTH: Xero Connection ↔ Location Mapping
+ * 
+ * The `XeroLocationLink` table is the authoritative mapping between Xero connections
+ * and locations. When syncing invoices from a Xero connection:
+ * 
+ * 1. The connection's `locationLinks` determine which `locationId` to assign to invoices
+ * 2. If exactly one location link exists, that locationId is used
+ * 3. If zero or multiple links exist, the invoice MUST NOT be written (fail-fast guardrail)
+ * 
+ * This ensures Supplier Insights queries (which filter by locationId) include all
+ * AUTHORISED/PAID invoices for the selected location, regardless of attachments/manual verification.
+ * 
+ * Historical invoices missing locationId should be backfilled using the connection's
+ * location mapping, then ProductStats refreshed for affected (org, location, accountCodesHash).
+ */
 
 const connectionRepo = new XeroConnectionRepository();
 const supplierService = new SupplierService();
@@ -233,7 +251,7 @@ export class XeroSyncService {
             for (const invoice of invoices) {
                 console.log(`[XeroSync] Processing Invoice: ${invoice.invoiceNumber} (${invoice.invoiceID}) UpdatedAt: ${invoice.updatedDateUTC}`);
                 try {
-                    await this.processInvoice(organisationId, connectionId, invoice, accountMap);
+                    await this.processInvoice(organisationId, connectionId, invoice, accountMap, currentRunId);
                     totalRowsProcessed++;
                 } catch (err) {
                     console.error(`[XeroSync] Failed to process invoice ${invoice.invoiceID}:`, err);
@@ -352,7 +370,8 @@ export class XeroSyncService {
     organisationId: string, 
     connectionId: string, 
     invoice: Invoice, 
-    accountMap: Map<string, string>
+    accountMap: Map<string, string>,
+    runId?: string
   ) {
     if (!invoice.invoiceID || !invoice.contact) {
         console.warn(`[XeroSync] Skipping invalid invoice: ID=${invoice.invoiceID}, Contact=${!!invoice.contact}`);
@@ -388,16 +407,97 @@ export class XeroSyncService {
             if (links.length === 1) {
                 locationId = links[0].locationId;
             } else if (links.length > 1) {
-                console.warn(`[XeroSync] Ambiguous location mapping for connection ${connectionId}. Links found: ${links.length}. Skipping location assignment.`);
-                locationId = null;
+                // GUARDRAIL: Multiple location links = ambiguous mapping
+                const errorMessage = `[XeroSync] Ambiguous location mapping for connection ${connectionId}. Found ${links.length} location links. Invoice ${invoice.invoiceID} (${invoice.invoiceNumber}) cannot be assigned a location.`;
+                console.error(errorMessage);
+                
+                // Sentry alert with full context
+                Sentry.captureMessage('Xero invoice sync blocked: ambiguous location mapping', {
+                    level: 'error',
+                    tags: {
+                        component: 'xero-sync',
+                        issue_type: 'location_mapping_ambiguous'
+                    },
+                    extra: {
+                        organisationId,
+                        connectionId,
+                        xeroTenantId: connection.xeroTenantId,
+                        invoiceId: invoice.invoiceID,
+                        invoiceNumber: invoice.invoiceNumber,
+                        locationLinkCount: links.length,
+                        locationLinkIds: links.map(l => l.locationId)
+                    }
+                });
+                
+                // Fail-fast: skip this invoice to prevent data inconsistency
+                throw new Error(`Cannot sync invoice ${invoice.invoiceID}: connection ${connectionId} has ${links.length} location links (expected exactly 1)`);
             } else {
-                // 0 links
-                locationId = null;
+                // GUARDRAIL: Zero location links = no mapping configured
+                const errorMessage = `[XeroSync] No location mapping found for connection ${connectionId}. Invoice ${invoice.invoiceID} (${invoice.invoiceNumber}) cannot be assigned a location.`;
+                console.error(errorMessage);
+                
+                // Sentry alert with full context
+                Sentry.captureMessage('Xero invoice sync blocked: missing location mapping', {
+                    level: 'error',
+                    tags: {
+                        component: 'xero-sync',
+                        issue_type: 'location_mapping_missing'
+                    },
+                    extra: {
+                        organisationId,
+                        connectionId,
+                        xeroTenantId: connection.xeroTenantId,
+                        invoiceId: invoice.invoiceID,
+                        invoiceNumber: invoice.invoiceNumber,
+                        runId: runId || 'unknown'
+                    }
+                });
+                
+                // Fail-fast: skip this invoice to prevent data inconsistency
+                throw new Error(`Cannot sync invoice ${invoice.invoiceID}: connection ${connectionId} has no location links configured`);
             }
+        } else {
+            // Connection not found (shouldn't happen, but guard against it)
+            const errorMessage = `[XeroSync] Connection ${connectionId} not found during invoice processing. Invoice ${invoice.invoiceID} (${invoice.invoiceNumber}) cannot be synced.`;
+            console.error(errorMessage);
+            
+            Sentry.captureMessage('Xero invoice sync blocked: connection not found', {
+                level: 'error',
+                tags: {
+                    component: 'xero-sync',
+                    issue_type: 'connection_not_found'
+                },
+                extra: {
+                    organisationId,
+                    connectionId,
+                    invoiceId: invoice.invoiceID,
+                    invoiceNumber: invoice.invoiceNumber
+                }
+            });
+            
+            throw new Error(`Cannot sync invoice ${invoice.invoiceID}: connection ${connectionId} not found`);
         }
 
+        // Assertion: locationId must be set at this point (guardrail ensures it)
         if (!locationId) {
-             console.warn(`[XeroSync] No unique location found for connection ${connectionId}. Product linking skipped. Invoice will be org-wide only.`);
+            const errorMessage = `[XeroSync] CRITICAL: locationId is null after resolution for connection ${connectionId}, invoice ${invoice.invoiceID}. This should never happen.`;
+            console.error(errorMessage);
+            
+            Sentry.captureMessage('Xero invoice sync: locationId null after resolution (logic error)', {
+                level: 'error',
+                tags: {
+                    component: 'xero-sync',
+                    issue_type: 'locationid_null_after_resolution'
+                },
+                extra: {
+                    organisationId,
+                    connectionId,
+                    invoiceId: invoice.invoiceID,
+                    invoiceNumber: invoice.invoiceNumber
+                }
+            });
+            
+            throw new Error(`CRITICAL: locationId resolution failed for invoice ${invoice.invoiceID}`);
         }
 
         // 1. Upsert Invoice Header

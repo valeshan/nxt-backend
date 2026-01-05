@@ -276,19 +276,30 @@ export class SupplierController {
             console.log(`[SupplierController] Found ${rows.length} valid manual supplier IDs`);
             return rows.map(r => r.supplierId).filter(Boolean) as string[];
         }),
-        prisma.xeroInvoice.findMany({
-            where: { 
-                organisationId: orgId, 
-                status: { in: ['AUTHORISED', 'PAID'] }, 
-                deletedAt: null,
-                ...(locationId ? { locationId } : {}) 
-            },
-            select: { supplierId: true },
-            distinct: ['supplierId']
-        }).then(rows => {
-            console.log(`[SupplierController] Found ${rows.length} valid Xero supplier IDs`);
-            return rows.map(r => r.supplierId).filter(Boolean) as string[];
-        })
+        // Xero suppliers should only be counted as "valid" if the invoice is eligible for analytics:
+        // - No attachment (no InvoiceFile for that xeroInvoiceId), OR
+        // - Attachment exists and is VERIFIED (manual approval or auto-approval)
+        prisma
+          .$queryRaw<Array<{ supplierId: string }>>(
+            Prisma.sql`
+            SELECT DISTINCT xi."supplierId" AS "supplierId"
+            FROM "XeroInvoice" xi
+            LEFT JOIN "InvoiceFile" f
+              ON f."sourceType" = 'XERO'
+             AND f."sourceReference" = xi."xeroInvoiceId"
+             AND f."deletedAt" IS NULL
+            WHERE xi."organisationId" = ${orgId}
+              AND xi."status" IN ('AUTHORISED', 'PAID')
+              AND xi."deletedAt" IS NULL
+              AND xi."supplierId" IS NOT NULL
+              ${locationId ? Prisma.sql`AND xi."locationId" = ${locationId}` : Prisma.empty}
+              AND (f.id IS NULL OR f."reviewStatus" = 'VERIFIED')
+            `
+          )
+          .then((rows) => {
+            console.log(`[SupplierController] Found ${rows.length} valid Xero supplier IDs (attachment-gated)`);
+            return rows.map((r) => r.supplierId).filter(Boolean) as string[];
+          })
     ]);
     const validSupplierIds = Array.from(new Set([...manualIds, ...xeroIds]));
     console.log(`[SupplierController] Total unique valid supplier IDs: ${validSupplierIds.length}`);
@@ -441,12 +452,17 @@ export class SupplierController {
                 COUNT(CASE WHEN i."date" >= ${twelveMonthsAgoMetric} THEN 1 END) as "count12m",
                 COUNT(CASE WHEN i."date" >= ${sixMonthsAgo} THEN 1 END) as "count6m"
             FROM "XeroInvoice" i
+            LEFT JOIN "InvoiceFile" f
+              ON f."sourceType" = 'XERO'
+             AND f."sourceReference" = i."xeroInvoiceId"
+             AND f."deletedAt" IS NULL
             WHERE i."supplierId" IN (${Prisma.join(supplierIds)})
             AND i."organisationId" = ${orgId}
             AND i."status" IN ('AUTHORISED', 'PAID')
             AND i."deletedAt" IS NULL
             ${locationId ? Prisma.sql`AND i."locationId" = ${locationId}` : Prisma.empty}
             ${supersededXeroIds.length > 0 ? Prisma.sql`AND i."xeroInvoiceId" NOT IN (${Prisma.join(supersededXeroIds)})` : Prisma.empty}
+            AND (f.id IS NULL OR f."reviewStatus" = 'VERIFIED')
             ${xeroMetricsAccountFilter}
             GROUP BY i."supplierId"
         `,
@@ -485,6 +501,10 @@ export class SupplierController {
                 COALESCE(li."itemCode", LOWER(TRIM(li."description"))) as "normalisedKey"
             FROM "XeroInvoiceLineItem" li
             JOIN "XeroInvoice" i ON li."invoiceId" = i.id
+            LEFT JOIN "InvoiceFile" f
+              ON f."sourceType" = 'XERO'
+             AND f."sourceReference" = i."xeroInvoiceId"
+             AND f."deletedAt" IS NULL
             WHERE i."supplierId" IN (${Prisma.join(supplierIds)})
             AND i."organisationId" = ${orgId}
             AND i."status" IN ('AUTHORISED', 'PAID')
@@ -492,6 +512,7 @@ export class SupplierController {
             AND i."deletedAt" IS NULL
             ${supersededXeroIds.length > 0 ? Prisma.sql`AND i."xeroInvoiceId" NOT IN (${Prisma.join(supersededXeroIds)})` : Prisma.empty}
             ${locationId ? Prisma.sql`AND i."locationId" = ${locationId}` : Prisma.empty}
+            AND (f.id IS NULL OR f."reviewStatus" = 'VERIFIED')
             ${normalizedAccountCodes && normalizedAccountCodes.length > 0 
                 ? Prisma.sql`AND li."accountCode" IN (${Prisma.join(normalizedAccountCodes)})` 
                 : Prisma.empty}
@@ -668,21 +689,26 @@ export class SupplierController {
 
     // Aggregate Invoices (Xero + Manual)
     const [xeroInvoices, manualInvoices] = await Promise.all([
-      prisma.xeroInvoice.findMany({
-          where: {
-              supplierId: id,
-              date: { gte: twelveMonthsAgo },
-              status: { in: ['AUTHORISED', 'PAID'] },
-              organisationId: orgId,
-              deletedAt: null,
-              xeroInvoiceId: { notIn: supersededXeroIds },
-              ...(locationId ? { locationId } : {})
-          },
-          select: {
-              total: true,
-              date: true
-          }
-      }),
+      // Apply the same attachment gating used in Supplier Insights:
+      // include Xero invoices with no attachment OR with VERIFIED attachment only.
+      prisma.$queryRaw<Array<{ total: any; date: Date | null }>>(
+        Prisma.sql`
+        SELECT i."total" AS "total", i."date" AS "date"
+        FROM "XeroInvoice" i
+        LEFT JOIN "InvoiceFile" f
+          ON f."sourceType" = 'XERO'
+         AND f."sourceReference" = i."xeroInvoiceId"
+         AND f."deletedAt" IS NULL
+        WHERE i."supplierId" = ${id}
+          AND i."organisationId" = ${orgId}
+          AND i."deletedAt" IS NULL
+          AND i."status" IN ('AUTHORISED', 'PAID')
+          AND i."date" >= ${twelveMonthsAgo}
+          ${locationId ? Prisma.sql`AND i."locationId" = ${locationId}` : Prisma.empty}
+          ${supersededXeroIds.length > 0 ? Prisma.sql`AND i."xeroInvoiceId" NOT IN (${Prisma.join(supersededXeroIds)})` : Prisma.empty}
+          AND (f.id IS NULL OR f."reviewStatus" = 'VERIFIED')
+        `
+      ),
       prisma.invoice.findMany({
           where: {
               supplierId: id,
@@ -767,12 +793,17 @@ export class SupplierController {
             COALESCE("itemCode", LOWER(TRIM("description"))) as "key"
         FROM "XeroInvoiceLineItem" li
         JOIN "XeroInvoice" i ON li."invoiceId" = i.id
+        LEFT JOIN "InvoiceFile" f
+          ON f."sourceType" = 'XERO'
+         AND f."sourceReference" = i."xeroInvoiceId"
+         AND f."deletedAt" IS NULL
         WHERE i."supplierId" = ${id}
         AND i."status" IN ('AUTHORISED', 'PAID')
         AND i."organisationId" = ${orgId}
         AND i."deletedAt" IS NULL
         ${locationFilter}
         ${supersededFilter}
+        AND (f.id IS NULL OR f."reviewStatus" = 'VERIFIED')
         GROUP BY COALESCE("itemCode", LOWER(TRIM("description")))
         ORDER BY "totalSpend" DESC
         LIMIT 100
