@@ -183,7 +183,7 @@ jobs:
         run: npx prisma migrate status --schema prisma/schema.prisma
 
       - name: Check for Schema Drift
-        run: npx prisma migrate diff --from-migrations --to-url "$DATABASE_URL" --schema prisma/schema.prisma --exit-code --from-empty
+        run: npx prisma migrate diff --from-migrations ./prisma/migrations --to-url "$DATABASE_URL" --schema prisma/schema.prisma --exit-code
 
       - name: Verify Critical Schema
         run: npm run verify:schema --if-present
