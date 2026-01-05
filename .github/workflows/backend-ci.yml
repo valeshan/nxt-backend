@@ -167,6 +167,8 @@ jobs:
           done
 
       - name: Prepare Shadow Database
+        env:
+          PGPASSWORD: password
         run: |
           psql -h localhost -U postgres -c "DROP DATABASE IF EXISTS nxt_shadow_db;"
           psql -h localhost -U postgres -c "CREATE DATABASE nxt_shadow_db;"
