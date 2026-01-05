@@ -110,6 +110,8 @@ jobs:
       LOG_LEVEL: info
       REDIS_URL: redis://localhost:6379
       PORT: 4001
+      GMAIL_ALERTS_USER: ci-alerts@example.com
+      GMAIL_APP_PASSWORD: dummy-password
 
     steps:
       - name: Check out code
@@ -229,6 +231,8 @@ jobs:
       PORT: 3000
       ENABLE_RATE_LIMIT: "false"
       CRON_ENABLED: "false"
+      GMAIL_ALERTS_USER: ci-alerts@example.com
+      GMAIL_APP_PASSWORD: dummy-password
 
     steps:
       - name: Check out code

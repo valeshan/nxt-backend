@@ -7,6 +7,12 @@ if (process.env.NODE_ENV === 'development') {
   dotenv.config();
 }
 
+// Provide test-safe defaults for Gmail SMTP if not set (avoids requireEnv crashes in tests)
+if (process.env.NODE_ENV === 'test') {
+  if (!process.env.GMAIL_ALERTS_USER) process.env.GMAIL_ALERTS_USER = 'ci-alerts@example.com';
+  if (!process.env.GMAIL_APP_PASSWORD) process.env.GMAIL_APP_PASSWORD = 'dummy-password';
+}
+
 const envSchema = z.object({
   // Allow optional here; enforce below with conditional default for tests and hard fail otherwise.
   DATABASE_URL: z.string().min(1).optional(),
