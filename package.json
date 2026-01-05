@@ -19,6 +19,10 @@
     "check:db-safety": "tsx scripts/check-db-safety.ts",
     "verify:schema": "tsx scripts/verify-schema.ts",
     "lint": "eslint . --ext .ts",
+    "janitor": "tsx src/cron/janitor.ts",
+    "dedupe:invoices": "tsx src/cron/dedupeInvoiceFiles.ts",
+    "requeue:file": "tsx src/scripts/requeueInvoiceFile.ts",
+    "start:ocr": "tsx src/scripts/startOcrNow.ts",
     "format": "prettier --write ."
   },
   "engines": {

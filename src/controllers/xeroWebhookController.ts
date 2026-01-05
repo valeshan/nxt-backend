@@ -45,12 +45,16 @@ const xeroWebhookController: FastifyPluginAsync = async (fastify) => {
       return reply.status(401).send();
     }
 
+    const rawBodyString = typeof rawBody === 'string' ? rawBody : rawBody.toString('utf8');
+    const secret = config.XERO_WEBHOOK_SECRET || '';
+
     // Verify Signature
-    const isValid = verifyXeroWebhookSignature(
-      typeof rawBody === 'string' ? rawBody : rawBody.toString('utf8'), 
-      signature, 
-      config.XERO_WEBHOOK_SECRET || ''
-    );
+    let isValid = false;
+    try {
+      isValid = verifyXeroWebhookSignature(rawBodyString, signature, secret);
+    } catch (_err: any) {
+      return reply.status(401).send();
+    }
 
     if (!isValid) {
       request.log.warn('[XeroWebhook] Invalid signature');
@@ -112,7 +116,6 @@ const xeroWebhookController: FastifyPluginAsync = async (fastify) => {
         });
 
         request.log.info(`[XeroWebhook] Queued sync run ${newRun.id} for connection ${connection.id}`);
-
         // Notify frontend via Pusher
         await pusherService.triggerEvent(
             pusherService.getOrgChannel(connection.organisationId),

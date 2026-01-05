@@ -4,11 +4,14 @@ import { initSentry } from './config/sentry';
 import { cleanupStuckSyncs } from './utils/cleanup';
 import { initCronJobs } from './jobs/cron';
 import prisma from './infrastructure/prismaClient';
+import { runJanitor } from './cron/janitor';
+import { runDedupe } from './cron/dedupeInvoiceFiles';
 import { closeInboundQueue, setupInboundWorker } from './services/InboundQueueService';
 import { closeAdminQueue, setupAdminWorker } from './services/AdminProductStatsQueueService';
 import { closeRedisClients, getRedisClient, pingWithTimeout } from './infrastructure/redis';
 import { spellCheckService } from './utils/spellcheck';
 import os from 'os';
+import cron from 'node-cron';
 
 // Initialize Sentry before anything else
 initSentry();
@@ -20,6 +23,8 @@ const start = async () => {
   const instanceId = process.env.RAILWAY_REPLICA_ID || process.env.RAILWAY_SERVICE_NAME || os.hostname();
 
   let cronHandle: { stop: () => void } | null = null;
+  let janitorHandle: { stop: () => void } | null = null;
+  let dedupeHandle: { stop: () => void } | null = null;
   let inboundWorker: ReturnType<typeof setupInboundWorker> | null = null;
   let adminWorker: ReturnType<typeof setupAdminWorker> | null = null;
 
@@ -38,6 +43,8 @@ const start = async () => {
       // Stop cron schedules first to prevent new work starting mid-shutdown
       try {
         cronHandle?.stop();
+        janitorHandle?.stop();
+        dedupeHandle?.stop();
       } catch {}
 
       // Close BullMQ worker/queue
@@ -119,6 +126,41 @@ const start = async () => {
       cronHandle = initCronJobs();
     } else {
       app.log.info(`CRON_ENABLED=false instance=${instanceId}`);
+    }
+
+    // Janitor cron (every 15 minutes) guarded by env flag to avoid surprise in prod
+    if (process.env.ENABLE_JANITOR_CRON === 'true') {
+      // For testing we run every 2 minutes; revert to */15 * * * * after validation.
+      const janitorSchedule = '*/2 * * * *';
+      app.log.info(`ENABLE_JANITOR_CRON=true instance=${instanceId} schedule=${janitorSchedule}`);
+      janitorHandle = cron.schedule(janitorSchedule, async () => {
+        try {
+          console.log('[Janitor] Scheduled run starting...');
+          await runJanitor();
+          console.log('[Janitor] Scheduled run completed');
+        } catch (err) {
+          console.error('[Janitor] Scheduled run failed', err);
+        }
+      });
+    } else {
+      app.log.info(`ENABLE_JANITOR_CRON=false instance=${instanceId}`);
+    }
+
+    // Dedupe cron (default every 15 minutes, testing every minute if ENABLE_DEDUPE_CRON=true)
+    if (process.env.ENABLE_DEDUPE_CRON === 'true') {
+      const dedupeSchedule = '*/1 * * * *'; // revert to */15 * * * * after testing
+      app.log.info(`ENABLE_DEDUPE_CRON=true instance=${instanceId} schedule=${dedupeSchedule}`);
+      dedupeHandle = cron.schedule(dedupeSchedule, async () => {
+        try {
+          console.log('[Dedupe] Scheduled run starting...');
+          await runDedupe();
+          console.log('[Dedupe] Scheduled run completed');
+        } catch (err) {
+          console.error('[Dedupe] Scheduled run failed', err);
+        }
+      });
+    } else {
+      app.log.info(`ENABLE_DEDUPE_CRON=false instance=${instanceId}`);
     }
 
     // Initialize Mailgun Inbound Worker

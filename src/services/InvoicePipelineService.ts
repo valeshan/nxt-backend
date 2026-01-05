@@ -445,10 +445,12 @@ export const invoicePipelineService = {
       for (let index = 0; index < ocrLineItems.length; index++) {
         const ocrItem = ocrLineItems[index];
         const sourceKey = `ocr:${index}`;
+        const warnReasons = ocrItem.textWarnReasons ?? ocrItem.warnReasons ?? [];
         
-        const qty = Number(ocrItem.quantity) || 1;
+        const qtyRaw = ocrItem.quantity;
+        const qty = qtyRaw === null || qtyRaw === undefined ? null : Number(qtyRaw);
         const total = Number(ocrItem.lineTotal) || 0;
-        const unitPrice = qty > 0 ? total / qty : 0;
+        const unitPrice = qty && qty > 0 ? total / qty : null;
         
         // Use upsert to prevent duplicates if backfill is called multiple times
         await tx.invoiceLineItem.upsert({
@@ -467,7 +469,7 @@ export const invoicePipelineService = {
             productCode: ocrItem.productCode?.trim() || null,
             accountCode: MANUAL_COGS_ACCOUNT_CODE,
             confidenceScore: ocrItem.confidenceScore || null,
-            textWarnReasons: ocrItem.warnReasons || [],
+            textWarnReasons: warnReasons,
             isIncludedInAnalytics: false, // Backfilled items start as excluded (user previously didn't select them)
             source: 'OCR',
             sourceKey: sourceKey
@@ -516,10 +518,12 @@ export const invoicePipelineService = {
     for (let index = 0; index < ocrLineItems.length; index++) {
       const ocrItem = ocrLineItems[index];
       const sourceKey = `ocr:${index}`;
+      const warnReasons = ocrItem.textWarnReasons ?? ocrItem.warnReasons ?? [];
       
-      const qty = Number(ocrItem.quantity) || 1;
+      const qtyRaw = ocrItem.quantity;
+      const qty = qtyRaw === null || qtyRaw === undefined ? null : Number(qtyRaw);
       const total = Number(ocrItem.lineTotal) || 0;
-      const unitPrice = qty > 0 ? total / qty : 0;
+      const unitPrice = qty && qty > 0 ? total / qty : null;
       
       // Check if item exists to determine if we should preserve user edits
       const existing = await tx.invoiceLineItem.findUnique({
@@ -564,7 +568,7 @@ export const invoicePipelineService = {
           productCode: ocrItem.productCode?.trim() || null,
           accountCode: MANUAL_COGS_ACCOUNT_CODE,
           confidenceScore: ocrItem.confidenceScore || null,
-          textWarnReasons: ocrItem.warnReasons || [],
+          textWarnReasons: warnReasons,
           isIncludedInAnalytics: true, // Default to included on first create
           source: 'OCR',
           sourceKey: sourceKey
@@ -575,7 +579,7 @@ export const invoicePipelineService = {
           ...(wasManuallyEdited ? {
             // Preserve user edits - only update confidence/trust fields
             confidenceScore: ocrItem.confidenceScore || undefined,
-            textWarnReasons: ocrItem.warnReasons || undefined,
+            textWarnReasons: warnReasons || undefined,
             // Restore inclusion flag (was soft-retired above)
             isIncludedInAnalytics: existing.isIncludedInAnalytics !== false ? true : false
           } : {
@@ -586,7 +590,7 @@ export const invoicePipelineService = {
             unitPrice: unitPrice,
             productCode: ocrItem.productCode?.trim() || null,
             confidenceScore: ocrItem.confidenceScore || null,
-            textWarnReasons: ocrItem.warnReasons || [],
+            textWarnReasons: warnReasons,
             // Restore inclusion flag (was soft-retired above)
             isIncludedInAnalytics: existing?.isIncludedInAnalytics !== false ? true : false
           })
@@ -1010,6 +1014,23 @@ export const invoicePipelineService = {
       }
       
       console.log(`[InvoicePipeline] OCR started for ${invoiceFileId}, JobId: ${jobId}, Attempt: ${attemptCount}`);
+
+      // Notify clients that the file has progressed to OCR_PROCESSING.
+      // Manual uploads and email/Xero rescues can start here without passing through submitForProcessing,
+      // so emit Pusher to keep the UI consistent across all entry points.
+      try {
+        const channel = pusherService.getOrgChannel(organisationId);
+        await pusherService.triggerEvent(channel, 'invoice-status-updated', {
+          invoiceFileId,
+          organisationId,
+          locationId,
+          status: ProcessingStatus.OCR_PROCESSING,
+          reviewStatus: null,
+          updatedAt: new Date().toISOString(),
+        });
+      } catch (pusherError) {
+        console.warn(`[InvoicePipeline] Failed to trigger Pusher event for OCR start ${invoiceFileId}:`, pusherError);
+      }
     } catch (error: any) {
       // ALWAYS log the original error with context
       console.error(`[InvoicePipeline] Failed to start OCR for ${invoiceFileId}:`, {
@@ -1088,6 +1109,7 @@ export const invoicePipelineService = {
         sourceType?: InvoiceSourceType;
         sourceReference?: string;
         testOverridesJson?: any; // Test-only overrides for E2E determinism
+        existingFileId?: string; // Optional: reuse existing file (rescue)
     }
   ) {
     // Guard: Check if stream is readable
@@ -1099,7 +1121,7 @@ export const invoicePipelineService = {
     
     // 1. Upload to S3
     console.log(`[InvoicePipeline] Starting S3 upload for ${key}`);
-    
+
     // Check for AWS credentials before attempting upload
     if (!config.AWS_ACCESS_KEY_ID || !config.AWS_SECRET_ACCESS_KEY) {
         const err = new Error('AWS credentials not configured. Set AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY in .env.local for local E2E tests.');
@@ -1116,26 +1138,55 @@ export const invoicePipelineService = {
         throw err;
     }
 
-    // 2. Create InvoiceFile
-    console.log(`[InvoicePipeline] Creating InvoiceFile record for ${key}`);
+    // 2. Create or reuse InvoiceFile
+    console.log(`[InvoicePipeline] ${metadata.existingFileId ? 'Reusing' : 'Creating'} InvoiceFile record for ${key}`);
     let invoiceFile;
     try {
-        invoiceFile = await prisma.invoiceFile.create({
-            data: {
-                organisationId: metadata.organisationId,
-                locationId: metadata.locationId,
-                sourceType: metadata.sourceType ?? InvoiceSourceType.UPLOAD,
-                sourceReference: metadata.sourceReference,
-                fileName: metadata.fileName,
-                mimeType: metadata.mimeType,
-                storageKey: key,
-                processingStatus: ProcessingStatus.PENDING_OCR,
-                reviewStatus: ReviewStatus.NONE,
-                testOverridesJson: metadata.testOverridesJson || null,
+        if (metadata.existingFileId) {
+            const existing = await prisma.invoiceFile.findUnique({
+                where: { id: metadata.existingFileId },
+            });
+            if (!existing || existing.deletedAt) {
+                throw new Error(`Existing InvoiceFile ${metadata.existingFileId} not found or deleted`);
             }
-        });
-        console.log(`[InvoicePipeline] InvoiceFile created: ${invoiceFile.id}`);
-        // Trigger Pusher event for real-time UI update when InvoiceFile is created
+
+            const updated = await prisma.invoiceFile.update({
+                where: { id: metadata.existingFileId },
+                data: {
+                    organisationId: metadata.organisationId,
+                    locationId: metadata.locationId,
+                    sourceType: metadata.sourceType ?? existing.sourceType ?? InvoiceSourceType.UPLOAD,
+                    sourceReference: metadata.sourceReference ?? existing.sourceReference,
+                    fileName: metadata.fileName,
+                    mimeType: metadata.mimeType,
+                    storageKey: key,
+                    processingStatus: ProcessingStatus.PENDING_OCR,
+                    reviewStatus: ReviewStatus.NONE,
+                    testOverridesJson: metadata.testOverridesJson || existing.testOverridesJson || null,
+                    ocrJobId: null,
+                    ocrAttemptCount: (existing.ocrAttemptCount || 0) + 1,
+                }
+            });
+            invoiceFile = updated;
+        } else {
+            invoiceFile = await prisma.invoiceFile.create({
+                data: {
+                    organisationId: metadata.organisationId,
+                    locationId: metadata.locationId,
+                    sourceType: metadata.sourceType ?? InvoiceSourceType.UPLOAD,
+                    sourceReference: metadata.sourceReference,
+                    fileName: metadata.fileName,
+                    mimeType: metadata.mimeType,
+                    storageKey: key,
+                    processingStatus: ProcessingStatus.PENDING_OCR,
+                    reviewStatus: ReviewStatus.NONE,
+                    testOverridesJson: metadata.testOverridesJson || null,
+                }
+            });
+        }
+        console.log(`[InvoicePipeline] InvoiceFile ready: ${invoiceFile.id}`);
+
+        // Trigger Pusher event for real-time UI update when InvoiceFile is created/reset
         try {
             const channel = pusherService.getOrgChannel(metadata.organisationId);
             await pusherService.triggerEvent(channel, 'invoice-status-updated', {
@@ -1144,11 +1195,11 @@ export const invoicePipelineService = {
                 locationId: metadata.locationId,
                 status: ProcessingStatus.PENDING_OCR,
                 reviewStatus: ReviewStatus.NONE,
-                updatedAt: invoiceFile.createdAt.toISOString(),
+                updatedAt: invoiceFile.updatedAt.toISOString(),
             });
         } catch (pusherError) {
             // Log but don't throw - Pusher failure shouldn't break the creation
-            console.warn(`[InvoicePipeline] Failed to trigger Pusher event for new InvoiceFile ${invoiceFile.id}:`, pusherError);
+            console.warn(`[InvoicePipeline] Failed to trigger Pusher event for InvoiceFile ${invoiceFile.id}:`, pusherError);
         }
     } catch (err: any) {
         err.stage = 'db-create';
@@ -1719,7 +1770,8 @@ export const invoicePipelineService = {
                     include: { invoice: { include: { lineItems: true, supplier: true } }, ocrResult: true }
                   });
                   return this.enrichStatus(updated as any);
-             }
+            } else {
+            }
         } catch (e) {
             console.error(`Error polling job ${file.ocrJobId}`, e);
             // Fall through to return current status
@@ -1742,6 +1794,22 @@ export const invoicePipelineService = {
     // Guard: invoice relation must exist
     if (!file.invoice?.id) {
       return { applied: false, reason: 'NO_INVOICE_RELATION', updatedFile: file };
+    }
+
+    // Additional guard for Xero-sourced invoices: require supplier to have prior verified history
+    if (file.sourceType === InvoiceSourceType.XERO && file.invoice.supplier?.id) {
+      const priorVerifiedCount = await prisma.invoice.count({
+        where: {
+          supplierId: file.invoice.supplier.id,
+          isVerified: true,
+          // Exclude current invoice if already present
+          NOT: { id: file.invoice.id },
+        },
+      });
+
+      if (priorVerifiedCount === 0) {
+        return { applied: false, reason: 'SUPPLIER_NO_PRIOR_VERIFIED', updatedFile: file };
+      }
     }
 
     // Fast path: check location flag first (before expensive quality computation)
@@ -2919,7 +2987,7 @@ export const invoicePipelineService = {
           }),
           prisma.invoiceFile.count({ where })
       ]);
-      
+
       // Realtime-first: list should be cheap by default.
       // If explicitly requested, refresh a capped number of processing items.
       if (filters?.refreshProcessing === true) {

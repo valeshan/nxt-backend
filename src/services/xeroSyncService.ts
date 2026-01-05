@@ -285,9 +285,10 @@ export class XeroSyncService {
         if (config.ENABLE_XERO_OCR === 'true') {
             try {
                 await xeroInvoiceOcrService.syncInvoicePdfsForOrg(organisationId, connectionId);
-            } catch (ocrError) {
+            } catch (ocrError: any) {
                 console.error('[XeroSync] PDF OCR sync failed (non-fatal)', ocrError);
             }
+        } else {
         }
         
         const updatedConnection = await prisma.xeroConnection.update({

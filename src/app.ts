@@ -204,6 +204,10 @@ export function buildApp(): FastifyInstance {
   // Register Webhook Routes
   // Note: These routes might need special handling for multipart/form-data which is handled by the controller
   app.register(webhookRoutes, { prefix: '/webhooks' });
+  // Xero Webhook (signature-verified, needs raw body)
+  // Primary registration happens inside xeroRoutes under /xero/webhook.
+  // We add a single alias for /webhooks/xero/webhook to avoid duplicates.
+  app.register(xeroWebhookRoutes, { prefix: '/webhooks/xero' });
   
   // Register debug routes conditionally
   if (config.DEBUG_ROUTES_ENABLED === 'true') {

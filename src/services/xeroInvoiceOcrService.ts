@@ -109,15 +109,15 @@ export const xeroInvoiceOcrService = {
 
         // 4. Fetch Invoices
         // Optimization: Limit to recent invoices (last 30 days) to avoid full history scan
-        const thirtyDaysAgo = new Date();
-        thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
+        const twelveMonthsAgo = new Date();
+        twelveMonthsAgo.setDate(twelveMonthsAgo.getDate() - 365);
         
         // Xero expects 'If-Modified-Since' as a date object or string? 
         // SDK: ifModifiedSince?: Date
-        
+
         const invoicesResponse = await xero.accountingApi.getInvoices(
             connection.xeroTenantId,
-            thirtyDaysAgo, // IfModifiedSince
+            twelveMonthsAgo, // IfModifiedSince (expanded window to align with 12m requirement)
             'Type=="ACCPAY" && Status=="AUTHORISED"', // Filter
             'Date DESC', // Order
             undefined, undefined, undefined, undefined, // IDs/Refs
@@ -126,6 +126,67 @@ export const xeroInvoiceOcrService = {
         );
 
         const invoices = invoicesResponse.body.invoices || [];
+
+        type InvoiceStats = {
+            total: number;
+            withAttachments: number;
+            withoutAttachments: number;
+            multiLine: number;
+            singleLine: number;
+            multiLineWithAttachments: number;
+            multiLineWithoutAttachments: number;
+            singleLineWithAttachments: number;
+            singleLineWithoutAttachments: number;
+        };
+
+        const minDate = invoices.reduce((acc: string | null, inv: any) => {
+            const d = inv.date ? new Date(inv.date).toISOString() : null;
+            if (!d) return acc;
+            if (!acc) return d;
+            return d < acc ? d : acc;
+        }, null as string | null);
+        const maxDate = invoices.reduce((acc: string | null, inv: any) => {
+            const d = inv.date ? new Date(inv.date).toISOString() : null;
+            if (!d) return acc;
+            if (!acc) return d;
+            return d > acc ? d : acc;
+        }, null as string | null);
+        const stats = invoices.reduce<InvoiceStats>(
+            (acc, inv: any) => {
+                const lineItems = inv?.lineItems;
+                const liCount = Array.isArray(lineItems) ? lineItems.length : 0;
+
+                // Xero SDK invoices have `hasAttachments?: boolean` and/or `attachments?: Attachment[]`
+                const hasAtt =
+                    Boolean(inv?.hasAttachments) ||
+                    (Array.isArray(inv?.attachments) && inv.attachments.length > 0);
+
+                acc.total += 1;
+                if (hasAtt) acc.withAttachments += 1;
+                else acc.withoutAttachments += 1;
+
+                if (liCount > 1) acc.multiLine += 1;
+                else acc.singleLine += 1;
+
+                if (liCount > 1 && hasAtt) acc.multiLineWithAttachments += 1;
+                if (liCount > 1 && !hasAtt) acc.multiLineWithoutAttachments += 1;
+                if (liCount <= 1 && hasAtt) acc.singleLineWithAttachments += 1;
+                if (liCount <= 1 && !hasAtt) acc.singleLineWithoutAttachments += 1;
+                return acc;
+            },
+            {
+                total: 0,
+                withAttachments: 0,
+                withoutAttachments: 0,
+                multiLine: 0,
+                singleLine: 0,
+                multiLineWithAttachments: 0,
+                multiLineWithoutAttachments: 0,
+                singleLineWithAttachments: 0,
+                singleLineWithoutAttachments: 0,
+            }
+        );
+
         console.log(`[XeroOCR] Found ${invoices.length} recent bills to check.`);
 
         let processedCount = 0;
@@ -144,11 +205,23 @@ export const xeroInvoiceOcrService = {
             
             // Check for existing file to prevent duplicates
             // We query WITHOUT deletedAt filter to find tombstones
+            // Duplicate check is now scoped to locationId (Option A).
             const existingFile = await prisma.invoiceFile.findFirst({
                 where: {
                     sourceType: InvoiceSourceType.XERO,
                     sourceReference: invoice.invoiceID,
-                    organisationId
+                    organisationId,
+                    locationId, // Only block duplicates within the same location
+                }
+            });
+
+            // Probe for cross-location duplicates (non-blocking) for observability.
+            const crossLocationFile = await prisma.invoiceFile.findFirst({
+                where: {
+                    sourceType: InvoiceSourceType.XERO,
+                    sourceReference: invoice.invoiceID,
+                    organisationId,
+                    NOT: { locationId },
                 }
             });
 
@@ -158,24 +231,26 @@ export const xeroInvoiceOcrService = {
             });
 
             if (existingFile) {
-                if (existingFile.deletedAt) {
-                    console.log(`[XeroOCR] Skipping ${invoice.invoiceNumber}: Explicitly deleted (Soft Delete).`);
-                    skippedCount++;
-                    skippedReasons['deleted'] = (skippedReasons['deleted'] || 0) + 1;
-                } else {
-                    console.log(`[XeroOCR] Skipping ${invoice.invoiceNumber}: Already processed (FileID: ${existingFile.id})`);
+                const doneStatuses = ['OCR_COMPLETE', 'VERIFIED', 'REVIEWED'];
+                const isDone = doneStatuses.includes(existingFile.processingStatus as any);
+                if (isDone) {
                     skippedCount++;
                     skippedReasons['already_exists'] = (skippedReasons['already_exists'] || 0) + 1;
+                    continue;
+                } else {
+                    // Fall through to process attachments again for this location
                 }
-                continue; // Already processed or deleted
+            }
+
+            // If a cross-location file exists, log for visibility but DO NOT block processing.
+            if (crossLocationFile) {
             }
 
             // Check attachments
             if (invoice.hasAttachments) {
                 
-                // Optimization: Skip if already itemized (LineItems > 1)
+                // Multi-line invoices: skip attachment OCR per business rule (metadata already ingested).
                 if (invoice.lineItems && invoice.lineItems.length > 1) {
-                    console.log(`[XeroOCR] Skipping invoice ${invoice.invoiceNumber} - already has ${invoice.lineItems.length} line items.`);
                     skippedCount++;
                     skippedReasons['has_line_items'] = (skippedReasons['has_line_items'] || 0) + 1;
                     continue;
@@ -199,6 +274,7 @@ export const xeroInvoiceOcrService = {
                     );
 
                     if (documentAttachment && documentAttachment.attachmentID && documentAttachment.fileName) {
+
                         // If XeroInvoice exists but no InvoiceFile, and we have a document, create InvoiceFile for OCR
                         // This is the correct flow: metadata sync creates XeroInvoice, document sync creates InvoiceFile for OCR
                         if (existingXeroInvoice && !existingFile) {
