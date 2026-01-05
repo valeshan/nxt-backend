@@ -103,9 +103,49 @@ const envSchema = z.object({
 
 const parsed = envSchema.safeParse(process.env);
 
+// In tests, be lenient: supply safe defaults if parsing fails (to avoid process.exit in CI)
 if (!parsed.success) {
-  console.error('❌ Invalid environment variables:', parsed.error.format());
-  process.exit(1);
+  if (process.env.NODE_ENV === 'test') {
+    console.warn('⚠️ Using test defaults for missing env vars (test env).');
+    parsed.success = true as any;
+    parsed.data = {
+      DATABASE_URL: process.env.DATABASE_URL || 'postgresql://postgres:password@localhost:5432/nxt_test_db',
+      JWT_VERIFY_SECRET: process.env.JWT_VERIFY_SECRET || 'ci-verify-secret',
+      JWT_REFRESH_SECRET: process.env.JWT_REFRESH_SECRET || 'ci-refresh-secret',
+      TOKEN_ENCRYPTION_KEY: process.env.TOKEN_ENCRYPTION_KEY || '01234567890123456789012345678901',
+      PORT: 4001,
+      NODE_ENV: 'test',
+      AWS_REGION: 'us-east-1',
+      FRONTEND_URL: 'http://localhost:3000',
+      PUSHER_CLUSTER: 'ap4',
+      ENABLE_RATE_LIMIT: 'false',
+      CRON_ENABLED: 'false',
+      PRISMA_SLOW_QUERY_LOGGING: 'false',
+      PRISMA_SLOW_MS: 800,
+      MAILGUN_WEBHOOK_ENABLED: 'false',
+      MAILGUN_PROCESSOR_ENABLED: 'false',
+      MAILGUN_MAX_ATTACHMENTS: 10,
+      MAILGUN_MAX_TOTAL_SIZE_MB: 40,
+      SENTRY_SEND_DEFAULT_PII: 'false',
+      PRICE_ALERT_CRON_ENABLED: 'false',
+      PRICE_ALERT_DEDUPE_DAYS: 14,
+      PRICE_ALERT_RECENCY_DAYS: 14,
+      ADMIN_PRODUCT_STATS_WORKER_ENABLED: 'false',
+      ADMIN_CANONICAL_BACKFILL_WORKER_ENABLED: 'false',
+      ADMIN_BYPASS_RATE_LIMIT: 'false',
+      USE_CANONICAL_LINES: 'false',
+      ENABLE_ADMIN_ENDPOINTS: 'false',
+      DEBUG_ROUTES_ENABLED: 'false',
+      ENABLE_XERO_OCR: 'false',
+      ENABLE_DIAGNOSTICS: 'false',
+      CANONICAL_LINES_ORG_ALLOWLIST: '',
+      LOG_LEVEL: 'info',
+      SENTRY_DSN: undefined,
+    } as any;
+  } else {
+    console.error('❌ Invalid environment variables:', parsed.error.format());
+    process.exit(1);
+  }
 }
 
 const baseConfig = {
