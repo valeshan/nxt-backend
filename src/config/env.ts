@@ -8,7 +8,8 @@ if (process.env.NODE_ENV === 'development') {
 }
 
 const envSchema = z.object({
-  DATABASE_URL: z.string().min(1),
+  // Allow optional here; enforce below with conditional default for tests and hard fail otherwise.
+  DATABASE_URL: z.string().min(1).optional(),
   // Expected format for production (Railway Postgres):
   // postgresql://user:pass@host:port/db?connection_limit=5&pool_timeout=10
   // Notes:
@@ -107,7 +108,20 @@ if (!parsed.success) {
   process.exit(1);
 }
 
-const baseConfig = parsed.data;
+const baseConfig = {
+  ...parsed.data,
+  // For tests, allow a safe default if not provided; otherwise, fail hard.
+  DATABASE_URL:
+    parsed.data.DATABASE_URL ??
+    (parsed.data.NODE_ENV === 'test'
+      ? 'postgresql://postgres:password@localhost:5432/nxt_test_db'
+      : undefined),
+};
+
+if (!baseConfig.DATABASE_URL) {
+  console.error('❌ Invalid environment variables: DATABASE_URL is required');
+  process.exit(1);
+}
 
 // Conditional validation:
 // - In production, Redis is required (rate limiting + BullMQ + cron locks).
