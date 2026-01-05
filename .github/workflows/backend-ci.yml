@@ -19,6 +19,8 @@ jobs:
         working-directory: .
     env:
       NODE_ENV: test
+      # Required so prisma validate can read a URL; validate doesn't connect.
+      DATABASE_URL: postgresql://postgres:password@localhost:5432/nxt_dummy_db
       JWT_VERIFY_SECRET: ci-verify-secret
       JWT_REFRESH_SECRET: ci-refresh-secret
       TOKEN_ENCRYPTION_KEY: 01234567890123456789012345678901
