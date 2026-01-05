@@ -7,7 +7,7 @@ const connection = getBullMqRedisClient();
 export const INBOUND_QUEUE_NAME = 'inbound-invoices';
 
 export const inboundQueue = new Queue(INBOUND_QUEUE_NAME, {
-  connection,
+  connection: connection as never, // Cast needed due to ioredis version mismatch with BullMQ's bundled ioredis
   defaultJobOptions: {
     attempts: 3,
     backoff: {
@@ -37,7 +37,7 @@ export const setupInboundWorker = () => {
       await inboundEmailService.fetchAndProcess(eventId);
     },
     {
-      connection,
+      connection: connection as never, // Cast needed due to ioredis version mismatch with BullMQ's bundled ioredis
       concurrency: 2, // Start with low concurrency
     }
   );

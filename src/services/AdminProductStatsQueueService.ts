@@ -31,7 +31,7 @@ export type CanonicalBackfillJobData = {
 };
 
 export const adminQueue = new Queue(ADMIN_QUEUE_NAME, {
-  connection,
+  connection: connection as never, // Cast needed due to ioredis version mismatch with BullMQ's bundled ioredis
   defaultJobOptions: {
     attempts: 1,
     removeOnComplete: 2000,
@@ -206,7 +206,7 @@ export function setupAdminWorker(logger: { info: (obj: any, msg?: string) => voi
         return { ok: true, ...result, durationMs };
       }
     },
-    { connection, concurrency: 1 }
+    { connection: connection as never, concurrency: 1 }
   );
 
   worker.on('failed', (job, err) => {
