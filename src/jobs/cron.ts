@@ -124,7 +124,9 @@ export function initCronJobs() {
       for (const task of schedules) {
         try {
           task.stop();
-        } catch {}
+        } catch {
+          // Ignore errors when stopping tasks
+        }
       }
     },
   };

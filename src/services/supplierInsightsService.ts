@@ -1,4 +1,4 @@
-import { PrismaClient, Prisma, OrganisationRole } from '@prisma/client';
+import { Prisma } from '@prisma/client';
 import prisma from '../infrastructure/prismaClient';
 import { getCategoryName } from '../config/categoryMap';
 import { startOfMonth, subMonths, subDays } from 'date-fns';
@@ -352,7 +352,7 @@ async function computeWeightedAveragePrices(
         const manualBuckets = new Map<string, Map<string, { totalAmount: number, totalQty: number }>>();
 
         // Build OR conditions for fetching line items
-        const conditions: Prisma.InvoiceLineItemWhereInput[] = [];
+        // const conditions: Prisma.InvoiceLineItemWhereInput[] = [];
         
         // Map to store which condition index maps to which manual ID
         // Actually, fetching all potential matching lines then filtering in memory might be safer 
@@ -1435,7 +1435,8 @@ export const supplierInsightsService = {
     
     const results: PriceChangeItem[] = [];
     
-    for (const [productId, lines] of productGroups.entries()) {
+    // eslint-disable-next-line @typescript-eslint/no-unused-vars
+    for (const [_productId, lines] of productGroups.entries()) {
       // Sort lines by invoice date descending to ensure most recent is first
       // This is critical because grouping doesn't preserve the query's sort order
       const sortedLines = [...lines].sort((a, b) => {
@@ -1537,14 +1538,14 @@ export const supplierInsightsService = {
     // Combine excluded IDs
     const excludedIds = [...supersededIds, ...unverifiedAttachmentIds];
 
-    const whereInvoiceBase = {
-        organisationId,
-        ...(locationId ? { locationId } : {}),
-        date: { gte: last6m.start, lte: new Date() },
-        status: { in: ['AUTHORISED', 'PAID'] },
-        deletedAt: null,
-        xeroInvoiceId: { notIn: excludedIds }
-    };
+    // const whereInvoiceBase = {
+    //     organisationId,
+    //     ...(locationId ? { locationId } : {}),
+    //     date: { gte: last6m.start, lte: new Date() },
+    //     status: { in: ['AUTHORISED', 'PAID'] },
+    //     deletedAt: null,
+    //     xeroInvoiceId: { notIn: excludedIds }
+    // };
 
     // Fetch Xero and Manual line items in parallel
     const [xeroLineItemsRaw, manualLineItemsRaw] = await Promise.all([
@@ -1677,7 +1678,7 @@ export const supplierInsightsService = {
     }
 
     const bySupplier = Array.from(supplierMap.entries())
-        .filter(([id, data]) => data.total > 0) // Filter out suppliers with zero spend
+        .filter(([_id, data]) => data.total > 0) // Filter out suppliers with zero spend
         .map(([id, data]) => ({
             supplierId: id,
             supplierName: data.name,
@@ -1824,11 +1825,11 @@ export const supplierInsightsService = {
     const last12m = getFullCalendarMonths(12);
     const statsAsOf = new Date();
 
-    const whereInvoiceBase = {
-      organisationId,
-      locationId,
-      deletedAt: null,
-    };
+    // const whereInvoiceBase = {
+    //   organisationId,
+    //   locationId,
+    //   deletedAt: null,
+    // };
 
     const xeroProducts = await prisma.product.findMany({
       where: { organisationId, locationId },
@@ -2013,7 +2014,7 @@ export const supplierInsightsService = {
             ];
         }
 
-        const whereInvoiceBase = { organisationId, deletedAt: null };
+        // const whereInvoiceBase = { organisationId, deletedAt: null };
 
         const xeroProducts = await prisma.product.findMany({
             where: whereClause,
@@ -2253,7 +2254,7 @@ export const supplierInsightsService = {
     const manualProductIds = pageProductIds.filter(id => id.startsWith('manual:'));
 
     // 2a. Fetch Latest Xero Details (Description, ItemCode)
-    let latestXeroByProductId = new Map<string, { description: string | null; itemCode: string | null }>();
+    const latestXeroByProductId = new Map<string, { description: string | null; itemCode: string | null }>();
     if (xeroProductIds.length > 0) {
         const xeroDetails = await prisma.xeroInvoiceLineItem.findMany({
             where: {
@@ -2285,7 +2286,7 @@ export const supplierInsightsService = {
     }
 
     // 2b. Fetch Latest Manual Details
-    let latestManualByKey = new Map<string, { description: string | null; itemCode: string | null }>();
+    const latestManualByKey = new Map<string, { description: string | null; itemCode: string | null }>();
     if (manualProductIds.length > 0) {
         // We need to match by productCode or description using the same logic as aggregation
         // manual:supplierId:base64(key)

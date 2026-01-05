@@ -262,7 +262,7 @@ export class XeroController {
     request: FastifyRequest<{ Params: { connectionId: string }; Body: { scope?: string; triggerSource?: string } }>,
     reply: FastifyReply
   ) => {
-    const { organisationId, userId } = request.authContext;
+    const { organisationId } = request.authContext;
     if (!organisationId) {
         return reply.status(403).send({ error: { code: 'FORBIDDEN', message: 'Organisation context required' } });
     }

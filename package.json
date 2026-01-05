@@ -11,6 +11,7 @@
     "start:prod": "node dist/src/server.js",
     "pretest": "npx prisma generate",
     "test": "vitest run",
+    "prisma:generate": "npx prisma generate --schema prisma/schema.prisma",
     "prisma:migrate:dev": "NODE_ENV=development npx dotenv-cli -e .env.local -- prisma migrate dev --schema prisma/schema.dev.prisma",
     "prisma:migrate:reset": "NODE_ENV=development prisma migrate reset --schema prisma/schema.dev.prisma",
     "prisma:migrate:deploy": "NODE_ENV=production prisma migrate deploy",

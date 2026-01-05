@@ -6,7 +6,7 @@ import { SupplierService } from './supplierService';
 import { XeroService } from './xeroService';
 import { pusherService } from './pusherService';
 import { decryptToken } from '../utils/crypto';
-import { Prisma, XeroSyncScope, XeroSyncStatus, XeroSyncTriggerType, XeroConnection } from '@prisma/client';
+import { XeroSyncScope, XeroSyncStatus, XeroSyncTriggerType, XeroConnection } from '@prisma/client';
 import { getProductKeyFromLineItem } from './helpers/productKey';
 import { xeroInvoiceOcrService } from './xeroInvoiceOcrService';
 import { assertCanonicalInvoiceLegacyLink, canonicalizeLine } from './canonical';
@@ -307,6 +307,7 @@ export class XeroSyncService {
                 console.error('[XeroSync] PDF OCR sync failed (non-fatal)', ocrError);
             }
         } else {
+          // OCR sync disabled for this connection
         }
         
         const updatedConnection = await prisma.xeroConnection.update({

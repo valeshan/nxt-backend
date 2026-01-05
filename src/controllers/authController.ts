@@ -61,7 +61,7 @@ export const authController = {
     } catch (error: any) {
       // #region agent log
       // #endregion
-      throw error;
+      return reply.status(500).send({ error: 'Internal server error' });
     }
   },
 

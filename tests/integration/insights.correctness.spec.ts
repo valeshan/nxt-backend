@@ -16,6 +16,7 @@ describe('Insights correctness with auto-approve', () => {
   let xeroInvoiceId: string;
   let xeroProductId: string;
   let nonSupersededFileId: string;
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
   let nonSupersededInvoiceId: string;
 
   beforeAll(async () => {
@@ -191,7 +192,7 @@ describe('Insights correctness with auto-approve', () => {
     });
     expect(fileWithInvoice).toBeDefined();
 
-    const { invoicePipelineService } = await import('../../src/services/InvoicePipelineService');
+    const { invoicePipelineService } = await import('../../src/services/InvoicePipelineService.js');
     const result = await invoicePipelineService.checkAndApplyAutoApproval(fileWithInvoice!);
     expect(result.applied).toBe(true);
 
@@ -327,7 +328,7 @@ describe('Insights correctness with auto-approve', () => {
       }
     });
 
-    const { invoicePipelineService } = await import('../../src/services/InvoicePipelineService');
+    const { invoicePipelineService } = await import('../../src/services/InvoicePipelineService.js');
     const result = await invoicePipelineService.checkAndApplyAutoApproval(fileWithInvoice!);
     expect(result.applied).toBe(true);
 
@@ -519,7 +520,7 @@ describe('Insights correctness with auto-approve', () => {
       }
     });
 
-    const { invoicePipelineService } = await import('../../src/services/InvoicePipelineService');
+    const { invoicePipelineService } = await import('../../src/services/InvoicePipelineService.js');
     const result = await invoicePipelineService.checkAndApplyAutoApproval(fileWithInvoice!);
     expect(result.applied).toBe(true);
 
@@ -699,7 +700,7 @@ describe('Insights correctness with auto-approve', () => {
       }
     });
 
-    const { invoicePipelineService } = await import('../../src/services/InvoicePipelineService');
+    const { invoicePipelineService } = await import('../../src/services/InvoicePipelineService.js');
     const result = await invoicePipelineService.checkAndApplyAutoApproval(fileWithInvoice!);
     expect(result.applied).toBe(true);
 

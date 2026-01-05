@@ -7,11 +7,17 @@ import { normalizePhraseKey } from '../../src/utils/descriptionQuality';
 
 describe('Lexicon Hard Suppression E2E Tests', () => {
   let app: FastifyInstance;
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
   let authToken: string;
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
   let orgId: string;
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
   let locId: string;
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
   let supplierId: string;
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
   let invoiceId: string;
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
   let invoiceFileId: string;
 
   beforeAll(async () => {
@@ -26,6 +32,7 @@ describe('Lexicon Hard Suppression E2E Tests', () => {
     await resetDb();
 
     // 1. Setup User & Org
+    // eslint-disable-next-line @typescript-eslint/no-unused-vars
     const registerRes = await app.inject({
       method: 'POST',
       url: '/auth/register',
@@ -146,7 +153,7 @@ describe('Lexicon Hard Suppression E2E Tests', () => {
       select: { phraseKey: true }
     });
 
-    const { computeDescriptionWarnings } = await import('../../src/utils/descriptionQuality');
+    const { computeDescriptionWarnings } = await import('../../src/utils/descriptionQuality.js');
     const warnings = computeDescriptionWarnings(reprocessPhrase, {
       lexicon: new Set(lexiconEntries.map((e: any) => e.phraseKey)),
       ocrConfidence: 95
@@ -190,7 +197,7 @@ describe('Lexicon Hard Suppression E2E Tests', () => {
       select: { phraseKey: true }
     });
 
-    const { computeDescriptionWarnings } = await import('../../src/utils/descriptionQuality');
+    const { computeDescriptionWarnings } = await import('../../src/utils/descriptionQuality.js');
     const warnings = computeDescriptionWarnings(reprocessPhrase, {
       lexicon: new Set(lexiconEntries.map((e: any) => e.phraseKey)),
       ocrConfidence: 90
@@ -233,7 +240,7 @@ describe('Lexicon Hard Suppression E2E Tests', () => {
       select: { phraseKey: true }
     });
 
-    const { computeDescriptionWarnings } = await import('../../src/utils/descriptionQuality');
+    const { computeDescriptionWarnings } = await import('../../src/utils/descriptionQuality.js');
     const warnings = computeDescriptionWarnings(approvedPhrase, {
       lexicon: new Set(lexiconEntries.map((e: any) => e.phraseKey)),
       ocrConfidence: 0.20 // Ultra-low confidence (< 0.25)

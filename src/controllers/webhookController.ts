@@ -99,8 +99,9 @@ export const webhookController = {
               // Already over limit (or previously skipped): drain stream and mark staging as skipped
               payload.__staging_skipped = true;
               payload.__staging_total_bytes = currentTotal;
+              // eslint-disable-next-line @typescript-eslint/no-unused-vars
               for await (const _chunk of part.file) {
-                // no-op
+                // Drain stream
               }
             } else {
               // Buffer this file, then decide if we keep it (within limit)

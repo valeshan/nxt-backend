@@ -435,7 +435,6 @@ if (hasStagingAttachments && stagingAllowedByMeta && !stagingSkipped) {
 
       // 4. Process Attachments
       let successCount = 0;
-      let processedAttachmentsCount = 0;
 
       // Limit max attachments
       const maxAttachments = config.MAILGUN_MAX_ATTACHMENTS || 10;
@@ -447,7 +446,7 @@ if (hasStagingAttachments && stagingAllowedByMeta && !stagingSkipped) {
       ].slice(0, maxAttachments);
 
       for (const att of allAttachments) {
-        processedAttachmentsCount++;
+        // Process attachment
         
         // Normalize fields
         const fileName = att.type === 'staging' ? att.originalName : att.name;

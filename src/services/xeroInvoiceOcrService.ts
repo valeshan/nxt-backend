@@ -127,71 +127,72 @@ export const xeroInvoiceOcrService = {
 
         const invoices = invoicesResponse.body.invoices || [];
 
-        type InvoiceStats = {
-            total: number;
-            withAttachments: number;
-            withoutAttachments: number;
-            multiLine: number;
-            singleLine: number;
-            multiLineWithAttachments: number;
-            multiLineWithoutAttachments: number;
-            singleLineWithAttachments: number;
-            singleLineWithoutAttachments: number;
-        };
+        // type InvoiceStats = {
+        //     total: number;
+        //     withAttachments: number;
+        //     withoutAttachments: number;
+        //     multiLine: number;
+        //     singleLine: number;
+        //     multiLineWithAttachments: number;
+        //     multiLineWithoutAttachments: number;
+        //     singleLineWithAttachments: number;
+        //     singleLineWithoutAttachments: number;
+        // };
 
-        const minDate = invoices.reduce((acc: string | null, inv: any) => {
-            const d = inv.date ? new Date(inv.date).toISOString() : null;
-            if (!d) return acc;
-            if (!acc) return d;
-            return d < acc ? d : acc;
-        }, null as string | null);
-        const maxDate = invoices.reduce((acc: string | null, inv: any) => {
-            const d = inv.date ? new Date(inv.date).toISOString() : null;
-            if (!d) return acc;
-            if (!acc) return d;
-            return d > acc ? d : acc;
-        }, null as string | null);
-        const stats = invoices.reduce<InvoiceStats>(
-            (acc, inv: any) => {
-                const lineItems = inv?.lineItems;
-                const liCount = Array.isArray(lineItems) ? lineItems.length : 0;
-
-                // Xero SDK invoices have `hasAttachments?: boolean` and/or `attachments?: Attachment[]`
-                const hasAtt =
-                    Boolean(inv?.hasAttachments) ||
-                    (Array.isArray(inv?.attachments) && inv.attachments.length > 0);
-
-                acc.total += 1;
-                if (hasAtt) acc.withAttachments += 1;
-                else acc.withoutAttachments += 1;
-
-                if (liCount > 1) acc.multiLine += 1;
-                else acc.singleLine += 1;
-
-                if (liCount > 1 && hasAtt) acc.multiLineWithAttachments += 1;
-                if (liCount > 1 && !hasAtt) acc.multiLineWithoutAttachments += 1;
-                if (liCount <= 1 && hasAtt) acc.singleLineWithAttachments += 1;
-                if (liCount <= 1 && !hasAtt) acc.singleLineWithoutAttachments += 1;
-                return acc;
-            },
-            {
-                total: 0,
-                withAttachments: 0,
-                withoutAttachments: 0,
-                multiLine: 0,
-                singleLine: 0,
-                multiLineWithAttachments: 0,
-                multiLineWithoutAttachments: 0,
-                singleLineWithAttachments: 0,
-                singleLineWithoutAttachments: 0,
-            }
-        );
+        // Date range calculation (currently unused but may be useful for future features)
+        // const minDate = invoices.reduce((acc: string | null, inv: any) => {
+        //     const d = inv.date ? new Date(inv.date).toISOString() : null;
+        //     if (!d) return acc;
+        //     if (!acc) return d;
+        //     return d < acc ? d : acc;
+        // }, null as string | null);
+        // const maxDate = invoices.reduce((acc: string | null, inv: any) => {
+        //     const d = inv.date ? new Date(inv.date).toISOString() : null;
+        //     if (!d) return acc;
+        //     if (!acc) return d;
+        //     return d > acc ? d : acc;
+        // }, null as string | null);
+        // const stats = invoices.reduce<InvoiceStats>(
+        //     (acc, inv: any) => {
+        //         const lineItems = inv?.lineItems;
+        //         const liCount = Array.isArray(lineItems) ? lineItems.length : 0;
+        //
+        //         // Xero SDK invoices have `hasAttachments?: boolean` and/or `attachments?: Attachment[]`
+        //         const hasAtt =
+        //             Boolean(inv?.hasAttachments) ||
+        //             (Array.isArray(inv?.attachments) && inv.attachments.length > 0);
+        //
+        //         acc.total += 1;
+        //         if (hasAtt) acc.withAttachments += 1;
+        //         else acc.withoutAttachments += 1;
+        //
+        //         if (liCount > 1) acc.multiLine += 1;
+        //         else acc.singleLine += 1;
+        //
+        //         if (liCount > 1 && hasAtt) acc.multiLineWithAttachments += 1;
+        //         if (liCount > 1 && !hasAtt) acc.multiLineWithoutAttachments += 1;
+        //         if (liCount <= 1 && hasAtt) acc.singleLineWithAttachments += 1;
+        //         if (liCount <= 1 && !hasAtt) acc.singleLineWithoutAttachments += 1;
+        //         return acc;
+        //     },
+        //     {
+        //         total: 0,
+        //         withAttachments: 0,
+        //         withoutAttachments: 0,
+        //         multiLine: 0,
+        //         singleLine: 0,
+        //         multiLineWithAttachments: 0,
+        //         multiLineWithoutAttachments: 0,
+        //         singleLineWithAttachments: 0,
+        //         singleLineWithoutAttachments: 0,
+        //     }
+        // );
 
         console.log(`[XeroOCR] Found ${invoices.length} recent bills to check.`);
 
         let processedCount = 0;
         let skippedCount = 0;
-        let skippedReasons: Record<string, number> = {};
+        const skippedReasons: Record<string, number> = {};
 
         for (const invoice of invoices) {
             if (!invoice.invoiceID) {
@@ -244,6 +245,7 @@ export const xeroInvoiceOcrService = {
 
             // If a cross-location file exists, log for visibility but DO NOT block processing.
             if (crossLocationFile) {
+              // Intentionally empty - cross-location files are logged but not blocked
             }
 
             // Check attachments
@@ -329,6 +331,6 @@ export const xeroInvoiceOcrService = {
             }
         }
 
-        console.log(`[XeroOCR] Sync complete. Processed ${processedCount} new documents (PDF/JPEG/PNG).`);
+        console.log(`[XeroOCR] Sync complete. Processed ${processedCount} new documents (PDF/JPEG/PNG), skipped ${skippedCount}.`);
     }
 };

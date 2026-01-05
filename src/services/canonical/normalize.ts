@@ -1,4 +1,5 @@
 const WHITESPACE_RE = /\s+/g;
+// eslint-disable-next-line no-useless-escape
 const PUNCT_LIGHT_RE = /[.,;:(){}\[\]<>|]/g;
 
 export function normalizeDescription(raw: string): string {

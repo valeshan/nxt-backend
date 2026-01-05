@@ -54,8 +54,8 @@ describe('Admin ProductStats endpoints (safe-by-default)', () => {
 
   async function build() {
     const app = fastify({ logger: false });
-    const mod = await import('../../src/routes/adminRoutes');
-    await app.register(mod.default, { prefix: '/admin' });
+    const mod = await import('../../src/routes/adminRoutes.js');
+    await app.register(mod.default as any, { prefix: '/admin' });
     await app.ready();
     return app;
   }

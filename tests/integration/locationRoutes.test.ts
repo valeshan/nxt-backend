@@ -2,7 +2,6 @@ import { describe, it, expect, beforeAll, afterAll, beforeEach } from 'vitest';
 import { buildTestApp, resetDb, teardown } from './testApp';
 import { FastifyInstance } from 'fastify';
 import prisma from '../../src/infrastructure/prismaClient';
-import { OrganisationRole } from '@prisma/client';
 
 describe('Location Routes Integration', () => {
   let app: FastifyInstance;

@@ -6,7 +6,7 @@ import helmet from '@fastify/helmet';
 import rateLimit from '@fastify/rate-limit';
 import compress from '@fastify/compress';
 import fastifyRawBody from 'fastify-raw-body';
-import { serializerCompiler, validatorCompiler, ZodTypeProvider } from 'fastify-type-provider-zod';
+import { serializerCompiler, validatorCompiler } from 'fastify-type-provider-zod';
 import * as Sentry from '@sentry/node';
 import xeroRoutes from './routes/xeroRoutes';
 import authRoutes from './routes/authRoutes';

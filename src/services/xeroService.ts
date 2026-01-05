@@ -3,8 +3,6 @@ import { XeroLocationLinkRepository } from '../repositories/xeroLocationLinkRepo
 import { encryptToken, decryptToken } from '../utils/crypto';
 import { XeroConnection, XeroLocationLink, OnboardingMode, Prisma } from '@prisma/client';
 import { onboardingSessionRepository } from '../repositories/onboardingSessionRepository';
-import { organisationRepository } from '../repositories/organisationRepository';
-import { locationRepository } from '../repositories/locationRepository';
 import { XeroClient } from 'xero-node';
 import { config } from '../config/env';
 import prisma from '../infrastructure/prismaClient';
@@ -160,7 +158,7 @@ export class XeroService {
     });
 
     // Xero Node SDK refreshWithRefreshToken
-    let tokenSet = await xero.refreshWithRefreshToken(clientId, clientSecret, refreshToken);
+    const tokenSet = await xero.refreshWithRefreshToken(clientId, clientSecret, refreshToken);
     
     // Handle token set response structure variations
     const newAccessToken = tokenSet.access_token || tokenSet.accessToken || (tokenSet as any)?.body?.access_token;
@@ -200,7 +198,6 @@ export class XeroService {
     }
 
     const clientId = config.XERO_CLIENT_ID;
-    const clientSecret = config.XERO_CLIENT_SECRET;
     
     // Smart redirect URI detection: prefer XERO_REDIRECT_URI, fallback to APP_URL/FRONTEND_URL, then localhost
     let redirectUri = config.XERO_REDIRECT_URI;

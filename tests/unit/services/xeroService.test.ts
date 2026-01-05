@@ -9,7 +9,9 @@ vi.mock('../../../src/repositories/xeroLocationLinkRepository');
 
 describe('XeroService', () => {
   let service: XeroService;
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
   let connectionRepo: any;
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
   let linkRepo: any;
 
   beforeEach(() => {

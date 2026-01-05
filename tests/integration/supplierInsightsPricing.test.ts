@@ -549,6 +549,7 @@ describe('Supplier Insights Pricing Logic', () => {
 
     it('should detect price changes from MANUAL invoices', async () => {
       // 1. Create Product (so we have a matching key)
+      // eslint-disable-next-line @typescript-eslint/no-unused-vars
       const product = await createProduct('manual-prod-key', 'Manual Product');
       
       const today = new Date();

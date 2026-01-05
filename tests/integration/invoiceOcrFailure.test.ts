@@ -69,8 +69,9 @@ describe('Invoice OCR Failure Handling', () => {
       });
 
       // Mock ocrService to throw an error
-      const originalStartAnalysis = (await import('../../src/services/OcrService')).ocrService.startAnalysis;
-      vi.spyOn((await import('../../src/services/OcrService')).ocrService, 'startAnalysis').mockRejectedValue(
+      // eslint-disable-next-line @typescript-eslint/no-unused-vars
+      const originalStartAnalysis = (await import('../../src/services/OcrService.js')).ocrService.startAnalysis;
+      vi.spyOn((await import('../../src/services/OcrService.js')).ocrService, 'startAnalysis').mockRejectedValue(
         new Error('Textract service unavailable')
       );
 

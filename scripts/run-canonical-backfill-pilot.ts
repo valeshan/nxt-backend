@@ -80,6 +80,7 @@ async function main() {
 
   // Poll status (query-param endpoint is more robust for job IDs containing special chars)
   const startedAt = Date.now();
+  // eslint-disable-next-line no-constant-condition
   while (true) {
     const statusRes = await fetch(`${args.baseUrl}/admin/jobs?jobId=${encodeURIComponent(jobId)}`, {
       headers,

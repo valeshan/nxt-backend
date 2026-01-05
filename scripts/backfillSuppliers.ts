@@ -1,9 +1,7 @@
 import prisma from '../src/infrastructure/prismaClient';
 import { XeroSyncService } from '../src/services/xeroSyncService';
-import { XeroConnectionRepository } from '../src/repositories/xeroConnectionRepository';
 
 const syncService = new XeroSyncService();
-const connectionRepo = new XeroConnectionRepository();
 
 async function backfill() {
   console.log('Starting Supplier Backfill via Full Sync...');

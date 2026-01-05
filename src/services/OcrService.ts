@@ -1,4 +1,4 @@
-import { TextractClient, StartExpenseAnalysisCommand, GetExpenseAnalysisCommand, JobStatus } from '@aws-sdk/client-textract';
+import { TextractClient, StartExpenseAnalysisCommand, GetExpenseAnalysisCommand } from '@aws-sdk/client-textract';
 import { config } from '../config/env';
 import { parseMoneyLike } from '../utils/numberParsing';
 import { computeDescriptionWarnings } from '../utils/descriptionQuality';

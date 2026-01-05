@@ -1,4 +1,4 @@
-import { describe, it, expect, vi } from 'vitest';
+import { describe, it, expect } from 'vitest';
 
 // We need to mock process.exit or run in a separate process. 
 // Since we import config at top level of app, testing it is tricky if we want to test "failure on load".

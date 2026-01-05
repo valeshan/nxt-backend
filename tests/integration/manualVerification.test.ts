@@ -10,6 +10,7 @@ describe('Manual Invoice Verification Integration', () => {
   let orgId: string;
   let locId: string;
   let invoiceId: string;
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
   let invoiceFileId: string;
 
   beforeAll(async () => {
@@ -24,6 +25,7 @@ describe('Manual Invoice Verification Integration', () => {
     await resetDb();
 
     // 1. Setup User & Org
+    // eslint-disable-next-line @typescript-eslint/no-unused-vars
     const registerRes = await app.inject({
       method: 'POST',
       url: '/auth/register',
@@ -204,7 +206,7 @@ describe('Manual Invoice Verification Integration', () => {
       },
     });
 
-    const { supplierInsightsService } = await import('../../src/services/supplierInsightsService');
+    const { supplierInsightsService } = await import('../../src/services/supplierInsightsService.js');
     const parity = await supplierInsightsService.getCanonicalParityChecklist(orgId, locId);
     expect(parity.totals.canonicalSpend90d).toBe(50);
 

@@ -1,5 +1,4 @@
 import { Queue, Worker } from 'bullmq';
-import { config } from '../config/env';
 import { getBullMqRedisClient } from '../infrastructure/redis';
 
 // Dedicated BullMQ connection (BullMQ requires maxRetriesPerRequest=null).
@@ -43,8 +42,8 @@ export const setupInboundWorker = () => {
     }
   );
 
-  worker.on('completed', (job) => {
-     // console.log(`Job ${job.id} completed!`);
+  worker.on('completed', (_job) => {
+     // console.log(`Job ${_job.id} completed!`);
   });
 
   worker.on('failed', (job, err) => {

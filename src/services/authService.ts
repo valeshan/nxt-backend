@@ -5,8 +5,8 @@ import { organisationRepository } from '../repositories/organisationRepository';
 import { locationRepository } from '../repositories/locationRepository';
 import { onboardingSessionRepository } from '../repositories/onboardingSessionRepository';
 import { hashPassword, verifyPassword } from '../utils/password';
-import { signAccessToken, signRefreshToken, verifyRefreshToken, verifyToken, AuthTokenType, ACCESS_TOKEN_TTL_SECONDS, TokenPayload } from '../utils/jwt';
-import { Prisma, OrganisationRole, XeroSyncScope } from '@prisma/client';
+import { signAccessToken, signRefreshToken, verifyRefreshToken, AuthTokenType, ACCESS_TOKEN_TTL_SECONDS, TokenPayload } from '../utils/jwt';
+import { OrganisationRole, XeroSyncScope } from '@prisma/client';
 import { RegisterOnboardRequestSchema } from '../dtos/authDtos';
 import { z } from 'zod';
 import { XeroService } from './xeroService';
@@ -47,6 +47,7 @@ export const authService = {
     await userSettingsRepository.upsertForUser(user.id, {});
 
     // Return user without sensitive data
+    // eslint-disable-next-line @typescript-eslint/no-unused-vars
     const { passwordHash: _, ...userSafe } = user;
     return userSafe;
   },
@@ -97,6 +98,7 @@ export const authService = {
       name: `${data.firstName} ${data.lastName}`.trim(),
     });
 
+    // eslint-disable-next-line @typescript-eslint/no-unused-vars
     const { passwordHash: _, ...userSafe } = updatedUser;
     return userSafe;
   },

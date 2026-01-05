@@ -1,5 +1,5 @@
 import prisma from '../infrastructure/prismaClient';
-import { UserOrganisation, Prisma, OrganisationRole } from '@prisma/client';
+import { UserOrganisation, OrganisationRole } from '@prisma/client';
 
 export const userOrganisationRepository = {
   async addUserToOrganisation(userId: string, organisationId: string, role: OrganisationRole): Promise<UserOrganisation> {

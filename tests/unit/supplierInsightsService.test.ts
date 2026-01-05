@@ -16,7 +16,7 @@ const { mockAggregate, mockGroupBy, mockFindMany, mockFindFirst, mockFindUnique 
 
 // Mock the entire module to handle default export
 vi.mock('../../src/infrastructure/prismaClient', () => {
-  const mockClient = {
+  const mockClient: any = {
     xeroInvoice: {
       aggregate: mockAggregate,
       groupBy: mockGroupBy,
@@ -51,7 +51,7 @@ vi.mock('../../src/infrastructure/prismaClient', () => {
     locationAccountConfig: {
       findMany: mockFindMany,
     },
-    $transaction: vi.fn((callback) => callback(mockClient)), // Simple mock for transaction
+    $transaction: vi.fn((callback: (client: any) => Promise<any>) => callback(mockClient)), // Simple mock for transaction
   };
   return {
     __esModule: true,
@@ -77,7 +77,8 @@ describe('supplierInsightsService', () => {
       const aggregateMock = vi.mocked(prisma.xeroInvoiceLineItem.aggregate);
       aggregateMock.mockReset();
 
-      aggregateMock.mockImplementation(async (args: any) => {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      (aggregateMock as any).mockImplementation(async (args: any): Promise<any> => {
           // Identify call by date range or other characteristics
           // Recent: ~90 days ago
           // Last 6m: ~6 months window

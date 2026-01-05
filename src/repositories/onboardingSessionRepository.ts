@@ -1,5 +1,5 @@
 import prisma from '../infrastructure/prismaClient';
-import { OnboardingMode, OnboardingSession, Prisma } from '@prisma/client';
+import { OnboardingMode, OnboardingSession } from '@prisma/client';
 
 export const onboardingSessionRepository = {
   async createSession(mode: OnboardingMode): Promise<OnboardingSession> {

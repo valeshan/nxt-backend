@@ -41,6 +41,7 @@ export function getAlphaRatio(text: string): number {
 /**
  * Computes vowel ratio for a token (vowels / total letters).
  */
+// eslint-disable-next-line @typescript-eslint/no-unused-vars
 function vowelRatio(token: string): number {
   const letters = token.replace(/[^a-z]/gi, '');
   if (!letters) return 0;

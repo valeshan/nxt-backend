@@ -157,7 +157,8 @@ export class SupplierController {
     // Helper to build manual invoice filter based on account codes
     // If MANUAL_COGS_ACCOUNT_CODE is in the filter, include all verified manual invoices
     // Otherwise, filter by the specified account codes
-    const getManualInvoiceFilter = (): Prisma.InvoiceWhereInput => {
+    // eslint-disable-next-line @typescript-eslint/no-unused-vars
+    const _getManualInvoiceFilter = (): Prisma.InvoiceWhereInput => {
         if (!normalizedAccountCodes || normalizedAccountCodes.length === 0) {
             return {}; // No filter - include all verified invoices
         }
@@ -224,7 +225,8 @@ export class SupplierController {
 
     // Active Invoices Filter: Only show suppliers with at least one non-deleted invoice
     // This prevents suppliers with only deleted invoices from appearing in the list.
-    const activeInvoicesFilter: Prisma.SupplierWhereInput = {
+    // eslint-disable-next-line @typescript-eslint/no-unused-vars
+    const _activeInvoicesFilter: Prisma.SupplierWhereInput = {
         OR: [
             {
                 invoices: {

@@ -12,6 +12,7 @@ async function backfillProducts() {
   let processedCount = 0;
   let createdCount = 0;
 
+  // eslint-disable-next-line no-constant-condition
   while (true) {
     // Fetch unlinked line items
     const lineItems = await prisma.xeroInvoiceLineItem.findMany({

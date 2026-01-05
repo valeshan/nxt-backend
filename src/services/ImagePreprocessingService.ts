@@ -1,6 +1,5 @@
 import sharp from 'sharp';
 import { s3Service } from './S3Service';
-import { config } from '../config/env';
 
 export interface PreprocessingOptions {
   autoRotate?: boolean;

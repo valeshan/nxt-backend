@@ -77,7 +77,7 @@ describe('GET /diagnostics/snapshot (canonical)', () => {
   }
 
   it('returns canonical diagnostics (no parity)', async () => {
-    const { DiagnosticsController } = await import('../../src/controllers/diagnosticsController');
+    const { DiagnosticsController } = await import('../../src/controllers/diagnosticsController.js');
     const controller = new DiagnosticsController();
 
     const reply = makeReplyCapture();
@@ -104,7 +104,7 @@ describe('GET /diagnostics/snapshot (canonical)', () => {
   });
 
   it('when parity requested without location token, returns a clear error report', async () => {
-    const { DiagnosticsController } = await import('../../src/controllers/diagnosticsController');
+    const { DiagnosticsController } = await import('../../src/controllers/diagnosticsController.js');
     const controller = new DiagnosticsController();
 
     const reply = makeReplyCapture();
@@ -129,7 +129,7 @@ describe('GET /diagnostics/snapshot (canonical)', () => {
   });
 
   it('when parity requested with location token, includes ids in payload', async () => {
-    const { DiagnosticsController } = await import('../../src/controllers/diagnosticsController');
+    const { DiagnosticsController } = await import('../../src/controllers/diagnosticsController.js');
     const controller = new DiagnosticsController();
 
     const reply = makeReplyCapture();

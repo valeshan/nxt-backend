@@ -9,7 +9,7 @@ export default async function userRoutes(fastify: FastifyInstance) {
   app.register(async (protectedApp) => {
     protectedApp.register(authContextPlugin);
 
-    protectedApp.post('/me/onboarding-complete', async (request, reply) => {
+    protectedApp.post('/me/onboarding-complete', async (request, _reply) => {
       const { userId } = request.authContext;
 
       const updatedUser = await prisma.user.update({

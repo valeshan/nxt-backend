@@ -14,6 +14,7 @@ import { join } from 'path';
 
 type SpellCheckStatus = 'uninitialized' | 'ready' | 'disabled';
 
+// eslint-disable-next-line @typescript-eslint/no-unused-vars
 interface SpellCheckResult {
   isCorrect: boolean;
   suggestions: string[];

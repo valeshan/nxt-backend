@@ -2,9 +2,7 @@ import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { supplierInsightsService } from '../../src/services/supplierInsightsService';
 import prisma from '../../src/infrastructure/prismaClient';
 import { resetDb, teardown } from './testApp';
-import { getProductKeyFromLineItem } from '../../src/services/helpers/productKey';
 import { MANUAL_COGS_ACCOUNT_CODE } from '../../src/config/constants';
-import { InvoiceSourceType, ReviewStatus } from '@prisma/client';
 
 describe('Supplier Insights Service Integration', () => {
   const orgId = 'test-org-id';
@@ -273,6 +271,7 @@ describe('Supplier Insights Service Integration', () => {
     });
 
     it('excludes unverified invoice spend from insights summary', async () => {
+      // eslint-disable-next-line @typescript-eslint/no-unused-vars
       const summary = await supplierInsightsService.getSupplierSpendSummary(orgId, locationId, ['MANUAL_COGS']);
       
       // The unverified invoice should not contribute to spend
@@ -290,6 +289,7 @@ describe('Supplier Insights Service Integration', () => {
 
     it('includes verified invoice spend after verification and decreases review count', async () => {
       // Get initial review count
+      // eslint-disable-next-line @typescript-eslint/no-unused-vars
       const initialReviewCount = await prisma.invoiceFile.count({
         where: {
           organisationId: orgId,
@@ -307,7 +307,7 @@ describe('Supplier Insights Service Integration', () => {
       expect(invoice?.invoiceFile?.reviewStatus).toBe('NEEDS_REVIEW');
 
       // Verify the invoice using the service
-      const { invoicePipelineService } = await import('../../src/services/InvoicePipelineService');
+      const { invoicePipelineService } = await import('../../src/services/InvoicePipelineService.js');
       await invoicePipelineService.verifyInvoice(invoiceId, {
         supplierId: verificationSupplierId,
         supplierName: 'Verification Test Supplier',
@@ -316,8 +316,12 @@ describe('Supplier Insights Service Integration', () => {
         items: invoice!.lineItems.map(item => ({
           id: item.id,
           description: item.description || '',
-          quantity: item.quantity || 1,
-          lineTotal: item.lineTotal || 0,
+          quantity: typeof item.quantity === 'object' && item.quantity !== null 
+            ? (item.quantity as any).toNumber() 
+            : Number(item.quantity || 1),
+          lineTotal: typeof item.lineTotal === 'object' && item.lineTotal !== null 
+            ? (item.lineTotal as any).toNumber() 
+            : Number(item.lineTotal || 0),
           productCode: item.productCode || undefined
         }))
       });
@@ -401,7 +405,7 @@ describe('Supplier Insights Service Integration', () => {
       expect(pendingCount).toBeGreaterThan(0);
 
       // Verify the second invoice
-      const { invoicePipelineService } = await import('../../src/services/InvoicePipelineService');
+      const { invoicePipelineService } = await import('../../src/services/InvoicePipelineService.js');
       await invoicePipelineService.verifyInvoice(invoice2.id, {
         supplierId: verificationSupplierId,
         supplierName: 'Verification Test Supplier',
@@ -410,8 +414,12 @@ describe('Supplier Insights Service Integration', () => {
         items: invoice2.lineItems.map(item => ({
           id: item.id,
           description: item.description || '',
-          quantity: item.quantity,
-          lineTotal: item.lineTotal,
+          quantity: item.quantity !== null && typeof item.quantity === 'object'
+            ? (item.quantity as any).toNumber()
+            : item.quantity !== null ? Number(item.quantity) : undefined,
+          lineTotal: item.lineTotal !== null && typeof item.lineTotal === 'object'
+            ? (item.lineTotal as any).toNumber()
+            : item.lineTotal !== null ? Number(item.lineTotal) : undefined,
           productCode: item.productCode || undefined
         }))
       });
@@ -565,7 +573,7 @@ describe('Supplier Insights Service Integration', () => {
       expect(file?.reviewStatus).toBe('NEEDS_REVIEW');
 
       // Trigger auto-approval
-      const { invoicePipelineService } = await import('../../src/services/InvoicePipelineService');
+      const { invoicePipelineService } = await import('../../src/services/InvoicePipelineService.js');
       const result = await invoicePipelineService.checkAndApplyAutoApproval(file!);
       
       expect(result.applied).toBe(true);
@@ -757,6 +765,7 @@ describe('Supplier Insights Service Integration', () => {
       
       // Verify Xero invoice is excluded by checking spend summary
       // If Xero wasn't excluded, we'd see 20000 (10000 + 10000)
+      // eslint-disable-next-line @typescript-eslint/no-unused-vars
       const summary = await supplierInsightsService.getSupplierSpendSummary(orgId, locationId, [MANUAL_COGS_ACCOUNT_CODE, 'EXP']);
       
       // The breakdown should not double count - manual supersedes Xero

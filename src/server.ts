@@ -45,22 +45,32 @@ const start = async () => {
         cronHandle?.stop();
         janitorHandle?.stop();
         dedupeHandle?.stop();
-      } catch {}
+      } catch {
+        // Ignore errors during shutdown
+      }
 
       // Close BullMQ worker/queue
       try {
         await inboundWorker?.close();
-      } catch {}
+      } catch {
+        // Ignore errors during shutdown
+      }
       try {
         await closeInboundQueue();
-      } catch {}
+      } catch {
+        // Ignore errors during shutdown
+      }
 
       try {
         await adminWorker?.close();
-      } catch {}
+      } catch {
+        // Ignore errors during shutdown
+      }
       try {
         await closeAdminQueue();
-      } catch {}
+      } catch {
+        // Ignore errors during shutdown
+      }
 
       await app.close();
       await prisma.$disconnect();

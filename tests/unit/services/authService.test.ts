@@ -1,9 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { authService } from '../../../src/services/authService';
 import { userRepository } from '../../../src/repositories/userRepository';
-import { userOrganisationRepository } from '../../../src/repositories/userOrganisationRepository';
-import { locationRepository } from '../../../src/repositories/locationRepository';
-import { userSettingsRepository } from '../../../src/repositories/userSettingsRepository';
 import { organisationRepository } from '../../../src/repositories/organisationRepository';
 import { hashPassword } from '../../../src/utils/password';
 import * as jwtUtils from '../../../src/utils/jwt';

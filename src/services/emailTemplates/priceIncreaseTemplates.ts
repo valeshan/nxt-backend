@@ -18,7 +18,6 @@ const formatDate = (date: Date) => {
 
 export const generatePriceAlertHtml = (items: PriceIncreaseItem[], totalCount: number, organisationName: string, generatedDate: Date = new Date()): string => {
   if (!items || items.length === 0) {
-    const dateStr = formatDate(generatedDate);
     return `
 <!DOCTYPE html>
 <html>

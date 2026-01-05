@@ -10,7 +10,6 @@ declare global {
 }
 
 const prisma =
-  // @ts-ignore
   global.prisma ||
   new PrismaClient({
     log: [
@@ -52,7 +51,6 @@ const prisma =
 });
 
 if (config.NODE_ENV !== 'production') {
-  // @ts-ignore
   global.prisma = prisma;
 }
 

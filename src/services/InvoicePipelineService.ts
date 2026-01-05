@@ -772,6 +772,7 @@ export const invoicePipelineService = {
                       console.warn(`[InvoicePipeline] Failed to trigger Pusher event for status change ${file.id}:`, pusherError);
                   }
               } else {
+                  // No status change needed
               }
           } catch (err) {
               console.error(`[InvoicePipeline] Error processing pending OCR job for file ${file.id}:`, err);
@@ -1673,10 +1674,10 @@ export const invoicePipelineService = {
                  }
 
                  // Determine Review Status
-                 let reviewStatus = ReviewStatus.NEEDS_REVIEW;
-                 if (parsed.confidenceScore >= 95) {
-                     // reviewStatus = ReviewStatus.VERIFIED; 
-                 }
+                 const reviewStatus = ReviewStatus.NEEDS_REVIEW;
+                 // if (parsed.confidenceScore >= 95) {
+                 //     reviewStatus = ReviewStatus.VERIFIED; 
+                 // }
 
                  // Track previous reviewStatus to detect changes
                  const previousReviewStatus = file.reviewStatus;
@@ -1771,6 +1772,7 @@ export const invoicePipelineService = {
                   });
                   return this.enrichStatus(updated as any);
             } else {
+                // No update needed
             }
         } catch (e) {
             console.error(`Error polling job ${file.ocrJobId}`, e);
@@ -2047,6 +2049,7 @@ export const invoicePipelineService = {
       }
 
       // Build suppression set from org lexicon (all phrases are org-wide)
+      // eslint-disable-next-line @typescript-eslint/no-unused-vars
       const orgLexiconSetPhraseOnly = buildSuppressionSet(lexiconEntries);
 
       // Run everything in a transaction to ensure atomicity
@@ -2974,7 +2977,7 @@ export const invoicePipelineService = {
           }
       }
 
-      let [items, count] = await Promise.all([
+      const [itemsInitial, count] = await Promise.all([
           prisma.invoiceFile.findMany({
               where,
               include: { 
@@ -2987,6 +2990,7 @@ export const invoicePipelineService = {
           }),
           prisma.invoiceFile.count({ where })
       ]);
+      let items = itemsInitial;
 
       // Realtime-first: list should be cheap by default.
       // If explicitly requested, refresh a capped number of processing items.
