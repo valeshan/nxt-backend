@@ -30,9 +30,9 @@ export function signRefreshToken(payload: Omit<TokenPayload, 'iat' | 'exp'>, exp
 }
 
 export function verifyToken(token: string): TokenPayload {
-  return jwt.verify(token, config.JWT_VERIFY_SECRET) as TokenPayload;
+  return jwt.verify(token, config.JWT_VERIFY_SECRET) as unknown as TokenPayload;
 }
 
 export function verifyRefreshToken(token: string): TokenPayload {
-  return jwt.verify(token, config.JWT_REFRESH_SECRET) as TokenPayload;
+  return jwt.verify(token, config.JWT_REFRESH_SECRET) as unknown as TokenPayload;
 }
