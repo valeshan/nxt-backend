@@ -121,6 +121,7 @@ jobs:
       XERO_CLIENT_SECRET: dummy-client-secret
       XERO_REDIRECT_URI: http://localhost:3000/xero/callback
       FRONTEND_URL: http://localhost:3000
+      SHADOW_DATABASE_URL: postgresql://postgres:password@localhost:5432/nxt_shadow_db
 
     steps:
       - name: Check out code
@@ -165,6 +166,11 @@ jobs:
             sleep 2
           done
 
+      - name: Prepare Shadow Database
+        run: |
+          psql -h localhost -U postgres -c "DROP DATABASE IF EXISTS nxt_shadow_db;"
+          psql -h localhost -U postgres -c "CREATE DATABASE nxt_shadow_db;"
+
       - name: Generate Prisma Client
         run: npx prisma generate --schema prisma/schema.prisma
 
@@ -183,7 +189,7 @@ jobs:
         run: npx prisma migrate status --schema prisma/schema.prisma
 
       - name: Check for Schema Drift
-        run: npx prisma migrate diff --from-migrations ./prisma/migrations --to-url "$DATABASE_URL" --exit-code
+        run: npx prisma migrate diff --from-migrations ./prisma/migrations --to-url "$DATABASE_URL" --shadow-database-url "$SHADOW_DATABASE_URL" --exit-code
 
       - name: Verify Critical Schema
         run: npm run verify:schema --if-present
