@@ -112,6 +112,15 @@ jobs:
       PORT: 4001
       GMAIL_ALERTS_USER: ci-alerts@example.com
       GMAIL_APP_PASSWORD: dummy-password
+      INTERNAL_ADMIN_API_KEY: ci-admin-key
+      ENABLE_ADMIN_ENDPOINTS: "true"
+      ADMIN_BYPASS_RATE_LIMIT: "false"
+      USE_CANONICAL_LINES: "false"
+      CANONICAL_LINES_ORG_ALLOWLIST: ""
+      XERO_CLIENT_ID: dummy-client-id
+      XERO_CLIENT_SECRET: dummy-client-secret
+      XERO_REDIRECT_URI: http://localhost:3000/xero/callback
+      FRONTEND_URL: http://localhost:3000
 
     steps:
       - name: Check out code
@@ -233,6 +242,15 @@ jobs:
       CRON_ENABLED: "false"
       GMAIL_ALERTS_USER: ci-alerts@example.com
       GMAIL_APP_PASSWORD: dummy-password
+      INTERNAL_ADMIN_API_KEY: ci-admin-key
+      ENABLE_ADMIN_ENDPOINTS: "true"
+      ADMIN_BYPASS_RATE_LIMIT: "false"
+      USE_CANONICAL_LINES: "false"
+      CANONICAL_LINES_ORG_ALLOWLIST: ""
+      XERO_CLIENT_ID: dummy-client-id
+      XERO_CLIENT_SECRET: dummy-client-secret
+      XERO_REDIRECT_URI: http://localhost:3000/xero/callback
+      FRONTEND_URL: http://localhost:3000
 
     steps:
       - name: Check out code
