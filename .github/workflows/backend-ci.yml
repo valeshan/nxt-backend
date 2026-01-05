@@ -3,14 +3,8 @@ name: Backend CI
 on:
   push:
     branches: [main]
-    paths:
-      - "nxt-backend/**"
-      - ".github/workflows/backend-ci.yml"
   pull_request:
     branches: [main]
-    paths:
-      - "nxt-backend/**"
-      - ".github/workflows/backend-ci.yml"
 
 concurrency:
   group: backend-ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
@@ -22,7 +16,7 @@ jobs:
     runs-on: ubuntu-latest
     defaults:
       run:
-        working-directory: ./nxt-backend
+        working-directory: .
     env:
       NODE_ENV: test
       JWT_VERIFY_SECRET: ci-verify-secret
@@ -39,18 +33,15 @@ jobs:
         with:
           node-version: "20"
           cache: "npm"
-          # Use glob so setup-node resolves lockfiles regardless of location
-          cache-dependency-path: |
-            **/package-lock.json
-            **/npm-shrinkwrap.json
+          cache-dependency-path: package-lock.json
 
       - name: Cache Prisma Engines
         uses: actions/cache@v4
         with:
           path: |
             ~/.cache/prisma
-            nxt-backend/node_modules/.prisma
-          key: ${{ runner.os }}-prisma-${{ hashFiles('nxt-backend/prisma/schema.prisma') }}
+            node_modules/.prisma
+          key: ${{ runner.os }}-prisma-${{ hashFiles('prisma/schema.prisma') }}
           restore-keys: |
             ${{ runner.os }}-prisma-
 
@@ -72,7 +63,7 @@ jobs:
     runs-on: ubuntu-latest
     defaults:
       run:
-        working-directory: ./nxt-backend
+        working-directory: .
     strategy:
       matrix:
         postgres-version: [15]
@@ -118,18 +109,15 @@ jobs:
         with:
           node-version: "20"
           cache: "npm"
-          # Use glob so setup-node resolves lockfiles regardless of location
-          cache-dependency-path: |
-            **/package-lock.json
-            **/npm-shrinkwrap.json
+          cache-dependency-path: package-lock.json
 
       - name: Cache Prisma Engines
         uses: actions/cache@v4
         with:
           path: |
             ~/.cache/prisma
-            nxt-backend/node_modules/.prisma
-          key: ${{ runner.os }}-prisma-${{ hashFiles('nxt-backend/prisma/schema.prisma') }}
+            node_modules/.prisma
+          key: ${{ runner.os }}-prisma-${{ hashFiles('prisma/schema.prisma') }}
           restore-keys: |
             ${{ runner.os }}-prisma-
 
@@ -184,9 +172,9 @@ jobs:
         with:
           name: backend-test-logs-pg${{ matrix.postgres-version }}
           path: |
-            nxt-backend/test-results/
-            nxt-backend/prisma/*.log
-            nxt-backend/server.log
+            test-results/
+            prisma/*.log
+            server.log
           retention-days: 5
 
   api-smoke:
@@ -195,7 +183,7 @@ jobs:
     runs-on: ubuntu-latest
     defaults:
       run:
-        working-directory: ./nxt-backend
+        working-directory: .
     services:
       postgres:
         image: postgres:15-alpine
@@ -240,18 +228,15 @@ jobs:
         with:
           node-version: "20"
           cache: "npm"
-          # Use glob so setup-node resolves lockfiles regardless of location
-          cache-dependency-path: |
-            **/package-lock.json
-            **/npm-shrinkwrap.json
+          cache-dependency-path: package-lock.json
 
       - name: Cache Prisma Engines
         uses: actions/cache@v4
         with:
           path: |
             ~/.cache/prisma
-            nxt-backend/node_modules/.prisma
-          key: ${{ runner.os }}-prisma-${{ hashFiles('nxt-backend/prisma/schema.prisma') }}
+            node_modules/.prisma
+          key: ${{ runner.os }}-prisma-${{ hashFiles('prisma/schema.prisma') }}
           restore-keys: |
             ${{ runner.os }}-prisma-
 
