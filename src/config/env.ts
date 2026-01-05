@@ -90,9 +90,6 @@ const envSchema = z.object({
   MAILGUN_MAX_ATTACHMENTS: z.coerce.number().optional().default(10),
   MAILGUN_MAX_TOTAL_SIZE_MB: z.coerce.number().optional().default(40),
 
-  // Xero sync timeout (minutes)
-  XERO_SYNC_TIMEOUT_MINUTES: z.coerce.number().optional().default(60),
-
   // Redis Configuration (For Queues)
   // If REDIS_URL is provided, we can parse it, or use specific host/port
   REDIS_HOST: z.string().optional(),
