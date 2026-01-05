@@ -1,3 +1,4 @@
+/// <reference types="vitest" />
 
 import { buildApp } from '../src/app';
 import { config } from '../src/config/env';
