@@ -1,0 +1,16 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "types": [
+      "node",
+      "vitest/globals",
+      "bcrypt",
+      "jsonwebtoken",
+      "fast-levenshtein",
+      "node-cron",
+      "nspell"
+    ]
+  },
+  "include": ["tests/**/*", "src/**/*"]
+}
+
