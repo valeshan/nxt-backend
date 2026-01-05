@@ -28,6 +28,15 @@ jobs:
       - name: Check out code
         uses: actions/checkout@v4
 
+      - name: Debug lockfiles
+        run: |
+          echo "PWD:"
+          pwd
+          echo "Repo root:"
+          ls -la
+          echo "Searching for lockfiles:"
+          find . -maxdepth 4 -name "package-lock.json" -o -name "npm-shrinkwrap.json" -o -name "pnpm-lock.yaml" -o -name "yarn.lock"
+
       - name: Setup Node.js 20
         uses: actions/setup-node@v4
         with:
