@@ -90,6 +90,9 @@ const envSchema = z.object({
   MAILGUN_MAX_ATTACHMENTS: z.coerce.number().optional().default(10),
   MAILGUN_MAX_TOTAL_SIZE_MB: z.coerce.number().optional().default(40),
 
+  // Xero sync timeout (minutes)
+  XERO_SYNC_TIMEOUT_MINUTES: z.coerce.number().optional().default(60),
+
   // Redis Configuration (For Queues)
   // If REDIS_URL is provided, we can parse it, or use specific host/port
   REDIS_HOST: z.string().optional(),
@@ -101,14 +104,15 @@ const envSchema = z.object({
   SENTRY_SEND_DEFAULT_PII: z.string().optional().default('false'),
 });
 
-const parsed = envSchema.safeParse(process.env);
+type Env = z.infer<typeof envSchema>;
 
-// In tests, be lenient: supply safe defaults if parsing fails (to avoid process.exit in CI)
-if (!parsed.success) {
+const getEnv = (): Env => {
+  const parsed = envSchema.safeParse(process.env);
+  if (parsed.success) return parsed.data;
+
   if (process.env.NODE_ENV === 'test') {
     console.warn('⚠️ Using test defaults for missing env vars (test env).');
-    parsed.success = true as any;
-    parsed.data = {
+    return {
       DATABASE_URL: process.env.DATABASE_URL || 'postgresql://postgres:password@localhost:5432/nxt_test_db',
       JWT_VERIFY_SECRET: process.env.JWT_VERIFY_SECRET || 'ci-verify-secret',
       JWT_REFRESH_SECRET: process.env.JWT_REFRESH_SECRET || 'ci-refresh-secret',
@@ -141,21 +145,24 @@ if (!parsed.success) {
       CANONICAL_LINES_ORG_ALLOWLIST: '',
       LOG_LEVEL: 'info',
       SENTRY_DSN: undefined,
-    } as any;
-  } else {
-    console.error('❌ Invalid environment variables:', parsed.error.format());
-    process.exit(1);
+      REDIS_URL: process.env.REDIS_URL,
+      XERO_SYNC_TIMEOUT_MINUTES: 60,
+    };
   }
-}
 
-const baseConfig = {
-  ...parsed.data,
-  // For tests, allow a safe default if not provided; otherwise, fail hard.
+  console.error('❌ Invalid environment variables:', parsed.error.format());
+  process.exit(1);
+};
+
+const parsedData = getEnv();
+
+const baseConfig: Env & { DATABASE_URL: string } = {
+  ...parsedData,
   DATABASE_URL:
-    parsed.data.DATABASE_URL ??
-    (parsed.data.NODE_ENV === 'test'
+    parsedData.DATABASE_URL ??
+    (parsedData.NODE_ENV === 'test'
       ? 'postgresql://postgres:password@localhost:5432/nxt_test_db'
-      : undefined),
+      : undefined as any),
 };
 
 if (!baseConfig.DATABASE_URL) {
