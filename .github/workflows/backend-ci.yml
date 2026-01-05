@@ -1,0 +1,322 @@
+name: Backend CI
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "nxt-backend/**"
+      - ".github/workflows/backend-ci.yml"
+  pull_request:
+    branches: [main]
+    paths:
+      - "nxt-backend/**"
+      - ".github/workflows/backend-ci.yml"
+
+concurrency:
+  group: backend-ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  fast-checks:
+    name: Fast Checks (Lint, Typecheck)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: ./nxt-backend
+    env:
+      NODE_ENV: test
+      JWT_VERIFY_SECRET: ci-verify-secret
+      JWT_REFRESH_SECRET: ci-refresh-secret
+      TOKEN_ENCRYPTION_KEY: 01234567890123456789012345678901
+      LOG_LEVEL: info
+
+    steps:
+      - name: Check out code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "npm"
+          # Use explicit relative path so setup-node resolves the lockfile for caching
+          cache-dependency-path: ./nxt-backend/package-lock.json
+
+      - name: Cache Prisma Engines
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cache/prisma
+            nxt-backend/node_modules/.prisma
+          key: ${{ runner.os }}-prisma-${{ hashFiles('nxt-backend/prisma/schema.prisma') }}
+          restore-keys: |
+            ${{ runner.os }}-prisma-
+
+      - name: Install Dependencies
+        run: npm ci
+
+      - name: Validate Prisma Schema
+        run: npx prisma validate --schema prisma/schema.prisma
+
+      - name: Lint
+        run: npm run lint --if-present
+
+      - name: Typecheck
+        run: npx tsc --noEmit
+
+  tests-and-migrations:
+    name: Tests & Migrations (Postgres ${{ matrix.postgres-version }})
+    needs: fast-checks
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: ./nxt-backend
+    strategy:
+      matrix:
+        postgres-version: [15]
+    services:
+      postgres:
+        image: postgres:${{ matrix.postgres-version }}-alpine
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: password
+          POSTGRES_DB: nxt_test_db
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 5
+    env:
+      NODE_ENV: test
+      DATABASE_URL: postgresql://postgres:password@localhost:5432/nxt_test_db
+      JWT_VERIFY_SECRET: ci-verify-secret
+      JWT_REFRESH_SECRET: ci-refresh-secret
+      TOKEN_ENCRYPTION_KEY: 01234567890123456789012345678901
+      LOG_LEVEL: info
+      REDIS_URL: redis://localhost:6379
+      PORT: 4001
+
+    steps:
+      - name: Check out code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "npm"
+          # Use explicit relative path so setup-node resolves the lockfile for caching
+          cache-dependency-path: ./nxt-backend/package-lock.json
+
+      - name: Cache Prisma Engines
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cache/prisma
+            nxt-backend/node_modules/.prisma
+          key: ${{ runner.os }}-prisma-${{ hashFiles('nxt-backend/prisma/schema.prisma') }}
+          restore-keys: |
+            ${{ runner.os }}-prisma-
+
+      - name: Install Dependencies
+        run: npm ci
+
+      - name: System Diagnostics
+        run: |
+          node -v
+          npm -v
+          npx prisma --version
+
+      - name: Wait for Postgres and Redis
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y postgresql-client redis-tools
+          until pg_isready -h localhost -p 5432 -U postgres; do
+            echo "Waiting for postgres..."
+            sleep 2
+          done
+          until redis-cli -h localhost -p 6379 ping | grep -q PONG; do
+            echo "Waiting for redis..."
+            sleep 2
+          done
+
+      - name: Generate Prisma Client
+        run: npx prisma generate --schema prisma/schema.prisma
+
+      - name: Run Migrations
+        run: npx prisma migrate deploy --schema prisma/schema.prisma
+
+      - name: Validate Schema Post-Migration
+        run: npx prisma validate --schema prisma/schema.prisma
+
+      - name: Run Tests
+        run: |
+          mkdir -p test-results
+          npm test --if-present | tee test-results/test.log
+
+      - name: Check Migration Status
+        run: npx prisma migrate status --schema prisma/schema.prisma
+
+      - name: Check for Schema Drift
+        run: npx prisma migrate diff --from-migrations --to-url "$DATABASE_URL" --schema prisma/schema.prisma --exit-code
+
+      - name: Verify Critical Schema
+        run: npm run verify:schema --if-present
+
+      - name: Upload Logs on Failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: backend-test-logs-pg${{ matrix.postgres-version }}
+          path: |
+            nxt-backend/test-results/
+            nxt-backend/prisma/*.log
+            nxt-backend/server.log
+          retention-days: 5
+
+  api-smoke:
+    name: API Smoke Test
+    needs: tests-and-migrations
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: ./nxt-backend
+    services:
+      postgres:
+        image: postgres:15-alpine
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: password
+          POSTGRES_DB: nxt_test_db
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 5
+    env:
+      NODE_ENV: production
+      DATABASE_URL: postgresql://postgres:password@localhost:5432/nxt_test_db
+      JWT_VERIFY_SECRET: ci-verify-secret
+      JWT_REFRESH_SECRET: ci-refresh-secret
+      TOKEN_ENCRYPTION_KEY: 01234567890123456789012345678901
+      LOG_LEVEL: info
+      REDIS_URL: redis://localhost:6379
+      PORT: 3000
+      ENABLE_RATE_LIMIT: "false"
+      CRON_ENABLED: "false"
+
+    steps:
+      - name: Check out code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "npm"
+          # Use explicit relative path so setup-node resolves the lockfile for caching
+          cache-dependency-path: ./nxt-backend/package-lock.json
+
+      - name: Cache Prisma Engines
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cache/prisma
+            nxt-backend/node_modules/.prisma
+          key: ${{ runner.os }}-prisma-${{ hashFiles('nxt-backend/prisma/schema.prisma') }}
+          restore-keys: |
+            ${{ runner.os }}-prisma-
+
+      - name: Install Dependencies
+        run: npm ci
+
+      - name: Generate Prisma Client
+        run: npx prisma generate --schema prisma/schema.prisma
+
+      - name: Apply Migrations
+        run: npx prisma migrate deploy --schema prisma/schema.prisma
+
+      - name: Build Application
+        run: npm run build --if-present
+
+      - name: Start Server (Background)
+        run: |
+          CMD="npm run start:prod"
+          if ! npm run | grep -q "start:prod"; then
+            CMD="npm run start"
+          fi
+          if ! npm run | grep -q "start"; then
+            CMD="node dist/src/server.js"
+          fi
+          echo "Starting server with: $CMD"
+          nohup $CMD > server.log 2>&1 &
+          echo $! > server.pid
+
+      - name: Wait for Postgres and Redis
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y postgresql-client redis-tools
+          until pg_isready -h localhost -p 5432 -U postgres; do
+            echo "Waiting for postgres..."
+            sleep 2
+          done
+          until redis-cli -h localhost -p 6379 ping | grep -q PONG; do
+            echo "Waiting for redis..."
+            sleep 2
+          done
+
+      - name: Wait for Health Check (/ready preferred)
+        run: |
+          HEALTH_URL="http://localhost:3000/ready"
+          FALLBACK_URL="http://localhost:3000/health"
+          echo "Waiting for server to answer at $HEALTH_URL (fallback $FALLBACK_URL)..."
+          for i in {1..30}; do
+            if curl -sf "$HEALTH_URL" > /dev/null || curl -sf "$FALLBACK_URL" > /dev/null; then
+              echo "✅ Server is up and responding!"
+              exit 0
+            fi
+            sleep 1
+          done
+          echo "❌ Server failed to start within timeout."
+          echo "=== Server Logs ==="
+          cat server.log
+          exit 1
+
+      - name: Stop Server
+        if: always()
+        run: |
+          if [ -f server.pid ]; then
+            kill "$(cat server.pid)" || true
+          fi
+
+      - name: Upload Server Logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: backend-api-smoke-logs
+          path: |
+            nxt-backend/server.log
+          retention-days: 5
+
