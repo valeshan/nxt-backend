@@ -112,7 +112,7 @@ const getEnv = (): Env => {
 
   if (process.env.NODE_ENV === 'test') {
     console.warn('⚠️ Using test defaults for missing env vars (test env).');
-    return {
+    const testDefaults: Partial<Env> = {
       DATABASE_URL: process.env.DATABASE_URL || 'postgresql://postgres:password@localhost:5432/nxt_test_db',
       JWT_VERIFY_SECRET: process.env.JWT_VERIFY_SECRET || 'ci-verify-secret',
       JWT_REFRESH_SECRET: process.env.JWT_REFRESH_SECRET || 'ci-refresh-secret',
@@ -148,6 +148,7 @@ const getEnv = (): Env => {
       REDIS_URL: process.env.REDIS_URL,
       XERO_SYNC_TIMEOUT_MINUTES: 60,
     };
+    return testDefaults as Env;
   }
 
   console.error('❌ Invalid environment variables:', parsed.error.format());
@@ -162,13 +163,11 @@ const baseConfig: Env & { DATABASE_URL: string } = {
     parsedData.DATABASE_URL ??
     (parsedData.NODE_ENV === 'test'
       ? 'postgresql://postgres:password@localhost:5432/nxt_test_db'
-      : undefined as any),
+      : (() => {
+          console.error('❌ Invalid environment variables: DATABASE_URL is required');
+          process.exit(1);
+        })()),
 };
-
-if (!baseConfig.DATABASE_URL) {
-  console.error('❌ Invalid environment variables: DATABASE_URL is required');
-  process.exit(1);
-}
 
 // Conditional validation:
 // - In production, Redis is required (rate limiting + BullMQ + cron locks).
