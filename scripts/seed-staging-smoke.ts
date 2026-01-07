@@ -1,5 +1,4 @@
 import { Prisma, SupplierSourceType, SupplierStatus } from '@prisma/client';
-import { randomUUID } from 'crypto';
 import prisma from '../src/infrastructure/prismaClient';
 import { hashPassword } from '../src/utils/password';
 
