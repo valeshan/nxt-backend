@@ -30,6 +30,7 @@ import { getRedisClient, pingWithTimeout } from './infrastructure/redis';
 import { runWithRequestContext, getRequestContext } from './infrastructure/requestContext';
 import { randomUUID } from 'crypto';
 import prisma from './infrastructure/prismaClient';
+import { listHeartbeats } from './repositories/jobHeartbeatRepository';
 
 export function buildApp(): FastifyInstance {
   const app = Fastify({
@@ -208,6 +209,12 @@ export function buildApp(): FastifyInstance {
   // Primary registration happens inside xeroRoutes under /xero/webhook.
   // We add a single alias for /webhooks/xero/webhook to avoid duplicates.
   app.register(xeroWebhookRoutes, { prefix: '/webhooks/xero' });
+
+  const isHealthTokenValid = (request: any): boolean => {
+    if (!config.HEALTHCHECK_TOKEN) return true;
+    const token = request.headers['x-health-check-token'];
+    return token === config.HEALTHCHECK_TOKEN;
+  };
   
   // Register debug routes conditionally
   if (config.DEBUG_ROUTES_ENABLED === 'true') {
@@ -224,8 +231,43 @@ export function buildApp(): FastifyInstance {
     return { status: 'ok', version };
   });
 
+  // Heartbeat diagnostics (requires token when configured)
+  app.get('/heartbeats', async (request, reply) => {
+    if (!isHealthTokenValid(request)) {
+      return reply.status(401).send({ error: { code: 'UNAUTHORIZED', message: 'Invalid health-check token' } });
+    }
+    const env = config.APP_ENV || 'unknown';
+    const rows = await listHeartbeats(env);
+    const now = Date.now();
+    const response = rows.map((r: any) => {
+      const lastSuccess = r.lastSuccessAt ? new Date(r.lastSuccessAt).getTime() : null;
+      const stale =
+        typeof r.staleAfterSeconds === 'number' && lastSuccess
+          ? now - lastSuccess > r.staleAfterSeconds * 1000
+          : false;
+      return {
+        jobName: r.jobName,
+        env: r.env,
+        status: r.status,
+        expectedIntervalSeconds: r.expectedIntervalSeconds,
+        staleAfterSeconds: r.staleAfterSeconds,
+        lastRunAt: r.lastRunAt,
+        lastSuccessAt: r.lastSuccessAt,
+        lastError: r.lastError,
+        durationMs: r.durationMs,
+        stale,
+        recentRuns: r.recentRuns,
+        updatedAt: r.updatedAt,
+      };
+    });
+    return reply.send({ env, heartbeats: response });
+  });
+
   // Readiness Check: DB + Redis, with strict timeouts and 503 on degraded.
-  app.get('/ready', async (_request, reply) => {
+  app.get('/ready', async (request, reply) => {
+    if (!isHealthTokenValid(request)) {
+      return reply.status(401).send({ error: { code: 'UNAUTHORIZED', message: 'Invalid health-check token' } });
+    }
     const overallTimeoutMs = 2000;
     const perDepTimeoutMs = 1200;
     const retryAfterSeconds = 5;

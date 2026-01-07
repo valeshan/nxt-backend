@@ -4,6 +4,7 @@ import { invoicePipelineService } from '../services/InvoicePipelineService';
 import { supplierInsightsService } from '../services/supplierInsightsService';
 import { config } from '../config/env';
 import { acquireLock, releaseLock } from '../infrastructure/redis';
+import { withJobHeartbeat } from '../utils/withJobHeartbeat';
 import os from 'os';
 
 export function initCronJobs() {
@@ -45,8 +46,17 @@ export function initCronJobs() {
   schedules.push(
     cron.schedule('0 * * * *', async () => {
       await withRedisLock('cleanupStuckSyncs', 5 * 60 * 1000, async () => {
-        console.log('[Cron] Running hourly cleanup for stuck syncs...');
-        await cleanupStuckSyncs();
+        await withJobHeartbeat(
+          {
+            jobName: 'cleanupStuckSyncs',
+            expectedIntervalSeconds: 3600,
+            staleAfterSeconds: 9000, // jitter-aware (~2.5x)
+          },
+          async () => {
+            console.log('[Cron] Running hourly cleanup for stuck syncs...');
+            await cleanupStuckSyncs();
+          }
+        );
       });
     })
   );
@@ -59,7 +69,16 @@ export function initCronJobs() {
     try {
       // TTL strategy: interval=10s, choose >= p95 runtime + buffer; conservative 60s.
       await withRedisLock('processPendingOcrJobs', 60_000, async () => {
-        await invoicePipelineService.processPendingOcrJobs();
+        await withJobHeartbeat(
+          {
+            jobName: 'processPendingOcrJobs',
+            expectedIntervalSeconds: 10,
+            staleAfterSeconds: 25, // allow jitter
+          },
+          async () => {
+            await invoicePipelineService.processPendingOcrJobs();
+          }
+        );
       });
     } catch (err) {
       console.error('[Cron] processPendingOcrJobs failed', err);
@@ -77,7 +96,16 @@ export function initCronJobs() {
     try {
       // Interval=2m; TTL >= runtime + buffer; conservative 5m.
       await withRedisLock('cleanupOrphanedOcrJobs', 5 * 60_000, async () => {
-        await invoicePipelineService.cleanupOrphanedOcrJobs();
+        await withJobHeartbeat(
+          {
+            jobName: 'cleanupOrphanedOcrJobs',
+            expectedIntervalSeconds: 120,
+            staleAfterSeconds: 300,
+          },
+          async () => {
+            await invoicePipelineService.cleanupOrphanedOcrJobs();
+          }
+        );
       });
     } catch (err) {
       console.error('[Cron] cleanupOrphanedOcrJobs failed', err);
@@ -92,12 +120,17 @@ export function initCronJobs() {
     schedules.push(
       cron.schedule('0 6 * * *', async () => {
         await withRedisLock('scanAndSendPriceIncreaseAlertsAllOrgs', 30 * 60_000, async () => {
-          console.log('[Cron] Running daily price alert scan...');
-          try {
-            await supplierInsightsService.scanAndSendPriceIncreaseAlertsAllOrgs();
-          } catch (err) {
-            console.error('[Cron] Price alert scan failed', err);
-          }
+          await withJobHeartbeat(
+            {
+              jobName: 'scanAndSendPriceIncreaseAlertsAllOrgs',
+              expectedIntervalSeconds: 86_400,
+              staleAfterSeconds: 216_000,
+            },
+            async () => {
+              console.log('[Cron] Running daily price alert scan...');
+              await supplierInsightsService.scanAndSendPriceIncreaseAlertsAllOrgs();
+            }
+          );
         });
       })
     );
@@ -109,8 +142,17 @@ export function initCronJobs() {
     schedules.push(
       cron.schedule('30 2 * * *', async () => {
         await withRedisLock('refreshProductStatsNightly', 60 * 60_000, async () => {
-          console.log('[Cron] Running nightly ProductStats refresh...');
-          await supplierInsightsService.refreshProductStatsNightly();
+          await withJobHeartbeat(
+            {
+              jobName: 'refreshProductStatsNightly',
+              expectedIntervalSeconds: 86_400,
+              staleAfterSeconds: 216_000,
+            },
+            async () => {
+              console.log('[Cron] Running nightly ProductStats refresh...');
+              await supplierInsightsService.refreshProductStatsNightly();
+            }
+          );
         });
       })
     );

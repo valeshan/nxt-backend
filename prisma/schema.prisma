@@ -860,3 +860,21 @@ model Feedback {
   @@index([status])
   @@index([emailStatus])
 }
+
+model JobHeartbeat {
+  id                      String   @id @default(uuid())
+  env                     String
+  jobName                 String
+  expectedIntervalSeconds Int
+  staleAfterSeconds       Int
+  status                  String   @default("RUNNING")
+  lastRunAt               DateTime?
+  lastSuccessAt           DateTime?
+  lastError               String?
+  durationMs              Int?
+  recentRuns              Json?
+  createdAt               DateTime @default(now())
+  updatedAt               DateTime @updatedAt
+
+  @@unique([env, jobName])
+}

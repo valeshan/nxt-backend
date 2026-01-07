@@ -14,6 +14,7 @@ if (process.env.NODE_ENV === 'test') {
 }
 
 const envSchema = z.object({
+  APP_ENV: z.string().optional(), // e.g., staging, production
   // Allow optional here; enforce below with conditional default for tests and hard fail otherwise.
   DATABASE_URL: z.string().min(1).optional(),
   // Expected format for production (Railway Postgres):
@@ -105,6 +106,7 @@ const envSchema = z.object({
   // Sentry Configuration
   SENTRY_DSN: z.string().url().optional(),
   SENTRY_SEND_DEFAULT_PII: z.string().optional().default('false'),
+  HEALTHCHECK_TOKEN: z.string().optional(),
 });
 
 type Env = z.infer<typeof envSchema>;
@@ -177,6 +179,7 @@ const parsedData = getEnv();
 
 const baseConfig: Env & { DATABASE_URL: string } = {
   ...parsedData,
+  APP_ENV: parsedData.APP_ENV || process.env.ENVIRONMENT_NAME || parsedData.NODE_ENV,
   DATABASE_URL:
     parsedData.DATABASE_URL ??
     (parsedData.NODE_ENV === 'test'
