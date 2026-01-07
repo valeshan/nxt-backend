@@ -19,6 +19,7 @@
     "migrate:prod": "NODE_ENV=production bash scripts/safe-migrate-deploy.sh",
     "check:db-safety": "tsx scripts/check-db-safety.ts",
     "verify:schema": "tsx scripts/verify-schema.ts",
+    "seed:staging:smoke": "ALLOW_STAGING_SMOKE_SEED=true node scripts/seed-staging-smoke.js",
     "lint": "eslint . --ext .ts",
     "janitor": "tsx src/cron/janitor.ts",
     "dedupe:invoices": "tsx src/cron/dedupeInvoiceFiles.ts",

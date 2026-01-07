@@ -31,3 +31,4 @@ The Sentry DSN was previously hardcoded in the repository. Even if the repositor
 - If you need to keep historical data, you can keep the old project but revoke the DSN
 - All environments should use the same new DSN or separate DSNs per environment (your choice)
 
+
