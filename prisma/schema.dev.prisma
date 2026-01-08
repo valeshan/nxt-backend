@@ -28,6 +28,7 @@ model User {
   createdAt             DateTime           @default(now())
   updatedAt             DateTime           @updatedAt
   memberships           UserOrganisation[]
+  locationAccess        UserLocationAccess[]
   settings              UserSettings?
   xeroConnections       XeroConnection[]
 }
@@ -35,10 +36,13 @@ model User {
 model Organisation {
   id                     String                  @id @default(uuid())
   name                   String
+  seatLimit              Int                     @default(5)
   createdAt              DateTime                @default(now())
   updatedAt              DateTime                @updatedAt
   locations              Location[]
   members                UserOrganisation[]
+  invites                OrganisationInvite[]
+  locationAccess         UserLocationAccess[]
   xeroConnections        XeroConnection[]
   xeroLocationLinks      XeroLocationLink[]
   suppliers              Supplier[]
@@ -74,6 +78,7 @@ model Location {
   productStats      ProductStats[]
   canonicalInvoices  CanonicalInvoice[]
   canonicalLineItems CanonicalInvoiceLineItem[]
+  userAccess        UserLocationAccess[]
 
   // Routing for inbound emails (optional custom alias)
   mailgunAlias String? @unique
@@ -146,6 +151,54 @@ enum OrganisationRole {
   owner
   admin
   member
+}
+
+enum InviteRevokeReason {
+  MANUAL      // Admin explicitly revoked
+  RESEND      // Replaced by new invite via resend
+  EXPIRED     // Auto-revoked by cleanup (optional)
+}
+
+model OrganisationInvite {
+  id                 String               @id @default(uuid())
+  organisationId     String
+  email              String
+  role               OrganisationRole     @default(member)
+  tokenHash          String               @unique // Global unique for security
+  locationIds        String[]             @default([])
+  expiresAt          DateTime
+  acceptedAt         DateTime?
+  revokedAt          DateTime?
+  revokedReason      InviteRevokeReason?
+  replacedByInviteId String?
+  createdByUserId    String
+  createdAt          DateTime             @default(now())
+  updatedAt          DateTime             @updatedAt
+
+  organisation Organisation        @relation(fields: [organisationId], references: [id])
+  createdBy    User                @relation("InvitesCreated", fields: [createdByUserId], references: [id])
+  replacedBy   OrganisationInvite? @relation("InviteReplacement", fields: [replacedByInviteId], references: [id])
+  replaces     OrganisationInvite[]@relation("InviteReplacement")
+
+  @@index([organisationId])
+  @@index([organisationId, email]) // Helps with "does email have pending invite" lookups
+  @@index([expiresAt])
+  @@index([replacedByInviteId])
+}
+
+model UserLocationAccess {
+  id             String       @id @default(uuid())
+  userId         String
+  organisationId String
+  locationId     String
+  createdAt      DateTime     @default(now())
+
+  user          User          @relation(fields: [userId], references: [id])
+  organisation  Organisation  @relation(fields: [organisationId], references: [id])
+  location      Location      @relation(fields: [locationId], references: [id])
+
+  @@unique([userId, locationId])
+  @@index([organisationId, userId])
 }
 
 enum VenueIndustry {

@@ -11,62 +11,67 @@ datasource db {
 }
 
 model User {
-  id                    String             @id @default(uuid())
-  email                 String             @unique
+  id                    String               @id @default(uuid())
+  email                 String               @unique
   passwordHash          String
-  firstName             String             @default("")
-  lastName              String             @default("")
+  firstName             String               @default("")
+  lastName              String               @default("")
   name                  String?
   profilePicture        String?
-  tokenVersion          Int                @default(0)
+  tokenVersion          Int                  @default(0)
   onboardingCompletedAt DateTime?
-  createdAt             DateTime           @default(now())
-  updatedAt             DateTime           @updatedAt
+  createdAt             DateTime             @default(now())
+  updatedAt             DateTime             @updatedAt
   memberships           UserOrganisation[]
+  locationAccess        UserLocationAccess[]
   settings              UserSettings?
   xeroConnections       XeroConnection[]
+  invitesCreated        OrganisationInvite[] @relation("InvitesCreated")
 }
 
 model Organisation {
-  id                     String                  @id @default(uuid())
-  name                   String
-  createdAt              DateTime                @default(now())
-  updatedAt              DateTime                @updatedAt
-  locations              Location[]
-  members                UserOrganisation[]
-  xeroConnections        XeroConnection[]
-  xeroLocationLinks      XeroLocationLink[]
-  suppliers              Supplier[]
-  xeroInvoices           XeroInvoice[]
-  products               Product[]
-  productStats           ProductStats[]
-  xeroSyncRuns           XeroSyncRun[]
-  locationAccountConfigs LocationAccountConfig[]
-  supplierAliases        SupplierAlias[]
-  ocrInvoices            Invoice[]
-  canonicalInvoices      CanonicalInvoice[]
-  canonicalLineItems     CanonicalInvoiceLineItem[]
+  id                           String                        @id @default(uuid())
+  name                         String
+  seatLimit                    Int                           @default(5)
+  createdAt                    DateTime                      @default(now())
+  updatedAt                    DateTime                      @updatedAt
+  locations                    Location[]
+  members                      UserOrganisation[]
+  invites                      OrganisationInvite[]
+  locationAccess               UserLocationAccess[]
+  xeroConnections              XeroConnection[]
+  xeroLocationLinks            XeroLocationLink[]
+  suppliers                    Supplier[]
+  xeroInvoices                 XeroInvoice[]
+  products                     Product[]
+  productStats                 ProductStats[]
+  xeroSyncRuns                 XeroSyncRun[]
+  locationAccountConfigs       LocationAccountConfig[]
+  supplierAliases              SupplierAlias[]
+  ocrInvoices                  Invoice[]
+  canonicalInvoices            CanonicalInvoice[]
+  canonicalLineItems           CanonicalInvoiceLineItem[]
   emailForwardingVerifications EmailForwardingVerification[]
-  lexiconEntries         OrganisationLexiconEntry[]
-  
+  lexiconEntries               OrganisationLexiconEntry[]
+
   // Data contribution consent
   dataContributionEnabled   Boolean   @default(true)
   dataContributionUpdatedAt DateTime?
 }
 
 model Location {
-  id                String                  @id @default(uuid())
-  name              String
-  organisationId    String
-  organisation      Organisation            @relation(fields: [organisationId], references: [id])
-  sharedReportEmails String[]                @default([])
-  createdAt         DateTime                @default(now())
-  updatedAt         DateTime                @updatedAt
-  xeroLocationLinks XeroLocationLink[]
-  xeroInvoices      XeroInvoice[]
-  accountConfigs    LocationAccountConfig[]
-  ocrInvoices       Invoice[]
-  productStats      ProductStats[]
+  id                 String                     @id @default(uuid())
+  name               String
+  organisationId     String
+  organisation       Organisation               @relation(fields: [organisationId], references: [id])
+  sharedReportEmails String[]                   @default([])
+  createdAt          DateTime                   @default(now())
+  updatedAt          DateTime                   @updatedAt
+  xeroLocationLinks  XeroLocationLink[]
+  xeroInvoices       XeroInvoice[]
+  accountConfigs     LocationAccountConfig[]
+  ocrInvoices        Invoice[]
+  productStats       ProductStats[]
   canonicalInvoices  CanonicalInvoice[]
   canonicalLineItems CanonicalInvoiceLineItem[]
 
@@ -76,16 +81,18 @@ model Location {
   // Email forwarding status
   forwardingStatus     LocationForwardingStatus? @default(NOT_CONFIGURED)
   forwardingVerifiedAt DateTime?
-  
+
   emailForwardingVerifications EmailForwardingVerification[]
-  
+
   // Segmentation for analytics
-  industry  VenueIndustry?
-  region    String?
+  industry VenueIndustry?
+  region   String?
 
   // Auto-approval of clean invoices (per-location feature flag)
   autoApproveCleanInvoices Boolean @default(false)
   hasSeenAutoApprovePrompt Boolean @default(false)
+
+  userAccess         UserLocationAccess[]
 }
 
 model LocationAccountConfig {
@@ -141,6 +148,54 @@ enum OrganisationRole {
   owner
   admin
   member
+}
+
+enum InviteRevokeReason {
+  MANUAL // Admin explicitly revoked
+  RESEND // Replaced by new invite via resend
+  EXPIRED // Auto-revoked by cleanup (optional)
+}
+
+model OrganisationInvite {
+  id                 String              @id @default(uuid())
+  organisationId     String
+  email              String
+  role               OrganisationRole    @default(member)
+  tokenHash          String              @unique // Global unique for security
+  locationIds        String[]            @default([])
+  expiresAt          DateTime
+  acceptedAt         DateTime?
+  revokedAt          DateTime?
+  revokedReason      InviteRevokeReason?
+  replacedByInviteId String?
+  createdByUserId    String
+  createdAt          DateTime            @default(now())
+  updatedAt          DateTime            @updatedAt
+
+  organisation Organisation         @relation(fields: [organisationId], references: [id])
+  createdBy    User                 @relation("InvitesCreated", fields: [createdByUserId], references: [id])
+  replacedBy   OrganisationInvite?  @relation("InviteReplacement", fields: [replacedByInviteId], references: [id])
+  replaces     OrganisationInvite[] @relation("InviteReplacement")
+
+  @@index([organisationId])
+  @@index([organisationId, email]) // Helps with "does email have pending invite" lookups
+  @@index([expiresAt])
+  @@index([replacedByInviteId])
+}
+
+model UserLocationAccess {
+  id             String       @id @default(uuid())
+  userId         String
+  organisationId String
+  locationId     String
+  createdAt      DateTime     @default(now())
+
+  user          User          @relation(fields: [userId], references: [id])
+  organisation  Organisation  @relation(fields: [organisationId], references: [id])
+  location      Location      @relation(fields: [locationId], references: [id])
+
+  @@unique([userId, locationId])
+  @@index([organisationId, userId])
 }
 
 enum VenueIndustry {
@@ -206,26 +261,26 @@ enum OnboardingMode {
 // Supplier Management Models
 
 model Supplier {
-  id             String               @id @default(uuid())
-  organisationId String
-  name           String
-  normalizedName String
-  abn            String?
-  email          String?
-  phone          String?
-  website        String?
-  country        String?
-  city           String?
-  sourceType     SupplierSourceType
-  status         SupplierStatus       @default(ACTIVE)
-  createdAt      DateTime             @default(now())
-  updatedAt      DateTime             @updatedAt
-  organisation   Organisation         @relation(fields: [organisationId], references: [id])
-  invoices       XeroInvoice[]
-  sourceLinks    SupplierSourceLink[]
-  products       Product[]
-  aliases        SupplierAlias[]
-  ocrInvoices    Invoice[]
+  id                 String                     @id @default(uuid())
+  organisationId     String
+  name               String
+  normalizedName     String
+  abn                String?
+  email              String?
+  phone              String?
+  website            String?
+  country            String?
+  city               String?
+  sourceType         SupplierSourceType
+  status             SupplierStatus             @default(ACTIVE)
+  createdAt          DateTime                   @default(now())
+  updatedAt          DateTime                   @updatedAt
+  organisation       Organisation               @relation(fields: [organisationId], references: [id])
+  invoices           XeroInvoice[]
+  sourceLinks        SupplierSourceLink[]
+  products           Product[]
+  aliases            SupplierAlias[]
+  ocrInvoices        Invoice[]
   canonicalInvoices  CanonicalInvoice[]
   canonicalLineItems CanonicalInvoiceLineItem[]
   // Note: lexiconEntries relation removed - ownerSupplierId is now a string (not FK) to support '__ORG__' sentinel
@@ -271,26 +326,26 @@ enum ProductStatsSource {
 }
 
 model ProductStats {
-  id              String             @id @default(uuid())
-  organisationId  String
-  locationId      String
+  id               String             @id @default(uuid())
+  organisationId   String
+  locationId       String
   // Cache key for account-code filters:
   // - 'all' for unfiltered
   // - 'cogs:<hash>' for a specific set (sorted) of account codes
   accountCodesHash String
-  source          ProductStatsSource
+  source           ProductStatsSource
   // For XERO: Product.id
   // For MANUAL: 'manual:<supplierId>:<base64(normalizedKey)>'
-  productId       String
-  productName     String
-  supplierName    String
-  spend12m        Decimal            @db.Decimal(19, 4)
-  statsAsOf       DateTime
-  createdAt       DateTime           @default(now())
-  updatedAt       DateTime           @updatedAt
+  productId        String
+  productName      String
+  supplierName     String
+  spend12m         Decimal            @db.Decimal(19, 4)
+  statsAsOf        DateTime
+  createdAt        DateTime           @default(now())
+  updatedAt        DateTime           @updatedAt
 
-  organisation    Organisation       @relation(fields: [organisationId], references: [id])
-  location        Location           @relation(fields: [locationId], references: [id])
+  organisation Organisation @relation(fields: [organisationId], references: [id])
+  location     Location     @relation(fields: [locationId], references: [id])
 
   @@unique([organisationId, locationId, accountCodesHash, source, productId])
   @@index([organisationId, locationId, accountCodesHash])
@@ -298,32 +353,32 @@ model ProductStats {
 }
 
 model XeroInvoice {
-  id             String                @id @default(uuid())
-  organisationId String
-  xeroInvoiceId  String                @unique // Xero InvoiceID
-  invoiceNumber  String?
-  reference      String?
-  type           String? // ACCPAY, etc.
-  status         String? // AUTHORISED, PAID, VOIDED
-  date           DateTime?
-  dueDate        DateTime?
-  total          Decimal?              @db.Decimal(19, 4)
-  subTotal       Decimal?              @db.Decimal(19, 4)
-  taxAmount      Decimal?              @db.Decimal(19, 4)
-  amountDue      Decimal?              @db.Decimal(19, 4)
-  amountPaid     Decimal?              @db.Decimal(19, 4)
-  currencyCode   String?
-  updatedDateUTC DateTime?
-  supplierId     String?
-  supplier       Supplier?             @relation(fields: [supplierId], references: [id])
-  organisation   Organisation          @relation(fields: [organisationId], references: [id])
-  locationId     String?
-  location       Location?             @relation(fields: [locationId], references: [id])
-  xeroTenantId   String?
-  lineItems      XeroInvoiceLineItem[]
-  createdAt      DateTime              @default(now())
-  updatedAt      DateTime              @updatedAt
-  deletedAt      DateTime?
+  id               String                @id @default(uuid())
+  organisationId   String
+  xeroInvoiceId    String                @unique // Xero InvoiceID
+  invoiceNumber    String?
+  reference        String?
+  type             String? // ACCPAY, etc.
+  status           String? // AUTHORISED, PAID, VOIDED
+  date             DateTime?
+  dueDate          DateTime?
+  total            Decimal?              @db.Decimal(19, 4)
+  subTotal         Decimal?              @db.Decimal(19, 4)
+  taxAmount        Decimal?              @db.Decimal(19, 4)
+  amountDue        Decimal?              @db.Decimal(19, 4)
+  amountPaid       Decimal?              @db.Decimal(19, 4)
+  currencyCode     String?
+  updatedDateUTC   DateTime?
+  supplierId       String?
+  supplier         Supplier?             @relation(fields: [supplierId], references: [id])
+  organisation     Organisation          @relation(fields: [organisationId], references: [id])
+  locationId       String?
+  location         Location?             @relation(fields: [locationId], references: [id])
+  xeroTenantId     String?
+  lineItems        XeroInvoiceLineItem[]
+  createdAt        DateTime              @default(now())
+  updatedAt        DateTime              @updatedAt
+  deletedAt        DateTime?
   canonicalInvoice CanonicalInvoice?
 
   @@index([organisationId])
@@ -559,31 +614,31 @@ model InvoiceOcrResult {
 }
 
 model Invoice {
-  id              String            @id @default(uuid())
-  organisationId  String
-  locationId      String
-  invoiceFileId   String?           @unique
-  supplierId      String?
-  invoiceNumber   String?
-  date            DateTime?
-  total           Decimal?          @db.Decimal(19, 4)
-  tax             Decimal?          @db.Decimal(19, 4)
-  subtotal        Decimal?          @db.Decimal(19, 4)
-  sourceType         InvoiceSourceType
-  sourceReference    String?
-  supplierMatchType  SupplierMatchType?
-  matchedAliasKey    String? // Normalized alias name that matched (from SupplierAlias.normalisedAliasName)
-  matchedAliasRaw     String? // Raw OCR supplier name (max 50 chars)
-  isVerified          Boolean           @default(false)
-  createdAt           DateTime          @default(now())
-  updatedAt           DateTime          @updatedAt
-  invoiceFile     InvoiceFile?      @relation(fields: [invoiceFileId], references: [id])
-  supplier        Supplier?         @relation(fields: [supplierId], references: [id])
-  lineItems       InvoiceLineItem[]
-  organisation    Organisation      @relation(fields: [organisationId], references: [id])
-  location        Location          @relation(fields: [locationId], references: [id])
-  deletedAt       DateTime?
-  canonicalInvoice CanonicalInvoice?
+  id                String             @id @default(uuid())
+  organisationId    String
+  locationId        String
+  invoiceFileId     String?            @unique
+  supplierId        String?
+  invoiceNumber     String?
+  date              DateTime?
+  total             Decimal?           @db.Decimal(19, 4)
+  tax               Decimal?           @db.Decimal(19, 4)
+  subtotal          Decimal?           @db.Decimal(19, 4)
+  sourceType        InvoiceSourceType
+  sourceReference   String?
+  supplierMatchType SupplierMatchType?
+  matchedAliasKey   String? // Normalized alias name that matched (from SupplierAlias.normalisedAliasName)
+  matchedAliasRaw   String? // Raw OCR supplier name (max 50 chars)
+  isVerified        Boolean            @default(false)
+  createdAt         DateTime           @default(now())
+  updatedAt         DateTime           @updatedAt
+  invoiceFile       InvoiceFile?       @relation(fields: [invoiceFileId], references: [id])
+  supplier          Supplier?          @relation(fields: [supplierId], references: [id])
+  lineItems         InvoiceLineItem[]
+  organisation      Organisation       @relation(fields: [organisationId], references: [id])
+  location          Location           @relation(fields: [locationId], references: [id])
+  deletedAt         DateTime?
+  canonicalInvoice  CanonicalInvoice?
 
   // Indexes (performance)
   @@index([organisationId, locationId, date])
@@ -591,54 +646,54 @@ model Invoice {
 }
 
 model InvoiceLineItem {
-  id          String   @id @default(uuid())
-  invoiceId   String
-  description String
-  productCode String?
-  quantity    Decimal? @db.Decimal(19, 4)
-  unitPrice   Decimal? @db.Decimal(19, 4)
-  lineTotal   Decimal? @db.Decimal(19, 4)
-  accountCode String?
-  confidenceScore Float?
-  textWarnReasons String[] @default([])
-  isIncludedInAnalytics Boolean @default(true) // Controls whether item is included in analytics/spend calculations
-  source      String   @default("OCR") // 'OCR' | 'MANUAL' - source of the line item
-  sourceKey   String?  // Stable key for matching (e.g., "ocr:3" for OCR items)
-  createdAt   DateTime @default(now())
-  updatedAt   DateTime @updatedAt
-  invoice     Invoice  @relation(fields: [invoiceId], references: [id], onDelete: Cascade)
+  id                    String   @id @default(uuid())
+  invoiceId             String
+  description           String
+  productCode           String?
+  quantity              Decimal? @db.Decimal(19, 4)
+  unitPrice             Decimal? @db.Decimal(19, 4)
+  lineTotal             Decimal? @db.Decimal(19, 4)
+  accountCode           String?
+  confidenceScore       Float?
+  textWarnReasons       String[] @default([])
+  isIncludedInAnalytics Boolean  @default(true) // Controls whether item is included in analytics/spend calculations
+  source                String   @default("OCR") // 'OCR' | 'MANUAL' - source of the line item
+  sourceKey             String? // Stable key for matching (e.g., "ocr:3" for OCR items)
+  createdAt             DateTime @default(now())
+  updatedAt             DateTime @updatedAt
+  invoice               Invoice  @relation(fields: [invoiceId], references: [id], onDelete: Cascade)
 
+  @@unique([invoiceId, sourceKey]) // Ensures stable identity for OCR items
   // Indexes (performance)
   // Postgres does NOT auto-index foreign keys; add if you query/join by invoiceId frequently.
   @@index([invoiceId])
   // Supplier insights / forecasting often filter by accountCode
   @@index([accountCode])
   @@index([isIncludedInAnalytics]) // For analytics filtering
-  @@unique([invoiceId, sourceKey]) // Ensures stable identity for OCR items
 }
 
 // Canonical header: derived from legacy invoices; used for defaults + soft-delete mirror
 model CanonicalInvoice {
-  id               String          @id @default(uuid())
-  organisationId   String
-  locationId       String
-  supplierId       String?
-  source           CanonicalSource
+  id                  String          @id @default(uuid())
+  organisationId      String
+  locationId          String
+  supplierId          String?
+  source              CanonicalSource
   // Exactly one of these should be set for Sprint A sources (enforced in code).
-  legacyInvoiceId  String?         @unique
-  legacyXeroInvoiceId String?      @unique
-  sourceInvoiceRef String
-  date             DateTime?
-  currencyCode     String?
-  deletedAt        DateTime?
-  createdAt        DateTime        @default(now())
-  updatedAt        DateTime        @updatedAt
+  legacyInvoiceId     String?         @unique
+  legacyXeroInvoiceId String?         @unique
+  sourceInvoiceRef    String
+  date                DateTime?
+  currencyCode        String?
+  deletedAt           DateTime?
+  createdAt           DateTime        @default(now())
+  updatedAt           DateTime        @updatedAt
 
   organisation Organisation @relation(fields: [organisationId], references: [id])
   location     Location     @relation(fields: [locationId], references: [id])
   supplier     Supplier?    @relation(fields: [supplierId], references: [id])
 
-  legacyInvoice     Invoice?    @relation(fields: [legacyInvoiceId], references: [id], onDelete: Cascade)
+  legacyInvoice     Invoice?     @relation(fields: [legacyInvoiceId], references: [id], onDelete: Cascade)
   legacyXeroInvoice XeroInvoice? @relation(fields: [legacyXeroInvoiceId], references: [id], onDelete: Cascade)
 
   lineItems CanonicalInvoiceLineItem[]
@@ -649,19 +704,19 @@ model CanonicalInvoice {
 }
 
 model CanonicalInvoiceLineItem {
-  id                 String           @id @default(uuid())
-  canonicalInvoiceId  String
-  organisationId      String
-  locationId          String
-  supplierId          String?
-  source              CanonicalSource
+  id                   String          @id @default(uuid())
+  canonicalInvoiceId   String
+  organisationId       String
+  locationId           String
+  supplierId           String?
+  source               CanonicalSource
   // Always set for OCR/XERO; MANUAL uses a generated UUID-based ref. (Idempotency guard)
-  sourceLineRef       String
+  sourceLineRef        String
   normalizationVersion String
 
-  rawDescription       String
+  rawDescription        String
   normalizedDescription String
-  productCode          String?
+  productCode           String?
 
   // Sprint B: preserve raw unit/quantity signals for audit/debug and improved unit extraction.
   rawQuantityText  String?
@@ -673,14 +728,14 @@ model CanonicalInvoiceLineItem {
   unitLabel    String?
   unitCategory UnitCategory
 
-  unitPrice   Decimal?      @db.Decimal(19, 4)
-  lineTotal   Decimal?      @db.Decimal(19, 4)
-  taxAmount   Decimal?      @db.Decimal(19, 4)
+  unitPrice    Decimal? @db.Decimal(19, 4)
+  lineTotal    Decimal? @db.Decimal(19, 4)
+  taxAmount    Decimal? @db.Decimal(19, 4)
   currencyCode String?
 
   adjustmentStatus AdjustmentStatus @default(NONE)
   qualityStatus    QualityStatus    @default(OK)
-  warnReasons     String[]         @default([])
+  warnReasons      String[]         @default([])
 
   confidenceScore Float?
   createdAt       DateTime @default(now())
@@ -798,38 +853,38 @@ enum LocationForwardingStatus {
 }
 
 model EmailForwardingVerification {
-  id              String                            @id @default(uuid())
-  organisationId  String
-  locationId      String
-  recipientAlias  String                            // The full inbound address (invoices+{locationId}@...)
-  provider        String                            @default("GMAIL") // GMAIL, OUTLOOK, etc.
-  status          EmailForwardingVerificationStatus @default(PENDING)
-  verificationLink String?                          // The extracted vf- link
-  sender          String?                           // For debugging
-  subject         String?                           // For debugging
-  emailMessageId  String?                           // Mailgun message ID for reference
-  expiresAt       DateTime                          // 72 hours from creation
-  createdAt       DateTime                          @default(now())
-  updatedAt       DateTime                          @updatedAt
-  
-  organisation    Organisation                      @relation(fields: [organisationId], references: [id])
-  location        Location                          @relation(fields: [locationId], references: [id])
-  
+  id               String                            @id @default(uuid())
+  organisationId   String
+  locationId       String
+  recipientAlias   String // The full inbound address (invoices+{locationId}@...)
+  provider         String                            @default("GMAIL") // GMAIL, OUTLOOK, etc.
+  status           EmailForwardingVerificationStatus @default(PENDING)
+  verificationLink String? // The extracted vf- link
+  sender           String? // For debugging
+  subject          String? // For debugging
+  emailMessageId   String? // Mailgun message ID for reference
+  expiresAt        DateTime // 72 hours from creation
+  createdAt        DateTime                          @default(now())
+  updatedAt        DateTime                          @updatedAt
+
+  organisation Organisation @relation(fields: [organisationId], references: [id])
+  location     Location     @relation(fields: [locationId], references: [id])
+
   @@index([locationId, status])
   @@index([organisationId])
   @@index([expiresAt]) // For cleanup jobs
 }
 
 model OrganisationLexiconEntry {
-  id            String    @id @default(uuid())
+  id             String       @id @default(uuid())
   organisationId String
-  phrase        String    // Display text (normalized for display)
-  phraseKey     String    // Aggressive normalized key for matching (NFKC, NBSP, whitespace collapse)
-  lastSeenAt    DateTime
-  timesSeen     Int       @default(1)  // Track how many times phrase was matched
-  createdAt     DateTime  @default(now())
-  updatedAt     DateTime  @updatedAt
-  organisation  Organisation @relation(fields: [organisationId], references: [id])
+  phrase         String // Display text (normalized for display)
+  phraseKey      String // Aggressive normalized key for matching (NFKC, NBSP, whitespace collapse)
+  lastSeenAt     DateTime
+  timesSeen      Int          @default(1) // Track how many times phrase was matched
+  createdAt      DateTime     @default(now())
+  updatedAt      DateTime     @updatedAt
+  organisation   Organisation @relation(fields: [organisationId], references: [id])
 
   @@unique([organisationId, phraseKey])
   @@index([organisationId])
@@ -840,21 +895,21 @@ model OrganisationLexiconEntry {
 
 model Feedback {
   id            String   @id @default(uuid())
-  referenceType String   // 'Invoices', 'Auto-approval', 'Suppliers', 'Analytics / Insights', 'Integrations', 'Performance / Bugs', 'Feature request', 'Other'
+  referenceType String // 'Invoices', 'Auto-approval', 'Suppliers', 'Analytics / Insights', 'Integrations', 'Performance / Bugs', 'Feature request', 'Other'
   message       String
-  userId        String?  // Client-provided user ID
-  orgId         String?  // Organisation ID
-  locationId   String?  // Location ID
-  pageUrl      String?  // Full URL where feedback was submitted
-  userAgent     String?  // Browser user agent
-  screenWidth   Int?     // Screen width in pixels
-  screenHeight  Int?     // Screen height in pixels
-  environment   String?  // Environment (prod/staging/local)
+  userId        String? // Client-provided user ID
+  orgId         String? // Organisation ID
+  locationId    String? // Location ID
+  pageUrl       String? // Full URL where feedback was submitted
+  userAgent     String? // Browser user agent
+  screenWidth   Int? // Screen width in pixels
+  screenHeight  Int? // Screen height in pixels
+  environment   String? // Environment (prod/staging/local)
   status        String   @default("new") // 'new', 'read', 'archived', etc.
-  emailStatus   String?  // 'sent' | 'failed' | null
-  emailError    String?  // Error message if email send failed
-  createdAt     DateTime  @default(now())
-  updatedAt     DateTime  @updatedAt
+  emailStatus   String? // 'sent' | 'failed' | null
+  emailError    String? // Error message if email send failed
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
 
   @@index([createdAt])
   @@index([status])
@@ -862,19 +917,19 @@ model Feedback {
 }
 
 model JobHeartbeat {
-  id                      String   @id @default(uuid())
+  id                      String    @id @default(uuid())
   env                     String
   jobName                 String
   expectedIntervalSeconds Int
   staleAfterSeconds       Int
-  status                  String   @default("RUNNING")
+  status                  String    @default("RUNNING")
   lastRunAt               DateTime?
   lastSuccessAt           DateTime?
   lastError               String?
   durationMs              Int?
   recentRuns              Json?
-  createdAt               DateTime @default(now())
-  updatedAt               DateTime @updatedAt
+  createdAt               DateTime  @default(now())
+  updatedAt               DateTime  @updatedAt
 
   @@unique([env, jobName])
 }

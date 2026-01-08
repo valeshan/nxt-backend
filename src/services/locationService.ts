@@ -56,7 +56,20 @@ export const locationService = {
       throw { statusCode: 403, message: 'Not a member' };
     }
 
-    const locations = await locationRepository.listForOrganisation(organisationId);
+    // Location-level access (soft enforcement):
+    // If user has any scoped rows, restrict to those; otherwise return all (legacy).
+    const accessRows = await prisma.userLocationAccess.findMany({
+      where: { userId, organisationId },
+      select: { locationId: true },
+    });
+
+    const scopedLocationIds = accessRows.map((a) => a.locationId);
+    const locations = scopedLocationIds.length > 0
+      ? await locationRepository.listForOrganisation(organisationId).then((all) =>
+          all.filter((loc) => scopedLocationIds.includes(loc.id))
+        )
+      : await locationRepository.listForOrganisation(organisationId);
+
     const locationIds = locations.map(l => l.id);
     const integrationsMap = await this.getLocationIntegrations(locationIds);
 
@@ -136,6 +149,75 @@ export const locationService = {
     }
 
     await locationRepository.delete(locationId);
-  }
+  },
+
+  /**
+   * Fetch all locations across all organizations the user has access to.
+   * Returns locations grouped by organization ID.
+   */
+  async listAllForUser(userId: string): Promise<Record<string, Array<{ id: string; name: string; organisationId: string; integrations: Array<{ type: string; name: string; status: string }> }>>> {
+    // Get all user's memberships
+    const memberships = await prisma.userOrganisation.findMany({
+      where: { userId },
+      select: { organisationId: true },
+    });
+
+    if (memberships.length === 0) {
+      return {};
+    }
+
+    const orgIds = memberships.map((m) => m.organisationId);
+
+    // Check for scoped location access
+    const accessRows = await prisma.userLocationAccess.findMany({
+      where: { userId, organisationId: { in: orgIds } },
+      select: { locationId: true, organisationId: true },
+    });
+
+    // Group scoped locations by org
+    const scopedByOrg: Record<string, string[]> = {};
+    accessRows.forEach((a) => {
+      if (!scopedByOrg[a.organisationId]) {
+        scopedByOrg[a.organisationId] = [];
+      }
+      scopedByOrg[a.organisationId].push(a.locationId);
+    });
+
+    // Fetch all locations for the user's orgs
+    const allLocations = await prisma.location.findMany({
+      where: { organisationId: { in: orgIds } },
+      select: { id: true, name: true, organisationId: true },
+      orderBy: { name: 'asc' },
+    });
+
+    // Filter by scoped access (soft enforcement)
+    const filteredLocations = allLocations.filter((loc) => {
+      const scopedIds = scopedByOrg[loc.organisationId];
+      // If user has scoped access for this org, only include those locations
+      if (scopedIds && scopedIds.length > 0) {
+        return scopedIds.includes(loc.id);
+      }
+      // Otherwise, include all locations for that org (legacy/full access)
+      return true;
+    });
+
+    // Get integrations for all locations
+    const locationIds = filteredLocations.map((l) => l.id);
+    const integrationsMap = await this.getLocationIntegrations(locationIds);
+
+    // Group by organisation
+    const grouped: Record<string, Array<{ id: string; name: string; organisationId: string; integrations: Array<{ type: string; name: string; status: string }> }>> = {};
+    filteredLocations.forEach((loc) => {
+      if (!grouped[loc.organisationId]) {
+        grouped[loc.organisationId] = [];
+      }
+      grouped[loc.organisationId].push({
+        ...loc,
+        integrations: integrationsMap[loc.id] || [],
+      });
+    });
+
+    return grouped;
+  },
 };
 

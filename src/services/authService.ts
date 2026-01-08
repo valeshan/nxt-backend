@@ -69,6 +69,16 @@ export const authService = {
       role: m.role,
     }));
 
+    // Get all locations grouped by organisation for the location switcher
+    const locationsByOrg = await locationService.listAllForUser(user.id);
+
+    // Transform to include org name for frontend convenience
+    const allLocationsGrouped = companies.map(org => ({
+      organisationId: org.id,
+      organisationName: org.name,
+      locations: locationsByOrg[org.id] || [],
+    }));
+
     const result = {
       user_id: user.id,
       name: user.name,
@@ -76,6 +86,7 @@ export const authService = {
       lastName: user.lastName,
       profile_picture: user.profilePicture,
       companies,
+      allLocationsGrouped,
       isAuthenticated: true,
       // Reflect current auth context so BE2 frontend can hydrate from backend,
       // without relying on legacy localStorage state.
@@ -467,6 +478,18 @@ export const authService = {
     const membership = await userOrganisationRepository.findMembership(userId, location.organisationId);
     if (!membership) {
       throw { statusCode: 403, message: 'Not a member of the organisation owning this location' };
+    }
+
+    // If user has scoped location access rows, enforce them; otherwise allow (legacy full access).
+    const accessRows = await prisma.userLocationAccess.findMany({
+      where: { userId, organisationId: location.organisationId },
+      select: { locationId: true },
+    });
+    if (accessRows.length > 0) {
+      const allowed = accessRows.some((a) => a.locationId === locationId);
+      if (!allowed) {
+        throw { statusCode: 403, message: 'No access to this location' };
+      }
     }
 
     const settings = await userSettingsRepository.getForUser(userId);

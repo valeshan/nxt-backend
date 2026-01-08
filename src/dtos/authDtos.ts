@@ -64,6 +64,11 @@ export const CreateOrganisationRequest = z.object({
   name: z.string().min(1),
 });
 
+export const CreateOrganisationWithLocationRequest = z.object({
+  name: z.string().min(1),
+  locationName: z.string().min(1),
+});
+
 export const CreateLocationRequest = z.object({
   name: z.string().min(1),
 });

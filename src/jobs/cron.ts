@@ -6,6 +6,7 @@ import { config } from '../config/env';
 import { acquireLock, releaseLock } from '../infrastructure/redis';
 import { withJobHeartbeat } from '../utils/withJobHeartbeat';
 import os from 'os';
+import prisma from '../infrastructure/prismaClient';
 
 export function initCronJobs() {
   console.log('[Cron] Initializing cron jobs...');
@@ -158,6 +159,32 @@ export function initCronJobs() {
     );
     console.log('[Cron] ProductStats refresh scheduled (daily at 2:30 AM).');
   }
+
+  // Invite cleanup: remove long-expired pending invites (keep revoked/accepted for audit)
+  schedules.push(
+    cron.schedule('0 3 * * *', async () => {
+      await withRedisLock('cleanupExpiredInvites', 5 * 60 * 1000, async () => {
+        await withJobHeartbeat(
+          {
+            jobName: 'cleanupExpiredInvites',
+            expectedIntervalSeconds: 86_400,
+            staleAfterSeconds: 90_000,
+          },
+          async () => {
+            const cutoff = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000);
+            await prisma.organisationInvite.deleteMany({
+              where: {
+                expiresAt: { lt: cutoff },
+                acceptedAt: null,
+                revokedAt: null,
+              },
+            });
+          }
+        );
+      });
+    })
+  );
+  console.log('[Cron] Invite cleanup scheduled (daily at 3 AM).');
 
   console.log('[Cron] Cleanup job scheduled (hourly).');
 

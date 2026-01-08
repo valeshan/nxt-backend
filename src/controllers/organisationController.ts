@@ -1,6 +1,6 @@
 import { FastifyRequest, FastifyReply } from 'fastify';
 import { organisationService } from '../services/organisationService';
-import { CreateOrganisationRequest } from '../dtos/authDtos';
+import { CreateOrganisationRequest, CreateOrganisationWithLocationRequest } from '../dtos/authDtos';
 import { z } from 'zod';
 import jwt from 'jsonwebtoken';
 import { config } from '../config/env';
@@ -15,6 +15,16 @@ export const organisationController = {
     const { name } = request.body;
     const userId = request.authContext.userId;
     const result = await organisationService.createOrganisation(userId, name);
+    return reply.code(201).send(result);
+  },
+
+  async createWithLocation(
+    request: FastifyRequest<{ Body: z.infer<typeof CreateOrganisationWithLocationRequest> }>,
+    reply: FastifyReply
+  ) {
+    const { name, locationName } = request.body;
+    const userId = request.authContext.userId;
+    const result = await organisationService.createOrganisationWithFirstLocation(userId, name, locationName);
     return reply.code(201).send(result);
   },
 

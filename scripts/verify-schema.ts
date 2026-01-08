@@ -34,6 +34,32 @@ const CRITICAL_CHECKS: ColumnCheck[] = [
     expectedColumns: ['id', 'referenceType', 'message', 'createdAt'],
     description: 'Feedback table core columns',
   },
+  {
+    tableName: 'Organisation',
+    expectedColumns: ['seatLimit'],
+    description: 'Organisation seat limit column',
+  },
+  {
+    tableName: 'OrganisationInvite',
+    expectedColumns: [
+      'id',
+      'organisationId',
+      'email',
+      'tokenHash',
+      'locationIds',
+      'expiresAt',
+      'acceptedAt',
+      'revokedAt',
+      'revokedReason',
+      'replacedByInviteId',
+    ],
+    description: 'Organisation invite system columns',
+  },
+  {
+    tableName: 'UserLocationAccess',
+    expectedColumns: ['id', 'userId', 'organisationId', 'locationId', 'createdAt'],
+    description: 'User-location scoped access control',
+  },
 ];
 
 async function verifySchema() {

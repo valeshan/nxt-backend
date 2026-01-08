@@ -1,6 +1,6 @@
 import { FastifyInstance } from 'fastify';
 import { organisationController } from '../controllers/organisationController';
-import { CreateOrganisationRequest } from '../dtos/authDtos';
+import { CreateOrganisationRequest, CreateOrganisationWithLocationRequest } from '../dtos/authDtos';
 import { ZodTypeProvider } from 'fastify-type-provider-zod';
 import authContextPlugin from '../plugins/authContext';
 import { z } from 'zod';
@@ -30,6 +30,12 @@ export default async function organisationRoutes(fastify: FastifyInstance) {
         body: CreateOrganisationRequest,
       },
     }, organisationController.create);
+
+    typedApp.post('/with-location', {
+      schema: {
+        body: CreateOrganisationWithLocationRequest,
+      },
+    }, organisationController.createWithLocation);
 
     typedApp.get('/', organisationController.list);
   });

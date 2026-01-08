@@ -3,12 +3,31 @@ import { userOrganisationRepository } from '../repositories/userOrganisationRepo
 import { locationRepository } from '../repositories/locationRepository';
 import { onboardingSessionRepository } from '../repositories/onboardingSessionRepository';
 import { OrganisationRole, OnboardingMode } from '@prisma/client';
+import prisma from '../infrastructure/prismaClient';
 
 export const organisationService = {
   async createOrganisation(userId: string, name: string) {
     const org = await organisationRepository.createOrganisation({ name });
     await userOrganisationRepository.addUserToOrganisation(userId, org.id, OrganisationRole.owner);
     return org;
+  },
+
+  async createOrganisationWithFirstLocation(userId: string, name: string, locationName: string) {
+    return prisma.$transaction(async (tx) => {
+      const org = await tx.organisation.create({ data: { name } });
+      await tx.userOrganisation.create({
+        data: { userId, organisationId: org.id, role: OrganisationRole.owner },
+      });
+      const location = await tx.location.create({
+        data: { name: locationName, organisationId: org.id },
+      });
+      return {
+        organisationId: org.id,
+        organisationName: org.name,
+        locationId: location.id,
+        locationName: location.name,
+      };
+    });
   },
 
   async listForUser(userId: string) {

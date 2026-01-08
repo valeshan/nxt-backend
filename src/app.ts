@@ -25,6 +25,7 @@ import xeroWebhookRoutes from './controllers/xeroWebhookController'; // Assuming
 import webhookRoutes from './routes/webhookRoutes';
 import settingsRoutes from './routes/settingsRoutes';
 import feedbackRoutes from './routes/feedbackRoutes';
+import inviteRoutes from './routes/inviteRoutes';
 import { config } from './config/env';
 import { getRedisClient, pingWithTimeout } from './infrastructure/redis';
 import { runWithRequestContext, getRequestContext } from './infrastructure/requestContext';
@@ -187,6 +188,7 @@ export function buildApp(): FastifyInstance {
   // Registering at root:
   app.register(locationRoutes); 
   app.register(emailForwardingRoutes);
+  app.register(inviteRoutes);
   
   app.register(xeroRoutes, { prefix: '/xero' });
   app.register(supplierRoutes, { prefix: '/suppliers' });
