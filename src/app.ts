@@ -215,8 +215,11 @@ export function buildApp(): FastifyInstance {
   app.register(xeroWebhookRoutes, { prefix: '/webhooks/xero' });
 
   const isHealthTokenValid = (request: any): boolean => {
+    // Token is only intended to protect internal diagnostics endpoints (e.g. /heartbeats).
+    // Do NOT require it for platform liveness/readiness probes.
     if (!config.HEALTHCHECK_TOKEN) return true;
-    const token = request.headers['x-health-check-token'];
+    const raw = request?.headers?.['x-health-check-token'];
+    const token = Array.isArray(raw) ? raw[0] : raw;
     return token === config.HEALTHCHECK_TOKEN;
   };
   
@@ -269,9 +272,6 @@ export function buildApp(): FastifyInstance {
 
   // Readiness Check: DB + Redis, with strict timeouts and 503 on degraded.
   app.get('/ready', async (request, reply) => {
-    if (!isHealthTokenValid(request)) {
-      return reply.status(401).send({ error: { code: 'UNAUTHORIZED', message: 'Invalid health-check token' } });
-    }
     const overallTimeoutMs = 2000;
     const perDepTimeoutMs = 1200;
     const retryAfterSeconds = 5;

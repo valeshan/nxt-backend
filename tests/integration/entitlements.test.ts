@@ -25,8 +25,8 @@ describe('Entitlements Integration', () => {
       url: '/auth/register',
       payload: {
         email: 'entitlements-test@example.com',
-        password: 'password123',
-        confirmPassword: 'password123',
+        password: 'Password!23',
+        confirmPassword: 'Password!23',
         firstName: 'Test',
         lastName: 'User',
         acceptedTerms: true,
@@ -39,7 +39,7 @@ describe('Entitlements Integration', () => {
     const loginRes = await app.inject({
       method: 'POST',
       url: '/auth/login',
-      payload: { email: 'entitlements-test@example.com', password: 'password123' }
+      payload: { email: 'entitlements-test@example.com', password: 'Password!23' }
     });
     const loginToken = loginRes.json().access_token;
 

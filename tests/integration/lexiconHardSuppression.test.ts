@@ -38,8 +38,8 @@ describe('Lexicon Hard Suppression E2E Tests', () => {
       url: '/auth/register',
       payload: {
         email: 'lexicon-test@example.com',
-        password: 'password123',
-        confirmPassword: 'password123',
+        password: 'Password!23',
+        confirmPassword: 'Password!23',
         firstName: 'Test',
         lastName: 'User',
         acceptedTerms: true,
@@ -49,7 +49,7 @@ describe('Lexicon Hard Suppression E2E Tests', () => {
     const loginRes = await app.inject({
       method: 'POST',
       url: '/auth/login',
-      payload: { email: 'lexicon-test@example.com', password: 'password123' }
+      payload: { email: 'lexicon-test@example.com', password: 'Password!23' }
     });
     const loginToken = loginRes.json().access_token;
 

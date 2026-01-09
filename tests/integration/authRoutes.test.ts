@@ -41,7 +41,7 @@ describe('Auth Routes Integration', () => {
     return res.json();
   }
 
-  async function registerAndLogin(email: string, password = 'password123') {
+  async function registerAndLogin(email: string, password = 'Password!23') {
     const registerRes = await app.inject({
       method: 'POST',
       url: '/auth/register',
@@ -78,8 +78,8 @@ describe('Auth Routes Integration', () => {
       url: '/auth/register',
       payload: {
         email: 'test@example.com',
-        password: 'password123',
-        confirmPassword: 'password123',
+        password: 'Password!23',
+        confirmPassword: 'Password!23',
         firstName: 'Test',
         lastName: 'User',
         acceptedTerms: true,
@@ -94,7 +94,7 @@ describe('Auth Routes Integration', () => {
       url: '/auth/login',
       payload: {
         email: 'test@example.com',
-        password: 'password123'
+        password: 'Password!23'
       }
     });
     expect(loginRes.statusCode).toBe(200);
@@ -179,13 +179,13 @@ describe('Auth Routes Integration', () => {
   });
 
   it('password change invalidates refresh token', async () => {
-    const { accessToken, refreshToken } = await registerAndLogin('pwchange@test.com', 'oldpassword123');
+    const { accessToken, refreshToken } = await registerAndLogin('pwchange@test.com', 'Oldpass!23');
 
     const changeRes = await app.inject({
       method: 'POST',
       url: '/auth/change-password',
       headers: { Authorization: `Bearer ${accessToken}` },
-      payload: { oldPassword: 'oldpassword123', newPassword: 'newpassword123', confirmPassword: 'newpassword123' },
+      payload: { oldPassword: 'Oldpass!23', newPassword: 'Newpass!23', confirmPassword: 'Newpass!23' },
     });
     expect(changeRes.statusCode).toBe(200);
 

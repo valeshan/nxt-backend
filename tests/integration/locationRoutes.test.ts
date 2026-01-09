@@ -27,8 +27,8 @@ describe('Location Routes Integration', () => {
       url: '/auth/register',
       payload: {
         email: 'loc-test@example.com',
-        password: 'password123',
-        confirmPassword: 'password123',
+        password: 'Password!23',
+        confirmPassword: 'Password!23',
         firstName: 'Test',
         lastName: 'User',
         acceptedTerms: true,
@@ -41,7 +41,7 @@ describe('Location Routes Integration', () => {
     const loginRes = await app.inject({
       method: 'POST',
       url: '/auth/login',
-      payload: { email: 'loc-test@example.com', password: 'password123' }
+      payload: { email: 'loc-test@example.com', password: 'Password!23' }
     });
     const loginToken = loginRes.json().access_token;
 
