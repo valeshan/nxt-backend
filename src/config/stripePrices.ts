@@ -14,13 +14,13 @@ export interface StripePriceMapping {
  * Used by webhook handlers to determine which plan a subscription corresponds to.
  */
 export const STRIPE_PRICE_MAP: Record<string, StripePriceMapping> = {
-  // Pro Plan (prod_TknhRLoS2CPN4M)
-  'price_1SnHnYBgfRwYQPYyRCIre9R0': { planKey: 'pro', interval: 'monthly' },
-  'price_1SnHnYBgfRwYQPYyzwq2J8MI': { planKey: 'pro', interval: 'annual' },
+  // Pro Plan (LIVE)
+  'price_1SnYvuBgqAKq7gmRcJ851wAS': { planKey: 'pro', interval: 'monthly' },
+  'price_1SnYvuBgqAKq7gmREOfVZJf6': { planKey: 'pro', interval: 'annual' },
   
-  // Enterprise Plan (prod_TknhRLoS2CPN4M)
-  'price_1SnI6YBgfRwYQPYydJqTGWL1': { planKey: 'enterprise', interval: 'monthly' },
-  'price_1SnI6YBgfRwYQPYy0vLKuARb': { planKey: 'enterprise', interval: 'annual' },
+  // Enterprise Plan (LIVE)
+  'price_1SnYvqBgqAKq7gmR4Sklfdx0': { planKey: 'enterprise', interval: 'monthly' },
+  'price_1SnYvqBgqAKq7gmR0xQCxC0X': { planKey: 'enterprise', interval: 'annual' },
 };
 
 /**
@@ -29,10 +29,10 @@ export const STRIPE_PRICE_MAP: Record<string, StripePriceMapping> = {
  * Used by checkout endpoint to get the correct Stripe price for a given plan selection.
  */
 export const PLAN_TO_PRICE: Record<string, string> = {
-  'pro:monthly': 'price_1SnHnYBgfRwYQPYyRCIre9R0',
-  'pro:annual': 'price_1SnHnYBgfRwYQPYyzwq2J8MI',
-  'enterprise:monthly': 'price_1SnI6YBgfRwYQPYydJqTGWL1',
-  'enterprise:annual': 'price_1SnI6YBgfRwYQPYy0vLKuARb',
+  'pro:monthly': 'price_1SnYvuBgqAKq7gmRcJ851wAS',
+  'pro:annual': 'price_1SnYvuBgqAKq7gmREOfVZJf6',
+  'enterprise:monthly': 'price_1SnYvqBgqAKq7gmR4Sklfdx0',
+  'enterprise:annual': 'price_1SnYvqBgqAKq7gmR0xQCxC0X',
 };
 
 /**

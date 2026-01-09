@@ -23,16 +23,16 @@ export const INTRO_OFFER_CODE_BY_PLAN: Partial<Record<PlanKey, string>> = {
 export const INTRO_OFFER_COUPON_ID_BY_PLAN_AND_INTERVAL: Partial<
   Record<PlanKey, Partial<Record<BillingInterval, string>>>
 > = {
-  // Created in Stripe (test mode) via API:
+  // Live-mode coupons (monthly only):
   // - Pro monthly: 100% off repeating 3 months
   // - Pro annual: trial semantics (no coupon)
   pro: {
-    monthly: 'N40IGidy',
+    monthly: '3cGcyPif',
   },
   // - Enterprise monthly: 100% off repeating 3 months
   // - Enterprise annual: trial semantics (no coupon)
   enterprise: {
-    monthly: '3vWjT2lG',
+    monthly: 'buclDIGA',
   },
 };
 
