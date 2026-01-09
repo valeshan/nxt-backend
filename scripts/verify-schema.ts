@@ -36,8 +36,35 @@ const CRITICAL_CHECKS: ColumnCheck[] = [
   },
   {
     tableName: 'Organisation',
-    expectedColumns: ['seatLimit'],
-    description: 'Organisation seat limit column',
+    expectedColumns: [
+      'seatLimit',
+      'planKey',
+      'billingState',
+      'trialEndsAt',
+      'currentPeriodEndsAt',
+      'graceEndsAt',
+      'entitlementOverrides',
+      // Stripe billing fields
+      'stripeCustomerId',
+      'stripeSubscriptionId',
+      'stripePriceId',
+      'stripeSubscriptionStatus',
+      'cancelAtPeriodEnd',
+      'hasUsedIntroOffer',
+    ],
+    description: 'Organisation entitlements and Stripe billing columns',
+  },
+  {
+    tableName: 'BillingWebhookEvent',
+    expectedColumns: [
+      'id',
+      'eventType',
+      'organisationId',
+      'processedAt',
+      'payload',
+      'createdAt',
+    ],
+    description: 'Billing webhook idempotency table',
   },
   {
     tableName: 'OrganisationInvite',

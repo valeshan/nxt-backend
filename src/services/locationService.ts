@@ -1,6 +1,7 @@
 import { locationRepository } from '../repositories/locationRepository';
 import { userOrganisationRepository } from '../repositories/userOrganisationRepository';
 import prisma from '../infrastructure/prismaClient';
+import { resolveOrganisationEntitlements } from './entitlements/resolveOrganisationEntitlements';
 
 export const locationService = {
   async createLocation(userId: string, organisationId: string, name: string) {
@@ -8,6 +9,19 @@ export const locationService = {
     const membership = await userOrganisationRepository.findMembership(userId, organisationId);
     if (!membership || (membership.role !== 'owner' && membership.role !== 'admin')) {
       throw { statusCode: 403, message: 'Insufficient permissions' };
+    }
+
+    // Enforce plan/location limits
+    const entitlements = await resolveOrganisationEntitlements(organisationId);
+    if (entitlements.caps.locationLimit !== null) {
+      const currentCount = await prisma.location.count({ where: { organisationId } });
+      if (currentCount >= entitlements.caps.locationLimit) {
+        throw {
+          statusCode: 400,
+          code: 'LOCATION_LIMIT_REACHED',
+          message: `Location limit reached (${currentCount}/${entitlements.caps.locationLimit}). Upgrade your plan to add more locations.`,
+        };
+      }
     }
 
     const location = await locationRepository.createLocation({
@@ -90,6 +104,18 @@ export const locationService = {
       throw { statusCode: 403, message: 'Insufficient permissions' };
     }
 
+    // Enforce plan restrictions: Free plan cannot enable auto-approve
+    if (data.autoApproveCleanInvoices === true) {
+      const entitlements = await resolveOrganisationEntitlements(location.organisationId);
+      if (entitlements.planKey === 'free') {
+        throw {
+          statusCode: 403,
+          code: 'FEATURE_DISABLED',
+          message: 'Auto-review is not available on the Free plan. Upgrade to Pro to enable it.',
+        };
+      }
+    }
+
     const updateData: any = {};
     if (data.name !== undefined) updateData.name = data.name;
     if (data.industry !== undefined) updateData.industry = data.industry;
@@ -111,6 +137,18 @@ export const locationService = {
     const membership = await userOrganisationRepository.findMembership(userId, location.organisationId);
     if (!membership || (membership.role !== 'owner' && membership.role !== 'admin')) {
       throw { statusCode: 403, message: 'Insufficient permissions' };
+    }
+
+    // Enforce plan restrictions: Free plan cannot enable auto-approve
+    if (enable === true) {
+      const entitlements = await resolveOrganisationEntitlements(location.organisationId);
+      if (entitlements.planKey === 'free') {
+        throw {
+          statusCode: 403,
+          code: 'FEATURE_DISABLED',
+          message: 'Auto-review is not available on the Free plan. Upgrade to Pro to enable it.',
+        };
+      }
     }
 
     const updateData: any = {

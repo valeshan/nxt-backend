@@ -26,6 +26,7 @@ import webhookRoutes from './routes/webhookRoutes';
 import settingsRoutes from './routes/settingsRoutes';
 import feedbackRoutes from './routes/feedbackRoutes';
 import inviteRoutes from './routes/inviteRoutes';
+import billingRoutes from './routes/billingRoutes';
 import { config } from './config/env';
 import { getRedisClient, pingWithTimeout } from './infrastructure/redis';
 import { runWithRequestContext, getRequestContext } from './infrastructure/requestContext';
@@ -197,6 +198,7 @@ export function buildApp(): FastifyInstance {
   app.register(diagnosticsRoutes, { prefix: '/diagnostics' });
   app.register(settingsRoutes, { prefix: '/settings' });
   app.register(feedbackRoutes, { prefix: '/feedback' });
+  app.register(billingRoutes, { prefix: '/billing' });
   // Admin routes are safe-by-default:
   // - disabled unless ENABLE_ADMIN_ENDPOINTS=true
   // - require x-internal-api-key

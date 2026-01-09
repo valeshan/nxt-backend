@@ -56,3 +56,4 @@ If you ever need to call the backend directly from the browser (not recommended)
 CORS is configured in `src/app.ts` lines 104-125.
 
 
+

@@ -5,6 +5,8 @@ import prisma from '../infrastructure/prismaClient';
 import { config } from '../config/env';
 import { buildInviteEmail } from './emailTemplates/inviteTemplates';
 import { GmailSmtpProvider } from './emailProviders/gmailSmtpProvider';
+import { resolveOrganisationEntitlements } from './entitlements/resolveOrganisationEntitlements';
+import { getSeatUsage } from './entitlements/seatAccounting';
 
 // Keep this aligned with the email copy ("Link expires in 48 hours.")
 const INVITE_TTL_HOURS = 48;
@@ -28,50 +30,6 @@ const canInviteRole = (inviterRole: OrganisationRole, targetRole: OrganisationRo
   if (targetRole === 'owner') return false;
   return ROLE_RANK[inviterRole] >= ROLE_RANK[targetRole];
 };
-
-const countAcceptedMembers = async (organisationId: string) => {
-  return prisma.userOrganisation.count({
-    where: { organisationId },
-  });
-};
-
-const countActivePendingInvites = async (organisationId: string) => {
-  return prisma.organisationInvite.count({
-    where: {
-      organisationId,
-      acceptedAt: null,
-      revokedAt: null,
-      expiresAt: { gt: new Date() },
-    },
-  });
-};
-
-const checkSeatLimit = async (organisationId: string) => {
-  const org = await prisma.organisation.findUnique({
-    where: { id: organisationId },
-    select: { seatLimit: true },
-  });
-  const current = await countAcceptedMembers(organisationId);
-  const limit = org?.seatLimit ?? 5;
-  return { ok: current < limit, current, limit };
-};
-
-// Seat reservation check for creating invites:
-// accepted members + active pending invites must be < seatLimit.
-const checkSeatAvailabilityForInvite = async (organisationId: string) => {
-  const org = await prisma.organisation.findUnique({
-    where: { id: organisationId },
-    select: { seatLimit: true },
-  });
-  const limit = org?.seatLimit ?? 5;
-  const [accepted, pending] = await Promise.all([
-    countAcceptedMembers(organisationId),
-    countActivePendingInvites(organisationId),
-  ]);
-  const used = accepted + pending;
-  return { ok: used < limit, accepted, pending, used, limit };
-};
-
 const getDisplayName = (user: { firstName?: string | null; lastName?: string | null; name?: string | null; email: string }) => {
   const full = [user.firstName, user.lastName].filter(Boolean).join(' ').trim();
   return full || user.name || user.email;
@@ -114,14 +72,30 @@ export const inviteService = {
       throw { statusCode: 403, message: 'Insufficient role to invite this role' };
     }
 
+    // Resolve entitlements and enforce plan flag
+    const entitlements = await resolveOrganisationEntitlements(organisationId);
+
+    if (!entitlements.flags.canInviteUsers) {
+      throw {
+        statusCode: 403,
+        code: 'INVITES_DISABLED',
+        message: 'Invites are not available on this plan',
+      };
+    }
+
     // Seat reservation check: members + pending invites
-    const seat = await checkSeatAvailabilityForInvite(organisationId);
-    if (!seat.ok) {
+    const seatUsage = await getSeatUsage(organisationId);
+    if (seatUsage.seatReservedCount >= entitlements.caps.seatLimit) {
       throw {
         statusCode: 400,
         code: 'SEAT_LIMIT_REACHED',
-        message: `Seat limit reached (${seat.used}/${seat.limit}). Revoke a pending invite or remove a member to free a seat.`,
-        seat,
+        message: `Seat limit reached (${seatUsage.seatReservedCount}/${entitlements.caps.seatLimit}). Revoke a pending invite or remove a member to free a seat.`,
+        seat: {
+          used: seatUsage.seatReservedCount,
+          accepted: seatUsage.seatCount,
+          pending: seatUsage.pendingInvites,
+          limit: entitlements.caps.seatLimit,
+        },
       };
     }
 
@@ -143,7 +117,8 @@ export const inviteService = {
     }
 
     const { raw, hash } = generateToken();
-    const expiresAt = new Date(Date.now() + INVITE_TTL_HOURS * 60 * 60 * 1000);
+    const ttlHours = entitlements.caps.inviteExpiryHours ?? INVITE_TTL_HOURS;
+    const expiresAt = new Date(Date.now() + ttlHours * 60 * 60 * 1000);
 
     const invite = await inviteRepository.createInvite({
       organisationId,
@@ -218,9 +193,9 @@ export const inviteService = {
       });
     });
 
-    const seatCount = await countAcceptedMembers(organisationId);
-    const org = await prisma.organisation.findUnique({ where: { id: organisationId }, select: { seatLimit: true } });
-    return { seatCount, seatLimit: org?.seatLimit ?? 5 };
+    const entitlements = await resolveOrganisationEntitlements(organisationId);
+    const seatUsage = await getSeatUsage(organisationId);
+    return { seatCount: seatUsage.seatCount, seatLimit: entitlements.caps.seatLimit };
   },
 
   async updateMemberLocations(params: { organisationId: string; actingUserId: string; targetUserId: string; locationIds: string[] }) {
@@ -396,16 +371,9 @@ export const inviteService = {
 
       const orgId = invite.organisationId;
 
-      // Seat check before claiming
-      const seat = await checkSeatLimit(orgId);
-      if (!seat.ok) {
-        throw {
-          statusCode: 400,
-          code: 'SEAT_LIMIT_REACHED',
-          message: 'This workspace is at capacity. Ask an admin to free a seat, or try again later.',
-          seat,
-        };
-      }
+      // Resolve entitlements inside tx; treat seatLimit as immutable for this call
+      const entitlementsForOrg = await resolveOrganisationEntitlements(orgId, { client: tx });
+      const seatLimit = entitlementsForOrg.caps.seatLimit;
 
       // Prevent duplicate membership
       const existing = await tx.userOrganisation.findUnique({
@@ -433,6 +401,17 @@ export const inviteService = {
 
       if (claimed.count === 0) {
         throw { statusCode: 409, message: 'Invite was claimed or revoked by another request' };
+      }
+
+      // Seat check inside tx using latest seat count
+      const seatCount = await tx.userOrganisation.count({ where: { organisationId: orgId } });
+      if (seatCount >= seatLimit) {
+        throw {
+          statusCode: 400,
+          code: 'SEAT_LIMIT_REACHED',
+          message: 'This workspace is at capacity. Ask an admin to free a seat, or try again later.',
+          seat: { current: seatCount, limit: seatLimit },
+        };
       }
 
       // Ensure org membership exists

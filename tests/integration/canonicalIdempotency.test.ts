@@ -1,3 +1,4 @@
+/* eslint-disable @typescript-eslint/no-explicit-any */
 import { describe, it, expect, beforeEach } from 'vitest';
 import prisma from '../../src/infrastructure/prismaClient';
 import { resetDb } from './testApp';

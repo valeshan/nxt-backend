@@ -21,3 +21,4 @@ CREATE UNIQUE INDEX "JobHeartbeat_env_jobName_key" ON "JobHeartbeat"("env", "job
 
 COMMIT;
 
+

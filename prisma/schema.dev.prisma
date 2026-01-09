@@ -31,12 +31,28 @@ model User {
   locationAccess        UserLocationAccess[]
   settings              UserSettings?
   xeroConnections       XeroConnection[]
+  invitesCreated        OrganisationInvite[] @relation("InvitesCreated")
 }
 
 model Organisation {
   id                     String                  @id @default(uuid())
   name                   String
   seatLimit              Int                     @default(5)
+  planKey                String                  @default("free")
+  billingState           String                  @default("free")
+  trialEndsAt            DateTime?               @db.Timestamptz
+  currentPeriodEndsAt    DateTime?               @db.Timestamptz
+  graceEndsAt            DateTime?               @db.Timestamptz
+  entitlementOverrides   Json?
+
+  // Stripe billing fields (kept in sync with schema.prisma)
+  stripeCustomerId         String?
+  stripeSubscriptionId     String?
+  stripePriceId            String?
+  stripeSubscriptionStatus String?
+  cancelAtPeriodEnd        Boolean                @default(false)
+  hasUsedIntroOffer        Boolean                @default(false)
+
   createdAt              DateTime                @default(now())
   updatedAt              DateTime                @updatedAt
   locations              Location[]
@@ -61,6 +77,8 @@ model Organisation {
   // Data contribution consent
   dataContributionEnabled   Boolean   @default(true)
   dataContributionUpdatedAt DateTime?
+
+  @@index([planKey], map: "Organisation_planKey_idx")
 }
 
 model Location {

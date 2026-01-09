@@ -32,3 +32,4 @@ The Sentry DSN was previously hardcoded in the repository. Even if the repositor
 - All environments should use the same new DSN or separate DSNs per environment (your choice)
 
 
+

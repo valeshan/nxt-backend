@@ -33,6 +33,21 @@ model Organisation {
   id                           String                        @id @default(uuid())
   name                         String
   seatLimit                    Int                           @default(5)
+  planKey                      String                        @default("free")
+  billingState                 String                        @default("free")
+  trialEndsAt                  DateTime?                     @db.Timestamptz
+  currentPeriodEndsAt          DateTime?                     @db.Timestamptz
+  graceEndsAt                  DateTime?                     @db.Timestamptz
+  entitlementOverrides         Json?
+  
+  // Stripe billing fields
+  stripeCustomerId             String?
+  stripeSubscriptionId         String?
+  stripePriceId                String?
+  stripeSubscriptionStatus     String?                       // Raw Stripe status: active, trialing, past_due, canceled
+  cancelAtPeriodEnd            Boolean                       @default(false)
+  hasUsedIntroOffer            Boolean                       @default(false)
+  
   createdAt                    DateTime                      @default(now())
   updatedAt                    DateTime                      @updatedAt
   locations                    Location[]
@@ -57,6 +72,8 @@ model Organisation {
   // Data contribution consent
   dataContributionEnabled   Boolean   @default(true)
   dataContributionUpdatedAt DateTime?
+
+  @@index([planKey], map: "Organisation_planKey_idx")
 }
 
 model Location {
@@ -932,4 +949,18 @@ model JobHeartbeat {
   updatedAt               DateTime  @updatedAt
 
   @@unique([env, jobName])
+}
+
+// Billing Webhook Event Log (for idempotency)
+// Named generically for future-proofing (Paddle, RevenueCat, etc.)
+model BillingWebhookEvent {
+  id             String    @id // Stripe event ID (evt_xxx)
+  eventType      String    // e.g., customer.subscription.created
+  organisationId String?   // Linked org if extractable from event
+  processedAt    DateTime? @db.Timestamptz // NULL until successfully processed
+  payload        Json?     // Full event payload for debugging
+  createdAt      DateTime  @default(now())
+
+  @@index([eventType, createdAt])
+  @@index([organisationId])
 }

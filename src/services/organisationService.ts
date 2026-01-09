@@ -4,6 +4,7 @@ import { locationRepository } from '../repositories/locationRepository';
 import { onboardingSessionRepository } from '../repositories/onboardingSessionRepository';
 import { OrganisationRole, OnboardingMode } from '@prisma/client';
 import prisma from '../infrastructure/prismaClient';
+import { EntitlementOverridesSchema } from './entitlements/types';
 
 export const organisationService = {
   async createOrganisation(userId: string, name: string) {
@@ -32,6 +33,17 @@ export const organisationService = {
 
   async listForUser(userId: string) {
     return organisationRepository.listForUser(userId);
+  },
+
+  async updatePlan(organisationId: string, planKey: string) {
+    return organisationRepository.update(organisationId, { planKey });
+  },
+
+  async updateOverrides(organisationId: string, overrides: unknown) {
+    // Validate overrides before saving
+    const parsed = EntitlementOverridesSchema.parse(overrides);
+    // Use validated and stripped data
+    return organisationRepository.update(organisationId, { entitlementOverrides: parsed });
   },
 
   /**

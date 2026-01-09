@@ -15,6 +15,10 @@ export const organisationRepository = {
       where: { userId },
       include: { organisation: true },
     });
+  },
+
+  async update(id: string, data: Prisma.OrganisationUpdateInput): Promise<Organisation> {
+    return prisma.organisation.update({ where: { id }, data });
   }
 };
 

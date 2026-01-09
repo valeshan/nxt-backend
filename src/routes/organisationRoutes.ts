@@ -38,5 +38,25 @@ export default async function organisationRoutes(fastify: FastifyInstance) {
     }, organisationController.createWithLocation);
 
     typedApp.get('/', organisationController.list);
+
+    typedApp.get('/:orgId/entitlements', {
+      schema: {
+        params: z.object({ orgId: z.string().uuid() }),
+      },
+    }, organisationController.entitlements);
+
+    typedApp.patch('/:orgId/plan', {
+      schema: {
+        params: z.object({ orgId: z.string().uuid() }),
+        body: z.object({ planKey: z.string() })
+      }
+    }, organisationController.updatePlan);
+
+    typedApp.patch('/:orgId/overrides', {
+      schema: {
+        params: z.object({ orgId: z.string().uuid() }),
+        body: z.record(z.any())
+      }
+    }, organisationController.updateOverrides);
   });
 }

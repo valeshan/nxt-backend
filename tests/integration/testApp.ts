@@ -42,6 +42,9 @@ export async function resetDb() {
   // Delete lexicon entries before organisations (foreign key constraint)
   await (prisma as any).organisationLexiconEntry.deleteMany();
   
+  // Delete billing webhook events (no foreign key constraints)
+  await prisma.billingWebhookEvent.deleteMany();
+  
   await prisma.organisation.deleteMany();
   
   // User must be last if referenced by others (which it is by UserSettings, UserOrganisation)
