@@ -182,11 +182,10 @@ export async function handleCheckoutSessionCompleted(
     }));
 
   if (!orgId) {
-    console.warn(
-      '[Stripe Webhook] checkout.session.completed could not resolve organisationId (missing metadata + no DB match)',
-      { customerId, subscriptionId }
+    // Fail fast so Stripe retries. This should be resolvable because we store stripeCustomerId pre-checkout.
+    throw new Error(
+      `checkout.session.completed could not resolve organisationId (customer=${customerId}, subscription=${subscriptionId})`
     );
-    return;
   }
 
   // Store the Stripe IDs
@@ -277,8 +276,14 @@ export async function handleSubscriptionCreated(
 ): Promise<void> {
   const orgId = await resolveOrgIdForSubscription(subscription);
   if (!orgId) {
-    console.warn('[Stripe Webhook] subscription.created could not resolve organisationId');
-    return;
+    const subId = subscription?.id ? String(subscription.id) : 'unknown';
+    const cusId =
+      typeof subscription?.customer === 'string'
+        ? String(subscription.customer)
+        : subscription?.customer?.id
+          ? String(subscription.customer.id)
+          : 'unknown';
+    throw new Error(`subscription.created could not resolve organisationId (customer=${cusId}, subscription=${subId})`);
   }
 
   const priceId = subscription.items.data[0]?.price?.id;
@@ -343,8 +348,14 @@ export async function handleSubscriptionUpdated(
 ): Promise<void> {
   const orgId = await resolveOrgIdForSubscription(subscription);
   if (!orgId) {
-    console.warn('[Stripe Webhook] subscription.updated could not resolve organisationId');
-    return;
+    const subId = subscription?.id ? String(subscription.id) : 'unknown';
+    const cusId =
+      typeof subscription?.customer === 'string'
+        ? String(subscription.customer)
+        : subscription?.customer?.id
+          ? String(subscription.customer.id)
+          : 'unknown';
+    throw new Error(`subscription.updated could not resolve organisationId (customer=${cusId}, subscription=${subId})`);
   }
 
   // Guard against stacked subscriptions: do not let an "old" subscription overwrite the org.
@@ -458,8 +469,14 @@ export async function handleSubscriptionDeleted(
 ): Promise<void> {
   const orgId = await resolveOrgIdForSubscription(subscription);
   if (!orgId) {
-    console.warn('[Stripe Webhook] subscription.deleted missing organisationId in metadata');
-    return;
+    const subId = subscription?.id ? String(subscription.id) : 'unknown';
+    const cusId =
+      typeof subscription?.customer === 'string'
+        ? String(subscription.customer)
+        : subscription?.customer?.id
+          ? String(subscription.customer.id)
+          : 'unknown';
+    throw new Error(`subscription.deleted could not resolve organisationId (customer=${cusId}, subscription=${subId})`);
   }
 
   // Guard against stacked subscriptions: only clear the subscription if it's the current one.

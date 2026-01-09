@@ -67,7 +67,10 @@ export const stripeWebhookController = {
       where: { id: eventId },
     });
 
-    if (existingEvent?.processedAt) {
+    // If we "processed" an event but couldn't link it to an organisationId at the time,
+    // allow reprocessing so webhook fixes (or delayed ordering) can be applied.
+    // This is safe because handlers are written to be idempotent updates.
+    if (existingEvent?.processedAt && existingEvent.organisationId) {
       request.log.info({ eventId }, '[Stripe Webhook] Event already processed, skipping');
       return reply.code(200).send({ received: true, skipped: true });
     }
