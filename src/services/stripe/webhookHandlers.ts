@@ -32,6 +32,34 @@ function getOrgIdFromMetadata(obj: { metadata?: Record<string, string> | null })
 }
 
 /**
+ * Resolve orgId from Stripe IDs stored on Organisation.
+ * This is a critical fallback for cases where Stripe events omit metadata
+ * (e.g., some Portal flows or manual/test events), but we already stored
+ * stripeCustomerId pre-checkout and/or stripeSubscriptionId post-checkout.
+ */
+async function resolveOrgIdFromStripeIds(input: {
+  stripeCustomerId?: string | null;
+  stripeSubscriptionId?: string | null;
+}): Promise<string | null> {
+  const subId = input.stripeSubscriptionId ? String(input.stripeSubscriptionId) : null;
+  const cusId = input.stripeCustomerId ? String(input.stripeCustomerId) : null;
+
+  if (!subId && !cusId) return null;
+
+  const org = await prisma.organisation.findFirst({
+    where: {
+      OR: [
+        ...(subId ? [{ stripeSubscriptionId: subId }] : []),
+        ...(cusId ? [{ stripeCustomerId: cusId }] : []),
+      ],
+    },
+    select: { id: true },
+  });
+
+  return org?.id ?? null;
+}
+
+/**
  * Resolve organisationId for a subscription event.
  * Prefer metadata (fast + explicit). Fallback to DB lookup by stripeSubscriptionId
  * because Stripe portal updates can sometimes omit metadata.
@@ -41,6 +69,20 @@ async function resolveOrgIdForSubscription(subscription: StripeSubscription): Pr
   if (fromMeta) return fromMeta;
 
   const subscriptionId = subscription?.id ? String(subscription.id) : null;
+  const customerId =
+    typeof subscription?.customer === 'string'
+      ? String(subscription.customer)
+      : subscription?.customer?.id
+        ? String(subscription.customer.id)
+        : null;
+
+  // Try DB lookup by subscriptionId/customerId.
+  const fallback = await resolveOrgIdFromStripeIds({
+    stripeSubscriptionId: subscriptionId,
+    stripeCustomerId: customerId,
+  });
+
+  if (fallback) return fallback;
   if (!subscriptionId) return null;
 
   const org = await prisma.organisation.findFirst({
@@ -123,17 +165,27 @@ function getFreeUntilFromSubscription(subscription: StripeSubscription): Date | 
 export async function handleCheckoutSessionCompleted(
   session: StripeCheckoutSession
 ): Promise<void> {
-  const orgId = getOrgIdFromMetadata(session);
-  if (!orgId) {
-    console.warn('[Stripe Webhook] checkout.session.completed missing organisationId in metadata');
-    return;
-  }
-
   const subscriptionId = session.subscription as string | null;
   const customerId = session.customer as string | null;
 
   if (!subscriptionId || !customerId) {
     console.warn('[Stripe Webhook] checkout.session.completed missing subscription or customer');
+    return;
+  }
+
+  // Resolve orgId: prefer metadata, fallback to DB lookup by stripeCustomerId/subscriptionId.
+  const orgId =
+    getOrgIdFromMetadata(session) ??
+    (await resolveOrgIdFromStripeIds({
+      stripeCustomerId: customerId,
+      stripeSubscriptionId: subscriptionId,
+    }));
+
+  if (!orgId) {
+    console.warn(
+      '[Stripe Webhook] checkout.session.completed could not resolve organisationId (missing metadata + no DB match)',
+      { customerId, subscriptionId }
+    );
     return;
   }
 

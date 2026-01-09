@@ -119,10 +119,17 @@ export const stripeWebhookController = {
 function extractOrgIdFromEvent(event: Stripe.Event): string | null {
   const data = event.data.object as any;
   
-  // Try metadata first
-  if (data.metadata?.organisationId) {
-    return data.metadata.organisationId;
-  }
+  // Try metadata first (most objects: checkout session, subscription, etc.)
+  if (data?.metadata?.organisationId) return String(data.metadata.organisationId);
+
+  // Invoices often carry metadata on nested objects (Stripe API varies over time):
+  // - invoice.parent.subscription_details.metadata.organisationId
+  // - invoice.lines.data[0].metadata.organisationId
+  const parentMetaOrgId = data?.parent?.subscription_details?.metadata?.organisationId;
+  if (parentMetaOrgId) return String(parentMetaOrgId);
+
+  const firstLineMetaOrgId = data?.lines?.data?.[0]?.metadata?.organisationId;
+  if (firstLineMetaOrgId) return String(firstLineMetaOrgId);
   
   // For invoice events, we'd need to look up by subscription ID
   // (handled in the individual handlers)
