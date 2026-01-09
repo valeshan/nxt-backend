@@ -284,7 +284,12 @@ export const billingController = {
       return reply.send({ url: session.url });
     } catch (err) {
       request.log.error({ err }, '[Billing] Failed to create checkout session');
-      return reply.code(500).send({ message: 'Failed to create checkout session' });
+      const isProd = (process.env.APP_ENV || process.env.NODE_ENV) === 'production';
+      const message =
+        !isProd && err instanceof Error && err.message
+          ? `Failed to create checkout session: ${err.message}`
+          : 'Failed to create checkout session';
+      return reply.code(500).send({ message });
     }
   },
 

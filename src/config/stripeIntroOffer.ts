@@ -1,4 +1,5 @@
 import { PlanKey } from '../services/entitlements/types';
+import { getStripeKeyMode } from '../services/stripe/stripeService';
 
 /**
  * Intro offer (discount semantics) for new organisations during signup.
@@ -23,15 +24,18 @@ export const INTRO_OFFER_CODE_BY_PLAN: Partial<Record<PlanKey, string>> = {
 export const INTRO_OFFER_COUPON_ID_BY_PLAN_AND_INTERVAL: Partial<
   Record<PlanKey, Partial<Record<BillingInterval, string>>>
 > = {
-  // Live-mode coupons (monthly only):
-  // - Pro monthly: 100% off repeating 3 months
-  // - Pro annual: trial semantics (no coupon)
+  // NOTE: coupon IDs differ between Stripe test/live.
+  // Monthly uses coupon-discount semantics; annual uses trial semantics (no coupon).
   pro: {
+    // TEST: N40IGidy
+    // LIVE: 3cGcyPif
     monthly: '3cGcyPif',
   },
   // - Enterprise monthly: 100% off repeating 3 months
   // - Enterprise annual: trial semantics (no coupon)
   enterprise: {
+    // TEST: 3vWjT2lG
+    // LIVE: buclDIGA
     monthly: 'buclDIGA',
   },
 };
@@ -73,7 +77,19 @@ export function getIntroOfferCouponId(
   planKey: PlanKey,
   interval: BillingInterval
 ): string | null {
-  return INTRO_OFFER_COUPON_ID_BY_PLAN_AND_INTERVAL?.[planKey]?.[interval] ?? null;
+  if (interval !== 'monthly') return null;
+
+  const mode = getStripeKeyMode();
+  const live = INTRO_OFFER_COUPON_ID_BY_PLAN_AND_INTERVAL?.[planKey]?.[interval] ?? null;
+
+  // Hard-coded test IDs (keeps local/dev + test webhooks working).
+  const testByPlan: Partial<Record<PlanKey, string>> = {
+    pro: 'N40IGidy',
+    enterprise: '3vWjT2lG',
+  };
+
+  if (mode === 'live') return live;
+  return testByPlan[planKey] ?? null;
 }
 
 

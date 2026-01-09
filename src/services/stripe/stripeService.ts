@@ -48,6 +48,21 @@ export function isStripeEnabled(): boolean {
 }
 
 /**
+ * Determine Stripe key mode from STRIPE_SECRET_KEY.
+ * Stripe test and live environments are fully separated (objects/IDs do not overlap).
+ */
+export function getStripeKeyMode(): 'live' | 'test' | 'unknown' {
+  if (!STRIPE_SECRET_KEY) return 'unknown';
+  if (STRIPE_SECRET_KEY.startsWith('sk_live_')) return 'live';
+  if (STRIPE_SECRET_KEY.startsWith('sk_test_')) return 'test';
+  return 'unknown';
+}
+
+export function isStripeLiveMode(): boolean {
+  return getStripeKeyMode() === 'live';
+}
+
+/**
  * Get webhook secret for signature verification
  */
 export function getWebhookSecret(): string {
@@ -86,13 +101,20 @@ export function getFrontendUrl(): string {
     return process.env.FRONTEND_URL;
   }
 
-  // Detect based on APP_ENV or NODE_ENV
-  const env = process.env.APP_ENV || process.env.NODE_ENV || 'development';
+  // Detect environment. NOTE: many hosts set NODE_ENV=production even for staging,
+  // so prefer explicit envs that encode environment name.
+  const env =
+    process.env.APP_ENV ||
+    process.env.RAILWAY_ENVIRONMENT_NAME ||
+    process.env.VERCEL_ENV ||
+    process.env.NODE_ENV ||
+    'development';
   
   switch (env) {
     case 'production':
       return 'https://dashboard.thenxt.ai';
     case 'staging':
+    case 'preview':
       return 'https://staging.thenxt.ai';
     case 'development':
     case 'local':
@@ -105,7 +127,13 @@ export function getFrontendUrl(): string {
  * Get current environment identifier for metadata
  */
 export function getEnvironment(): string {
-  return process.env.APP_ENV || process.env.NODE_ENV || 'development';
+  return (
+    process.env.APP_ENV ||
+    process.env.RAILWAY_ENVIRONMENT_NAME ||
+    process.env.VERCEL_ENV ||
+    process.env.NODE_ENV ||
+    'development'
+  );
 }
 
 // Re-export Stripe types for convenience
