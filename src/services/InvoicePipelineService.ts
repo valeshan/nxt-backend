@@ -11,7 +11,7 @@ import { assertDateRangeOrThrow, assertWindowIfDeepPagination, getOffsetPaginati
 
 import { getProductKeyFromLineItem } from './helpers/productKey';
 import { assertCanonicalInvoiceLegacyLink, canonicalizeLine } from './canonical';
-import { computeDescriptionWarnings, getAlphaRatio, normalizePhrase, normalizePhraseKey } from '../utils/descriptionQuality';
+import { computeDescriptionWarnings, getAlphaRatio, normalizePhrase, normalizePhraseKey, normalizePhraseKeyLoose } from '../utils/descriptionQuality';
 import { normalizeSupplierName } from '../utils/normalizeSupplierName';
 
 export class InvoiceFileNotFoundError extends Error {
@@ -46,6 +46,9 @@ function buildSuppressionSet(
     for (const entry of entries) {
         // phraseKey is already normalized, use as-is
         suppressionSet.add(entry.phraseKey);
+        // Add a looser variant to tolerate OCR punctuation variance (e.g. /, (), &, unicode dashes).
+        // This is backward-compatible: it does NOT change stored phraseKey values.
+        suppressionSet.add(normalizePhraseKeyLoose(entry.phraseKey));
     }
     
     console.log('[LEXICON] suppression built', {
@@ -319,7 +322,8 @@ export const invoicePipelineService = {
   async ensureAllOcrItemsExist(
     invoiceId: string,
     invoiceFileId: string,
-    tx: any
+    tx: any,
+    opts?: { lexicon?: Set<string> }
   ) {
     // Check if we need to backfill
     const invoice = await tx.invoice.findUnique({
@@ -338,6 +342,20 @@ export const invoicePipelineService = {
     
     if (!invoice || !invoice.invoiceFile?.ocrResult) return;
     
+    // Load lexicon (optional) to ensure `textWarnReasons` respects approved-term suppression.
+    let lexicon: Set<string> | undefined = opts?.lexicon;
+    if (!lexicon) {
+      try {
+        const entries = await (tx as any).organisationLexiconEntry.findMany({
+          where: { organisationId: invoice.organisationId },
+          select: { phraseKey: true },
+        });
+        lexicon = buildSuppressionSet(entries);
+      } catch (_e: any) {
+        lexicon = undefined;
+      }
+    }
+    
     const ocrLineItems = invoice.invoiceFile.ocrResult.parsedJson?.lineItems || [];
     const existingOcrItems = invoice.lineItems;
     
@@ -346,7 +364,8 @@ export const invoicePipelineService = {
       for (let index = 0; index < ocrLineItems.length; index++) {
         const ocrItem = ocrLineItems[index];
         const sourceKey = `ocr:${index}`;
-        const warnReasons = ocrItem.textWarnReasons ?? ocrItem.warnReasons ?? [];
+        const ocrConfidence = typeof ocrItem.confidenceScore === 'number' ? ocrItem.confidenceScore : null;
+        const warnReasons = computeDescriptionWarnings((ocrItem.description ?? '').trim(), { lexicon, ocrConfidence });
         
         const qtyRaw = ocrItem.quantity;
         const qty = qtyRaw === null || qtyRaw === undefined ? null : Number(qtyRaw);
@@ -370,7 +389,7 @@ export const invoicePipelineService = {
             productCode: ocrItem.productCode?.trim() || null,
             accountCode: MANUAL_COGS_ACCOUNT_CODE,
             confidenceScore: ocrItem.confidenceScore || null,
-            textWarnReasons: warnReasons,
+            textWarnReasons: warnReasons.length > 0 ? warnReasons : [],
             isIncludedInAnalytics: false, // Backfilled items start as excluded (user previously didn't select them)
             source: 'OCR',
             sourceKey: sourceKey
@@ -397,8 +416,32 @@ export const invoicePipelineService = {
   async upsertInvoiceLineItemsFromOcr(
     invoiceId: string,
     ocrLineItems: any[],
-    tx: any
+    tx: any,
+    opts?: { lexicon?: Set<string> }
   ) {
+    // Prefer caller-provided lexicon set (e.g. from OCR completion scope) to avoid extra queries.
+    // If not provided, lazily load it (safe fallback).
+    let lexicon: Set<string> | undefined = opts?.lexicon;
+    if (!lexicon) {
+      try {
+        const inv = await tx.invoice.findUnique({
+          where: { id: invoiceId },
+          select: { organisationId: true },
+        });
+        const organisationId = inv?.organisationId;
+        if (organisationId) {
+          const entries = await (tx as any).organisationLexiconEntry.findMany({
+            where: { organisationId },
+            select: { phraseKey: true },
+          });
+          lexicon = buildSuppressionSet(entries);
+        }
+      } catch (_e: any) {
+        // Non-fatal fallback: if lexicon can't be loaded here, continue without it.
+        // OCR completion path already has a stricter failure mode.
+        lexicon = undefined;
+      }
+    }
     // IMPORTANT: Preserve the exact order from OCR - don't sort or reorder
     // The index in the array becomes the stable sourceKey
     // If OCR provider changes ordering, sourceKey will drift and user edits will attach to wrong items
@@ -419,7 +462,12 @@ export const invoicePipelineService = {
     for (let index = 0; index < ocrLineItems.length; index++) {
       const ocrItem = ocrLineItems[index];
       const sourceKey = `ocr:${index}`;
-      const warnReasons = ocrItem.textWarnReasons ?? ocrItem.warnReasons ?? [];
+      // IMPORTANT: recompute warnings here so DB `InvoiceLineItem.textWarnReasons` reflects lexicon suppression.
+      // Do NOT trust OCR parsedJson warnings (those are computed before lexicon is available).
+      const computeWarnReasons = (description: string, ocrConfidence: number | null) => {
+        const reasons = computeDescriptionWarnings(description, { lexicon, ocrConfidence });
+        return reasons.length > 0 ? reasons : [];
+      };
       
       const qtyRaw = ocrItem.quantity;
       const qty = qtyRaw === null || qtyRaw === undefined ? null : Number(qtyRaw);
@@ -451,6 +499,11 @@ export const invoicePipelineService = {
         (existing.lineTotal && Number(existing.lineTotal) !== total) ||
         (existing.productCode !== (ocrItem.productCode?.trim() || null))
       );
+      
+      const ocrConfidence = typeof ocrItem.confidenceScore === 'number' ? ocrItem.confidenceScore : null;
+      const warnReasons = wasManuallyEdited && existing?.description
+        ? computeWarnReasons(existing.description, null)
+        : computeWarnReasons((ocrItem.description ?? '').trim(), ocrConfidence);
       
       // Upsert by (invoiceId, sourceKey)
       await tx.invoiceLineItem.upsert({
@@ -1359,7 +1412,18 @@ export const invoicePipelineService = {
                          });
                          console.log('[InvoicePipeline] OCR completion - loaded lexicon entries:', lexiconEntries.length);
                      } catch (error: any) {
-                         // Table doesn't exist yet - migration not run, continue without lexicon
+                         // Only swallow "table missing" scenarios (migration not run).
+                         // Any other DB/permission issue should fail fast so we don't silently disable suppression.
+                         const msg = (error?.message || '').toLowerCase();
+                         const isTableMissing =
+                           error?.code === '42P01' || // PostgreSQL: relation does not exist
+                           error?.code === 'P2021' || // Prisma: table does not exist
+                           msg.includes('does not exist') ||
+                           (msg.includes('relation') && msg.includes('does not exist')) ||
+                           (msg.includes('table') && msg.includes('does not exist'));
+                         
+                         if (!isTableMissing) throw error;
+                         
                          console.warn('[InvoicePipeline] Lexicon table not available during OCR completion, continuing without lexicon:', error.message);
                          console.warn('[InvoicePipeline] To enable lexicon, run: npm run prisma:migrate:dev -- --name add_organisation_lexicon');
                      }
@@ -2189,6 +2253,10 @@ export const invoicePipelineService = {
               phraseKey: string;
               timesSeen: number;
           }>();
+          
+          // Track phraseKeys explicitly approved in THIS verify request so we don't double-count them below.
+          // (Approval upsert already increments; the "seen in items" loop would increment again otherwise.)
+          const approvedPhraseKeysThisVerify = new Set<string>();
 
           if (lexiconTableExists && lexiconEntries.length > 0) {
               for (const entry of lexiconEntries) {
@@ -2225,6 +2293,7 @@ export const invoicePipelineService = {
               });
 
               for (const { phraseKey, phrase } of byKey.values()) {
+                  approvedPhraseKeysThisVerify.add(phraseKey);
                   // Debug: Check if phrase already exists before upsert
                   const alreadyExists = orgLexiconByPhrase.has(phraseKey);
                   const existingEntry = orgLexiconByPhrase.get(phraseKey);
@@ -2303,6 +2372,8 @@ export const invoicePipelineService = {
           // Process each unique phrase once
           for (const normalizedPhrase of uniquePhrases) {
               if (!lexiconTableExists) continue;
+              // Avoid double-counting in the same verify request when the phrase was explicitly approved.
+              if (approvedPhraseKeysThisVerify.has(normalizedPhrase)) continue;
               
               // Check if entry exists
               const existingEntry = orgLexiconByPhrase.get(normalizedPhrase);

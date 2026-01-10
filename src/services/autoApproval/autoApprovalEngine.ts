@@ -93,14 +93,14 @@ export function isInvoiceAutoApprovable(params: {
     return { ok: false, reasonCode: 'NOT_REVIEWABLE' };
   }
 
-  // 3) Must be OCR_COMPLETE
-  if (invoiceFile.processingStatus !== ProcessingStatus.OCR_COMPLETE) {
-    return { ok: false, reasonCode: 'NOT_OCR_COMPLETE' };
-  }
-
-  // 4) Manual edits block auto-approval (manual always wins)
+  // 3) Manual edits block auto-approval (manual always wins)
   if (invoiceFile.processingStatus === ProcessingStatus.MANUALLY_UPDATED) {
     return { ok: false, reasonCode: 'HAS_MANUAL_EDITS' };
+  }
+
+  // 4) Must be OCR_COMPLETE
+  if (invoiceFile.processingStatus !== ProcessingStatus.OCR_COMPLETE) {
+    return { ok: false, reasonCode: 'NOT_OCR_COMPLETE' };
   }
 
   // 5) Validation errors must be empty/null

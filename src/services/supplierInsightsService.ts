@@ -2159,6 +2159,78 @@ export const supplierInsightsService = {
             await this.refreshProductStatsForLocation(organisationId, locationId, params.accountCodes);
         }
 
+        // Search augmentation: match product "description" (from latest line item descriptions) in addition to productName + supplierName.
+        // ProductStats does not store description, so we resolve matching productIds/manualIds via invoice line items and include them in the filter.
+        const descriptionMatchedIds: string[] = [];
+        if (params.search && params.search.trim()) {
+            const q = params.search.trim();
+            const now = new Date();
+
+            const supersededIds = await getSupersededXeroIds(organisationId, locationId, last12m.start, now);
+
+            const [xeroMatches, manualMatches] = await Promise.all([
+                prisma.xeroInvoiceLineItem.findMany({
+                    where: {
+                        ...getXeroLineItemWhere({
+                            orgId: organisationId,
+                            locationId,
+                            startDate: last12m.start,
+                            endDate: now,
+                            supersededIds,
+                            accountCodes: params.accountCodes,
+                        }),
+                        description: { contains: q, mode: 'insensitive' },
+                        productId: { not: null },
+                    } as any,
+                    distinct: ['productId'],
+                    select: { productId: true },
+                    take: 2000,
+                }),
+                prisma.invoiceLineItem.findMany({
+                    where: {
+                        ...getVerifiedManualLineItemWhere({
+                            orgId: organisationId,
+                            locationId,
+                            startDate: last12m.start,
+                            endDate: now,
+                        }),
+                        ...(params.accountCodes && params.accountCodes.length > 0
+                            ? {
+                                OR: [
+                                    { accountCode: { in: params.accountCodes } },
+                                    ...(params.accountCodes.includes(MANUAL_COGS_ACCOUNT_CODE) ? [{ accountCode: null }] : []),
+                                ],
+                              }
+                            : {}),
+                        description: { contains: q, mode: 'insensitive' },
+                    } as any,
+                    select: {
+                        productCode: true,
+                        description: true,
+                        invoice: { select: { supplierId: true } },
+                    },
+                    take: 2000,
+                }),
+            ]);
+
+            const ids = new Set<string>();
+
+            for (const row of xeroMatches) {
+                if (row.productId) ids.add(row.productId);
+            }
+
+            for (const row of manualMatches) {
+                const supplierId = row.invoice?.supplierId;
+                if (!supplierId) continue;
+                const rawKey = (row.productCode || row.description || 'Unknown').trim();
+                const normalizedKey = rawKey.toLowerCase();
+                const manualId = `manual:${supplierId}:${Buffer.from(normalizedKey).toString('base64')}`;
+                ids.add(manualId);
+            }
+
+            descriptionMatchedIds.push(...ids);
+        }
+
         const whereStats: any = {
             organisationId,
             locationId,
@@ -2167,6 +2239,7 @@ export const supplierInsightsService = {
                 OR: [
                     { productName: { contains: params.search, mode: 'insensitive' } },
                     { supplierName: { contains: params.search, mode: 'insensitive' } },
+                    ...(descriptionMatchedIds.length > 0 ? [{ productId: { in: descriptionMatchedIds } }] : []),
                 ]
             } : {})
         };

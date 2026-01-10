@@ -117,6 +117,30 @@ export function normalizePhraseKey(phrase: string): string {
 }
 
 /**
+ * Looser key normalization for lexicon matching.
+ *
+ * Goal: tolerate OCR variance in punctuation/symbol characters without changing stored `phraseKey` values.
+ * This means we can match both:
+ * - strict: normalizePhraseKey(text)
+ * - loose:  normalizePhraseKeyLoose(text)
+ *
+ * NOTE: This should only be used for membership checks (suppression), not as the stored unique key.
+ */
+export function normalizePhraseKeyLoose(phrase: string): string {
+  return phrase
+    .normalize('NFKC')
+    .replace(/\u00A0/g, ' ')
+    // Keep the existing strict normalization behavior too (helps with "2x2. 5k" style OCR quirks)
+    .replace(/\.\s+(\d)/g, '.$1')
+    // Strip anything that's not a letter/number (unicode-safe). This tolerates OCR punctuation variance:
+    // e.g. "/", "()", "&", curly quotes, unicode dashes, etc.
+    .replace(/[^\p{L}\p{N}]+/gu, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .toLowerCase();
+}
+
+/**
  * Computes text quality warnings for a description.
  * 
  * Returns an array of warning reason codes. Empty array means no warnings.
@@ -148,8 +172,9 @@ export function computeDescriptionWarnings(
   // 🔒 HARD SUPPRESSION - must happen BEFORE any warning logic
   // Use phraseKey normalization for matching (aggressive: NFKC, NBSP, whitespace collapse)
   const normalizedDescription = normalizePhraseKey(trimmed);
+  const normalizedDescriptionLoose = normalizePhraseKeyLoose(trimmed);
   const lex = options?.lexicon;
-  const isInLexicon = !!lex?.has(normalizedDescription);
+  const isInLexicon = !!lex?.has(normalizedDescription) || !!lex?.has(normalizedDescriptionLoose);
   
   if (isInLexicon) {
     // Only allow warnings if OCR confidence is ultra-low
