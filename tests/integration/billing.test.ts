@@ -37,6 +37,7 @@ const stripeMock = {
 vi.mock('../../src/services/stripe/stripeService', () => ({
   getStripeClient: vi.fn(() => stripeMock),
   isStripeEnabled: vi.fn(() => true),
+  getStripeKeyMode: vi.fn(() => 'test'),
   getFrontendUrl: vi.fn(() => 'http://localhost:3000'),
   getEnvironment: vi.fn(() => 'test'),
 }));
