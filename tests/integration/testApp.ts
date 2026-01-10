@@ -14,6 +14,10 @@ export async function resetDb() {
   await prisma.productStats.deleteMany();
   await (prisma as any).canonicalInvoiceLineItem.deleteMany();
   await (prisma as any).canonicalInvoice.deleteMany();
+
+  // Retro auto-approval audit tables (reference invoices/files/users)
+  await (prisma as any).invoiceAuditEvent.deleteMany();
+  await (prisma as any).retroAutoApproveBatch.deleteMany();
   
   await prisma.xeroInvoiceLineItem.deleteMany();
   await prisma.invoiceLineItem.deleteMany();

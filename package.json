@@ -4,7 +4,7 @@
   "description": "Backend service for Xero integration metadata",
   "main": "dist/src/server.js",
   "scripts": {
-    "dev": "tsx watch src/server.ts",
+    "dev": "npm run prisma:generate && tsx watch src/server.ts",
     "build": "npx prisma generate && tsc -p tsconfig.build.json",
     "postbuild": "node scripts/postbuild-copy-resources.js",
     "start": "node dist/src/server.js",

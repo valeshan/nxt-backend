@@ -8,6 +8,7 @@ import path from 'path';
 import { getInvoiceFileIfOwned, getInvoiceIfOwned, getLocationIfOwned, validateLocationScope } from '../utils/authorization';
 import { getRedisClient } from '../infrastructure/redis';
 import { config } from '../config/env';
+import { getRetroAutoApprovableSummary, markRetroAutoApproveDiscoverySeen, runRetroAutoApprove } from '../services/autoApproval/retroAutoApproveService';
 
 export const invoiceController = {
   async upload(req: FastifyRequest, reply: FastifyReply) {
@@ -953,6 +954,73 @@ export const invoiceController = {
       });
       return reply.status(500).send({ error: 'Failed to get review count' });
     }
+  },
+
+  async getRetroAutoApproveSummary(req: FastifyRequest, reply: FastifyReply) {
+      const auth = req.authContext;
+      if (!auth?.organisationId) {
+          return reply.status(401).send({ error: { code: 'UNAUTHENTICATED', message: 'Unauthorized' } });
+      }
+      if (auth.tokenType !== 'location' || !auth.locationId) {
+          return reply.status(403).send({ error: { code: 'LOCATION_CONTEXT_REQUIRED', message: 'Location context required' } });
+      }
+
+      const result = await getRetroAutoApprovableSummary({
+          organisationId: auth.organisationId,
+          locationId: auth.locationId,
+          userId: auth.userId,
+      });
+
+      return reply.status(200).send(result);
+  },
+
+  async runRetroAutoApprove(req: FastifyRequest, reply: FastifyReply) {
+      const auth = req.authContext;
+      if (!auth?.organisationId) {
+          return reply.status(401).send({ error: { code: 'UNAUTHENTICATED', message: 'Unauthorized' } });
+      }
+      if (auth.tokenType !== 'location' || !auth.locationId) {
+          return reply.status(403).send({ error: { code: 'LOCATION_CONTEXT_REQUIRED', message: 'Location context required' } });
+      }
+
+      const { dryRun, idempotencyKey } = req.body as { dryRun?: boolean; idempotencyKey?: string };
+
+      try {
+          const result = await runRetroAutoApprove({
+              organisationId: auth.organisationId,
+              locationId: auth.locationId,
+              userId: auth.userId,
+              dryRun,
+              idempotencyKey,
+          });
+          return reply.status(200).send(result);
+      } catch (e: any) {
+          if (e?.statusCode === 403 && e?.code === 'FEATURE_DISABLED') {
+              return reply.status(403).send({ error: { code: 'FEATURE_DISABLED', upgradeTarget: e.upgradeTarget ?? null, message: e.message } });
+          }
+          if (e?.statusCode === 409 && e?.code === 'IDEMPOTENCY_KEY_REUSED_WITH_DIFFERENT_REQUEST') {
+              return reply.status(409).send({ error: { code: e.code, message: 'Idempotency key was reused with a different request' } });
+          }
+          throw e;
+      }
+  },
+
+  async markRetroAutoApproveDiscoverySeen(req: FastifyRequest, reply: FastifyReply) {
+      const auth = req.authContext;
+      if (!auth?.organisationId) {
+          return reply.status(401).send({ error: { code: 'UNAUTHENTICATED', message: 'Unauthorized' } });
+      }
+      if (auth.tokenType !== 'location' || !auth.locationId) {
+          return reply.status(403).send({ error: { code: 'LOCATION_CONTEXT_REQUIRED', message: 'Location context required' } });
+      }
+
+      const result = await markRetroAutoApproveDiscoverySeen({
+          organisationId: auth.organisationId,
+          locationId: auth.locationId,
+          userId: auth.userId,
+      });
+
+      return reply.status(200).send(result);
   },
 };
 

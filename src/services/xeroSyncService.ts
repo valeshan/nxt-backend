@@ -715,6 +715,13 @@ export class XeroSyncService {
             if (items.length > 0) {
               await txAny.canonicalInvoiceLineItem.createMany({ data: items });
             }
+
+            // Header-level quality summary: WARN line count (qualityStatus == WARN).
+            const warningLineCount = items.filter((l: any) => l.qualityStatus === 'WARN').length;
+            await txAny.canonicalInvoice.update({
+              where: { id: canonical.id },
+              data: { warningLineCount },
+            });
           } catch (e) {
             console.warn(`[XeroSync] Canonical dual-write failed for xeroInvoiceId=${invoice.invoiceID}:`, e);
           }

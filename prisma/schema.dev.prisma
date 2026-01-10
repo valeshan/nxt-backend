@@ -32,6 +32,8 @@ model User {
   settings              UserSettings?
   xeroConnections       XeroConnection[]
   invitesCreated        OrganisationInvite[] @relation("InvitesCreated")
+  retroAutoApproveBatchesCreated RetroAutoApproveBatch[] @relation("RetroAutoApproveBatchCreatedBy")
+  invoiceAuditEventsTriggered    InvoiceAuditEvent[]     @relation("InvoiceAuditEventTriggeredBy")
 }
 
 model Organisation {
@@ -73,6 +75,8 @@ model Organisation {
   canonicalLineItems     CanonicalInvoiceLineItem[]
   emailForwardingVerifications EmailForwardingVerification[]
   lexiconEntries         OrganisationLexiconEntry[]
+  retroAutoApproveBatches RetroAutoApproveBatch[]
+  invoiceAuditEvents      InvoiceAuditEvent[]
   
   // Data contribution consent
   dataContributionEnabled   Boolean   @default(true)
@@ -114,6 +118,8 @@ model Location {
   // Auto-approval of clean invoices (per-location feature flag)
   autoApproveCleanInvoices Boolean @default(false)
   hasSeenAutoApprovePrompt Boolean @default(false)
+  retroAutoApproveBatches RetroAutoApproveBatch[]
+  invoiceAuditEvents      InvoiceAuditEvent[]
 }
 
 model LocationAccountConfig {
@@ -209,6 +215,8 @@ model UserLocationAccess {
   userId         String
   organisationId String
   locationId     String
+  hasSeenRetroAutoApproveDiscovery Boolean  @default(false)
+  retroAutoApproveDiscoverySeenAt  DateTime?
   createdAt      DateTime     @default(now())
 
   user          User          @relation(fields: [userId], references: [id])
@@ -612,6 +620,7 @@ model InvoiceFile {
   ocrResult          InvoiceOcrResult?
   invoice            Invoice?
   deletedAt          DateTime?
+  invoiceAuditEvents InvoiceAuditEvent[]
 
   // Indexes (performance)
   // - Cron cleanup uses processingStatus + updatedAt and filters deletedAt: null in queries.
@@ -660,6 +669,7 @@ model Invoice {
   location        Location          @relation(fields: [locationId], references: [id])
   deletedAt       DateTime?
   canonicalInvoice CanonicalInvoice?
+  invoiceAuditEvents InvoiceAuditEvent[]
 
   // Indexes (performance)
   @@index([organisationId, locationId, date])
@@ -700,6 +710,9 @@ model CanonicalInvoice {
   locationId       String
   supplierId       String?
   source           CanonicalSource
+  /// Header-level line quality summary (performance): number of canonical line items where qualityStatus == WARN.
+  /// This allows cheap, banner-safe queries without joining CanonicalInvoiceLineItem.
+  warningLineCount Int             @default(0)
   // Exactly one of these should be set for Sprint A sources (enforced in code).
   legacyInvoiceId  String?         @unique
   legacyXeroInvoiceId String?      @unique
@@ -722,6 +735,57 @@ model CanonicalInvoice {
   @@index([organisationId, locationId])
   @@index([organisationId, locationId, supplierId])
   @@index([deletedAt])
+}
+
+model RetroAutoApproveBatch {
+  id                 String    @id @default(uuid())
+  organisationId     String
+  locationId         String
+  createdByUserId    String
+  idempotencyKey     String
+  requestFingerprint String
+  dryRun             Boolean   @default(false)
+  state              String    @default("IN_PROGRESS")
+  approvedCount      Int       @default(0)
+  skippedCount       Int       @default(0)
+  approvedInvoiceIds String[]  @default([])
+  reasonsBreakdown   Json?
+  completedAt        DateTime?
+  createdAt          DateTime  @default(now())
+  updatedAt          DateTime  @updatedAt
+
+  organisation Organisation @relation(fields: [organisationId], references: [id])
+  location     Location     @relation(fields: [locationId], references: [id])
+  createdBy    User         @relation("RetroAutoApproveBatchCreatedBy", fields: [createdByUserId], references: [id])
+  auditEvents  InvoiceAuditEvent[]
+
+  @@unique([organisationId, locationId, idempotencyKey])
+  @@index([organisationId, locationId])
+  @@index([idempotencyKey])
+}
+
+model InvoiceAuditEvent {
+  id                String   @id @default(uuid())
+  organisationId    String
+  locationId        String
+  invoiceId         String
+  invoiceFileId     String
+  action            String
+  reason            String
+  triggeredByUserId String
+  batchId           String
+  createdAt         DateTime @default(now())
+
+  organisation Organisation          @relation(fields: [organisationId], references: [id])
+  location     Location              @relation(fields: [locationId], references: [id])
+  invoice      Invoice               @relation(fields: [invoiceId], references: [id], onDelete: Cascade)
+  invoiceFile  InvoiceFile           @relation(fields: [invoiceFileId], references: [id], onDelete: Cascade)
+  triggeredBy  User                  @relation("InvoiceAuditEventTriggeredBy", fields: [triggeredByUserId], references: [id])
+  batch        RetroAutoApproveBatch @relation(fields: [batchId], references: [id], onDelete: Cascade)
+
+  @@index([batchId])
+  @@index([organisationId, locationId])
+  @@index([invoiceId])
 }
 
 model CanonicalInvoiceLineItem {

@@ -95,6 +95,54 @@ export default async function invoiceRoutes(fastify: FastifyInstance) {
       }
   }, invoiceController.getReviewCount);
 
+  // GET /invoices/auto-approve/retro/summary (location-scoped token)
+  app.get('/auto-approve/retro/summary', {
+      schema: {
+          response: {
+              200: z.object({
+                  candidateCount: z.number(),
+                  eligibleEstimate: z.number().nullable(),
+                  eligibleEstimateSampleSize: z.number(),
+                  isTruncated: z.boolean(),
+                  maxCandidates: z.number(),
+                  candidateBySupplier: z.array(z.object({
+                      supplierId: z.string(),
+                      supplierName: z.string(),
+                      candidateCount: z.number(),
+                  })),
+                  preview: z.array(z.any()),
+                  requirements: z.any(),
+                  canRun: z.boolean(),
+                  cta: z.enum(['upgrade', 'run']),
+                  upgradeTarget: z.enum(['pro']).nullable(),
+                  hasSeenDiscoveryModal: z.boolean(),
+              }),
+          },
+      }
+  }, invoiceController.getRetroAutoApproveSummary);
+
+  // POST /invoices/auto-approve/retro/discovery/seen (location-scoped token)
+  app.post('/auto-approve/retro/discovery/seen', {
+      schema: {
+          response: {
+              200: z.object({
+                  ok: z.boolean(),
+              }),
+          },
+      },
+  }, invoiceController.markRetroAutoApproveDiscoverySeen);
+
+  // POST /invoices/auto-approve/retro/run (location-scoped token)
+  app.post('/auto-approve/retro/run', {
+      schema: {
+          body: z.object({
+              dryRun: z.boolean().optional(),
+              // required in client contract; server will defensively generate if missing
+              idempotencyKey: z.string().uuid().optional(),
+          }),
+      },
+  }, invoiceController.runRetroAutoApprove);
+
   // GET /invoices/locations/:locationId
   app.get('/locations/:locationId', {
       schema: {

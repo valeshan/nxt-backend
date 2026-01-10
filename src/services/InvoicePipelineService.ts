@@ -56,106 +56,7 @@ function buildSuppressionSet(
     return suppressionSet;
 }
 
-// ============================================================================
-// Auto-Approval Configuration & Types
-// ============================================================================
-
-/**
- * Confidence threshold for auto-approval eligibility.
- * Invoices with confidenceScore >= this value are considered high-confidence.
- */
-const HIGH_CONFIDENCE_THRESHOLD = 90;
-
-/**
- * Type for line-item quality summary used in auto-approval decisions.
- */
-type LineItemQualitySummary = {
-  totalCount: number;
-  includedCount: number;
-  excludedCount: number;
-  excludedReasons: string[];
-  totalSpend: number;
-  excludedSpend: number;
-  excludedSpendPct: number | null;
-};
-
-/**
- * Result of auto-approval eligibility check.
- * Returns explicit reason codes for debugging and logging.
- */
-type AutoApprovalResult =
-  | { eligible: true }
-  | { eligible: false; reason: string };
-
-/**
- * Pure function to determine if an invoice is eligible for auto-approval.
- * 
- * @param invoiceFile - The invoice file record
- * @param invoice - The invoice record (with total and supplier for security checks)
- * @param lineItemQualitySummary - Quality summary from canonical line items
- * @param locationAutoApproveEnabled - Whether the location has auto-approval enabled
- * @returns Eligibility result with explicit reason if not eligible
- */
-function isInvoiceAutoApprovable(
-  invoiceFile: { reviewStatus: ReviewStatus; processingStatus: ProcessingStatus; confidenceScore: number | null },
-  invoice: { total: any; supplier?: { status: PrismaSupplierStatus } | null },
-  lineItemQualitySummary: LineItemQualitySummary | null,
-  locationAutoApproveEnabled: boolean
-): AutoApprovalResult {
-  // 1. Feature flag must be enabled
-  if (!locationAutoApproveEnabled) {
-    return { eligible: false, reason: 'FEATURE_DISABLED' };
-  }
-
-  // 2. Already verified - skip (idempotent)
-  if (invoiceFile.reviewStatus === ReviewStatus.VERIFIED) {
-    return { eligible: false, reason: 'ALREADY_VERIFIED' };
-  }
-
-  // 3. Manual edits block auto-approval (manual always wins)
-  if (invoiceFile.processingStatus === ProcessingStatus.MANUALLY_UPDATED) {
-    return { eligible: false, reason: 'HAS_MANUAL_EDITS' };
-  }
-
-  // 4. Supplier must exist and be ACTIVE (prevents "Trojan Horse" attacks)
-  // New suppliers auto-created from OCR have PENDING_REVIEW status and must be
-  // manually verified before their invoices can be auto-approved.
-  if (!invoice.supplier) {
-    return { eligible: false, reason: 'NO_SUPPLIER' };
-  }
-  if (invoice.supplier.status !== PrismaSupplierStatus.ACTIVE) {
-    return { eligible: false, reason: 'SUPPLIER_NOT_ACTIVE' };
-  }
-
-  // 5. Must have quality data
-  if (!lineItemQualitySummary) {
-    return { eligible: false, reason: 'NO_QUALITY_DATA' };
-  }
-
-  // 6. Must have line items
-  if (lineItemQualitySummary.totalCount === 0) {
-    return { eligible: false, reason: 'NO_LINE_ITEMS' };
-  }
-
-  // 7. All line items must be included in analytics (excludedCount === 0)
-  if (lineItemQualitySummary.excludedCount > 0) {
-    return { eligible: false, reason: 'HAS_EXCLUDED_LINES' };
-  }
-
-  // 8. Confidence threshold check
-  const confidence = invoiceFile.confidenceScore ?? 0;
-  if (confidence < HIGH_CONFIDENCE_THRESHOLD) {
-    return { eligible: false, reason: 'LOW_CONFIDENCE' };
-  }
-
-  // 9. Credit note proxy - negative totals blocked until we have invoiceType
-  const total = invoice.total?.toNumber?.() ?? Number(invoice.total) ?? 0;
-  if (total < 0) {
-    return { eligible: false, reason: 'NEGATIVE_TOTAL' };
-  }
-
-  return { eligible: true };
-}
+import { isInvoiceAutoApprovable } from './autoApproval/autoApprovalEngine';
 
 /**
  * Classify OCR failure based on error, confidence, and text detection
@@ -1660,12 +1561,21 @@ export const invoicePipelineService = {
                         } as any;
                        });
 
+                       // Header-level quality summary: WARN line count (qualityStatus == WARN).
+                       // This is the single definition of what counts as a "warning" for banner-safe queries.
+                       const warningLineCount = canonicalLineData.filter((l: any) => l.qualityStatus === 'WARN').length;
+
                        if (canonicalLineData.length > 0) {
                          await txAny.canonicalInvoiceLineItem.createMany({
                            data: canonicalLineData,
                            skipDuplicates: true,
                          });
                        }
+
+                       await txAny.canonicalInvoice.update({
+                         where: { id: canonical.id },
+                         data: { warningLineCount },
+                       });
                      });
                    }
                  } catch (e) {
@@ -1827,18 +1737,33 @@ export const invoicePipelineService = {
     // Compute quality summary only if feature is enabled
     const summary = await this.computeLineItemQualitySummary(file.invoice.id);
 
-    // Eligibility decision
-    const decision = isInvoiceAutoApprovable(file, file.invoice, summary, enabled);
-    if (!decision.eligible) {
+    // Eligibility decision (shared engine)
+    const decision = isInvoiceAutoApprovable({
+      locationAutoApproveEnabled: enabled,
+      invoiceFile: {
+        reviewStatus: file.reviewStatus,
+        processingStatus: file.processingStatus,
+        confidenceScore: file.confidenceScore ?? null,
+        validationErrors: file.validationErrors ?? null,
+        verificationSource: file.verificationSource ?? null,
+      },
+      invoice: {
+        total: file.invoice.total,
+        date: file.invoice.date ?? null,
+        supplier: file.invoice.supplier ?? null,
+      },
+      canonical: summary ? { warningLineCount: summary.excludedCount } : null,
+    });
+    if (!decision.ok) {
       console.log('[InvoicePipeline] Auto-approval skipped', {
         invoiceFileId: file.id,
         invoiceId: file.invoice.id,
         locationId: file.locationId,
         supplierId: file.invoice.supplier?.id ?? null,
         supplierStatus: file.invoice.supplier?.status ?? null,
-        reason: decision.reason,
+        reason: decision.reasonCode,
       });
-      return { applied: false, reason: decision.reason, updatedFile: file };
+      return { applied: false, reason: decision.reasonCode, updatedFile: file };
     }
 
     // Apply updates transactionally (keep InvoiceFile and Invoice in sync)
@@ -2658,6 +2583,13 @@ export const invoicePipelineService = {
             if (lineData.length > 0) {
               await txAny.canonicalInvoiceLineItem.createMany({ data: lineData });
             }
+
+            // Header-level quality summary: WARN line count (qualityStatus == WARN).
+            const warningLineCount = lineData.filter((l: any) => l.qualityStatus === 'WARN').length;
+            await txAny.canonicalInvoice.update({
+              where: { id: canonical.id },
+              data: { warningLineCount },
+            });
           } catch (e) {
             console.warn(`[InvoicePipeline] Canonical dual-write failed during verifyInvoice invoiceId=${invoiceId}:`, e);
           }
