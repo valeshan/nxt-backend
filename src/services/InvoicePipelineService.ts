@@ -1915,6 +1915,52 @@ export const invoicePipelineService = {
           createdAt: file.ocrResult.createdAt,
           updatedAt: file.ocrResult.updatedAt,
       } : file.ocrResult;
+      
+      // IMPORTANT: Compute text warnings at READ time using the latest org lexicon.
+      // This avoids needing any backfill/re-OCR for existing invoices after lexicon changes.
+      // We intentionally do not write back to DB here (read-only transform for the response).
+      let invoiceWithFreshTextWarnings = file.invoice;
+      if (file.invoice?.id && Array.isArray(file.invoice?.lineItems) && file.invoice.lineItems.length > 0) {
+        try {
+          const organisationId = file.invoice.organisationId ?? file.organisationId;
+          if (organisationId) {
+            const lexiconEntries = await (prisma as any).organisationLexiconEntry.findMany({
+              where: { organisationId },
+              select: { phraseKey: true },
+            });
+            const lexicon = buildSuppressionSet(lexiconEntries);
+            invoiceWithFreshTextWarnings = {
+              ...file.invoice,
+              lineItems: file.invoice.lineItems.map((li: any) => {
+                const desc = String(li.description ?? '');
+                const ocrConfidence = typeof li.confidenceScore === 'number' ? li.confidenceScore : null;
+                const reasons = computeDescriptionWarnings(desc, { lexicon, ocrConfidence });
+                return {
+                  ...li,
+                  textWarnReasons: reasons.length > 0 ? reasons : [],
+                };
+              }),
+            };
+          }
+        } catch (error: any) {
+          // Only swallow "table missing" scenarios (migration not run).
+          // Any other error should surface (but we still avoid breaking the entire response).
+          const msg = (error?.message || '').toLowerCase();
+          const isTableMissing =
+            error?.code === '42P01' || // PostgreSQL: relation does not exist
+            error?.code === 'P2021' || // Prisma: table does not exist
+            msg.includes('does not exist') ||
+            (msg.includes('relation') && msg.includes('does not exist')) ||
+            (msg.includes('table') && msg.includes('does not exist'));
+
+          if (!isTableMissing) {
+            console.error('[InvoicePipeline] Failed to load lexicon during enrichStatus (continuing without suppression):', {
+              error: error?.message,
+              code: error?.code,
+            });
+          }
+        }
+      }
 
       return {
           ...file,
@@ -1922,6 +1968,7 @@ export const invoicePipelineService = {
           presignedUrl,
           lineItemQualitySummary,
           lineItemQualityIssues,
+          invoice: invoiceWithFreshTextWarnings,
       };
   },
 
@@ -2994,6 +3041,52 @@ export const invoicePipelineService = {
           prisma.invoiceFile.count({ where })
       ]);
       let items = itemsInitial;
+
+      // Compute itemsTotal per invoice (SUM(lineTotal)) in one DB query.
+      // This lets the frontend render the "Items" total without summing line items client-side.
+      // Note: we still include lineItems in the payload for the InvoiceReviewModal flow.
+      try {
+          const invoiceIds = Array.from(
+              new Set(
+                  items
+                      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+                      .map((it: any) => it?.invoice?.id)
+                      .filter(Boolean)
+              )
+          ) as string[];
+
+          if (invoiceIds.length > 0) {
+              const grouped = await prisma.invoiceLineItem.groupBy({
+                  by: ['invoiceId'],
+                  where: { invoiceId: { in: invoiceIds } },
+                  _sum: { lineTotal: true },
+              });
+
+              const sumByInvoiceId = new Map<string, number>();
+              for (const row of grouped as Array<any>) {
+                  const raw = row?._sum?.lineTotal;
+                  const n =
+                      typeof raw === 'number'
+                          ? raw
+                          : typeof raw?.toNumber === 'function'
+                            ? raw.toNumber()
+                            : Number(raw);
+                  sumByInvoiceId.set(row.invoiceId, Number.isFinite(n) ? n : 0);
+              }
+
+              // Attach to invoiceFile root so the frontend can read it without relying on invoice shape.
+              items = items.map((it: any) => {
+                  const id = it?.invoice?.id;
+                  if (id && sumByInvoiceId.has(id)) {
+                      return { ...it, itemsTotal: sumByInvoiceId.get(id) };
+                  }
+                  return it;
+              });
+          }
+      } catch (e) {
+          // Non-fatal: keep list working even if aggregation fails (frontend can fall back to summing line items).
+          console.warn('[InvoicePipeline] Failed to compute itemsTotal for listInvoices (continuing):', e);
+      }
 
       // Realtime-first: list should be cheap by default.
       // If explicitly requested, refresh a capped number of processing items.
