@@ -25,6 +25,14 @@ const verifyCheckoutRequest = z.object({
   sessionId: z.string().min(1),
 });
 
+const syncPortalRequest = z
+  .object({
+    // Optional debugging/context only (no secrets)
+    reason: z.string().optional(),
+  })
+  .nullable()
+  .optional();
+
 /**
  * Billing Routes
  * 
@@ -121,6 +129,25 @@ export default async function billingRoutes(fastify: FastifyInstance) {
         },
       },
     }, billingController.verifyCheckout);
+
+    /**
+     * POST /billing/sync-portal
+     *
+     * Resilience path: sync subscription state from Stripe after returning from Customer Portal.
+     * This avoids relying on webhook timing to reflect plan changes in UI.
+     */
+    app.post('/sync-portal', {
+      schema: {
+        body: syncPortalRequest,
+        response: {
+          200: z.object({ ok: z.boolean() }),
+          400: z.object({ message: z.string() }),
+          403: z.object({ message: z.string() }),
+          503: z.object({ message: z.string() }),
+          500: z.object({ message: z.string() }),
+        },
+      },
+    }, billingController.syncPortal);
   });
 }
 

@@ -1852,13 +1852,13 @@ export const supplierInsightsService = {
         where: {
           productId: null,
           accountCode: { not: null },
-          OR: [
-            { itemCode: null },
-            { itemCode: '' as any },
-          ],
-          OR: [
-            { description: null },
-            { description: '' as any },
+          AND: [
+            {
+              OR: [{ itemCode: null }, { itemCode: '' as any }],
+            },
+            {
+              OR: [{ description: null }, { description: '' as any }],
+            },
           ],
           invoice: {
             organisationId,
@@ -1916,8 +1916,14 @@ export const supplierInsightsService = {
           where: {
             productId: null,
             accountCode,
-            OR: [{ itemCode: null }, { itemCode: '' as any }],
-            OR: [{ description: null }, { description: '' as any }],
+            AND: [
+              {
+                OR: [{ itemCode: null }, { itemCode: '' as any }],
+              },
+              {
+                OR: [{ description: null }, { description: '' as any }],
+              },
+            ],
             invoice: {
               organisationId,
               locationId,
@@ -2273,8 +2279,14 @@ export const supplierInsightsService = {
           where: {
             productId: null,
             accountCode: { not: null },
-            OR: [{ itemCode: null }, { itemCode: '' as any }],
-            OR: [{ description: null }, { description: '' as any }],
+            AND: [
+              {
+                OR: [{ itemCode: null }, { itemCode: '' as any }],
+              },
+              {
+                OR: [{ description: null }, { description: '' as any }],
+              },
+            ],
             invoice: {
               organisationId,
               locationId,

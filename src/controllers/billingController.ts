@@ -11,7 +11,11 @@ import {
 import { getPriceId, isPurchasablePlan, BillingInterval } from '../config/stripePrices';
 import { PlanKey } from '../services/entitlements/types';
 import { PLAN_CATALOG, PLAN_LABELS } from '../config/plans';
-import { handleCheckoutSessionCompleted, handleSubscriptionCreated } from '../services/stripe/webhookHandlers';
+import {
+  handleCheckoutSessionCompleted,
+  handleSubscriptionCreated,
+  handleSubscriptionUpdated,
+} from '../services/stripe/webhookHandlers';
 import {
   INTRO_OFFER_CODE_BY_PLAN,
   isIntroOfferEligible,
@@ -361,7 +365,7 @@ export const billingController = {
         // Some Stripe SDK versions may not have flow_data types yet; use a cast to avoid build-time issues.
         session = await (stripe.billingPortal.sessions.create as any)({
           customer: org.stripeCustomerId,
-          return_url: `${frontendUrl}/store-settings?tab=billing`,
+          return_url: `${frontendUrl}/store-settings?tab=billing&billing_portal_return=true`,
           flow_data: {
             type: 'subscription_update',
             subscription: org.stripeSubscriptionId,
@@ -372,13 +376,13 @@ export const billingController = {
         request.log.warn({ err }, '[Billing] Portal switch_plan flow not supported; falling back to manage');
         session = await stripe.billingPortal.sessions.create({
           customer: org.stripeCustomerId,
-          return_url: `${frontendUrl}/store-settings?tab=billing`,
+          return_url: `${frontendUrl}/store-settings?tab=billing&billing_portal_return=true`,
         });
       }
     } else {
       session = await stripe.billingPortal.sessions.create({
         customer: org.stripeCustomerId,
-        return_url: `${frontendUrl}/store-settings?tab=billing`,
+        return_url: `${frontendUrl}/store-settings?tab=billing&billing_portal_return=true`,
       });
     }
 
@@ -467,6 +471,66 @@ export const billingController = {
         !isProd && err instanceof Error && err.message
           ? `Failed to verify checkout: ${err.message}`
           : 'Failed to verify checkout';
+      return reply.code(500).send({ message });
+    }
+  },
+
+  /**
+   * POST /billing/sync-portal
+   *
+   * Resilience path: after returning from Stripe Customer Portal, fetch the current subscription
+   * directly from Stripe and apply the same mutations as the webhook handler.
+   *
+   * This avoids relying on webhook timing for plan changes to reflect in the UI.
+   */
+  async syncPortal(
+    request: FastifyRequest<{ Body?: { reason?: string } | null }>,
+    reply: FastifyReply
+  ) {
+    try {
+      if (!isStripeEnabled()) {
+        return reply.code(503).send({
+          message: 'Billing is temporarily unavailable. Please try again later.',
+        });
+      }
+
+      const orgId = request.authContext.organisationId;
+      if (!orgId) {
+        return reply.code(400).send({ message: 'Organisation context required' });
+      }
+
+      const org = await prisma.organisation.findUnique({
+        where: { id: orgId },
+        select: {
+          stripeSubscriptionId: true,
+          stripeCustomerId: true,
+        },
+      });
+      if (!org) {
+        return reply.code(404).send({ message: 'Organisation not found' } as any);
+      }
+      if (!org.stripeCustomerId) {
+        return reply.code(400).send({ message: 'No billing account found' });
+      }
+      if (!org.stripeSubscriptionId) {
+        return reply.code(400).send({ message: 'No active subscription to sync' });
+      }
+
+      const stripe = getStripeClient();
+      const subscription = await (stripe.subscriptions as any).retrieve(String(org.stripeSubscriptionId), {
+        expand: ['items.data.price'],
+      });
+
+      await handleSubscriptionUpdated(subscription as any);
+
+      return reply.send({ ok: true });
+    } catch (err) {
+      request.log.error({ err }, '[Billing] Failed to sync portal subscription');
+      const isProd = (process.env.APP_ENV || process.env.NODE_ENV) === 'production';
+      const message =
+        !isProd && err instanceof Error && err.message
+          ? `Failed to sync portal: ${err.message}`
+          : 'Failed to sync portal';
       return reply.code(500).send({ message });
     }
   },
