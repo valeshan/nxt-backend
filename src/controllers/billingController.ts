@@ -11,6 +11,7 @@ import {
 import { getPriceId, isPurchasablePlan, BillingInterval } from '../config/stripePrices';
 import { PlanKey } from '../services/entitlements/types';
 import { PLAN_CATALOG, PLAN_LABELS } from '../config/plans';
+import { handleCheckoutSessionCompleted, handleSubscriptionCreated } from '../services/stripe/webhookHandlers';
 import {
   INTRO_OFFER_CODE_BY_PLAN,
   isIntroOfferEligible,
@@ -382,6 +383,92 @@ export const billingController = {
     }
 
     return reply.send({ url: session.url });
+  },
+
+  /**
+   * POST /billing/verify-checkout
+   *
+   * Finalize billing after returning from Stripe Checkout.
+   * This is a resilience path for cases where webhooks are delayed/misconfigured in the current environment.
+   *
+   * Security:
+   * - Requires authenticated org context (from JWT)
+   * - Requires checkout session metadata to match { organisationId, userId }
+   */
+  async verifyCheckout(
+    request: FastifyRequest<{ Body: { sessionId: string } }>,
+    reply: FastifyReply
+  ) {
+    try {
+      if (!isStripeEnabled()) {
+        return reply.code(503).send({
+          message: 'Billing is temporarily unavailable. Please try again later.',
+        });
+      }
+
+      const userId = request.authContext.userId;
+      const orgId = request.authContext.organisationId;
+      const sessionId = request.body?.sessionId ? String(request.body.sessionId) : '';
+
+      if (!orgId) {
+        return reply.code(400).send({ message: 'Organisation context required' });
+      }
+      if (!sessionId) {
+        return reply.code(400).send({ message: 'sessionId is required' });
+      }
+
+      const stripe = getStripeClient();
+      const session = await stripe.checkout.sessions.retrieve(sessionId as any, {
+        expand: ['subscription', 'customer'],
+      } as any);
+
+      const metaOrgId = session?.metadata?.organisationId ? String(session.metadata.organisationId) : null;
+      const metaUserId = session?.metadata?.userId ? String(session.metadata.userId) : null;
+
+      if (metaOrgId && metaOrgId !== String(orgId)) {
+        return reply.code(403).send({ message: 'Checkout session does not belong to this organisation' });
+      }
+      if (metaUserId && metaUserId !== String(userId)) {
+        return reply.code(403).send({ message: 'Checkout session does not belong to this user' });
+      }
+
+      // Stripe: for subscription mode, session.status becomes "complete".
+      const status = (session as any)?.status ? String((session as any).status) : null;
+      const mode = (session as any)?.mode ? String((session as any).mode) : null;
+
+      if (mode !== 'subscription') {
+        return reply.code(400).send({ message: 'Invalid checkout session mode' });
+      }
+      if (status && status !== 'complete') {
+        return reply.code(409).send({ message: 'Checkout session is not complete yet' });
+      }
+
+      // Apply the same state mutations as webhooks (idempotent updates).
+      await handleCheckoutSessionCompleted(session as any);
+
+      const subscriptionObj = (session as any)?.subscription;
+      const subscription =
+        subscriptionObj && typeof subscriptionObj === 'object'
+          ? subscriptionObj
+          : subscriptionObj
+            ? await (stripe.subscriptions as any).retrieve(String(subscriptionObj))
+            : null;
+      if (!subscription) {
+        return reply.code(400).send({ message: 'Subscription missing on checkout session' });
+      }
+
+      await handleSubscriptionCreated(subscription as any);
+
+      return reply.send({ ok: true });
+    } catch (err) {
+      request.log.error({ err }, '[Billing] Failed to verify checkout session');
+      const isProd = (process.env.APP_ENV || process.env.NODE_ENV) === 'production';
+      const message =
+        !isProd && err instanceof Error && err.message
+          ? `Failed to verify checkout: ${err.message}`
+          : 'Failed to verify checkout';
+      return reply.code(500).send({ message });
+    }
   },
 };
 

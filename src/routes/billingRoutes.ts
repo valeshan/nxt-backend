@@ -21,6 +21,10 @@ const portalSessionRequest = z
   .nullable()
   .optional();
 
+const verifyCheckoutRequest = z.object({
+  sessionId: z.string().min(1),
+});
+
 /**
  * Billing Routes
  * 
@@ -97,6 +101,26 @@ export default async function billingRoutes(fastify: FastifyInstance) {
         },
       },
     }, billingController.createPortalSession);
+
+    /**
+     * POST /billing/verify-checkout
+     *
+     * Resilience path: finalize billing after returning from Stripe Checkout.
+     * Uses the session_id from the success_url.
+     */
+    app.post('/verify-checkout', {
+      schema: {
+        body: verifyCheckoutRequest,
+        response: {
+          200: z.object({ ok: z.boolean() }),
+          400: z.object({ message: z.string() }),
+          403: z.object({ message: z.string() }),
+          409: z.object({ message: z.string() }),
+          503: z.object({ message: z.string() }),
+          500: z.object({ message: z.string() }),
+        },
+      },
+    }, billingController.verifyCheckout);
   });
 }
 

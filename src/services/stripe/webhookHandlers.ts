@@ -10,6 +10,15 @@ type StripeCheckoutSession = any;
 type StripeInvoice = any;
 /* eslint-enable @typescript-eslint/no-explicit-any */
 
+function normalizeStripeId(value: unknown): string | null {
+  if (!value) return null;
+  if (typeof value === 'string') return value;
+  if (typeof value === 'object' && (value as any).id && typeof (value as any).id === 'string') {
+    return String((value as any).id);
+  }
+  return null;
+}
+
 /**
  * Grace period duration in days after payment failure
  */
@@ -165,8 +174,10 @@ function getFreeUntilFromSubscription(subscription: StripeSubscription): Date | 
 export async function handleCheckoutSessionCompleted(
   session: StripeCheckoutSession
 ): Promise<void> {
-  const subscriptionId = session.subscription as string | null;
-  const customerId = session.customer as string | null;
+  // Stripe can represent IDs as strings or expanded objects ({ id, ... }).
+  // Normalize here so downstream updates never receive object shapes.
+  const subscriptionId = normalizeStripeId(session.subscription);
+  const customerId = normalizeStripeId(session.customer);
 
   if (!subscriptionId || !customerId) {
     console.warn('[Stripe Webhook] checkout.session.completed missing subscription or customer');
