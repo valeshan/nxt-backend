@@ -118,7 +118,7 @@ export const xeroInvoiceOcrService = {
         const invoicesResponse = await xero.accountingApi.getInvoices(
             connection.xeroTenantId,
             twelveMonthsAgo, // IfModifiedSince (expanded window to align with 12m requirement)
-            'Type=="ACCPAY" && Status=="AUTHORISED"', // Filter
+            'Type=="ACCPAY" && (Status=="AUTHORISED" || Status=="PAID")', // Filter (include PAID so attachments still get reviewed)
             'Date DESC', // Order
             undefined, undefined, undefined, undefined, // IDs/Refs
             1, // Page 1

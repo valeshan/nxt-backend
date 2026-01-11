@@ -2,33 +2,27 @@ import prisma from '../infrastructure/prismaClient';
 import { ProcessingStatus } from '@prisma/client';
 import { ocrService } from '../services/OcrService';
 
-const agentFetch = (globalThis as any).fetch;
-
 const STUCK_MINUTES = 10;
 const MAX_RETRIES = 3;
 
+function getOcrAttemptCount(file: unknown): number {
+  if (!file || typeof file !== 'object') return 0;
+  if (!('ocrAttemptCount' in file)) return 0;
+  const value = (file as Record<string, unknown>).ocrAttemptCount;
+  return typeof value === 'number' ? value : 0;
+}
+
+function getErrorMessage(err: unknown): string {
+  if (err instanceof Error) return err.message;
+  if (err && typeof err === 'object' && 'message' in err) {
+    const value = (err as Record<string, unknown>).message;
+    if (typeof value === 'string') return value;
+  }
+  return 'unknown';
+}
+
 export async function runJanitor() {
   const cutoff = new Date(Date.now() - STUCK_MINUTES * 60 * 1000);
-
-  // #region agent log
-  agentFetch?.('http://127.0.0.1:7242/ingest/613ef4ed-1e5c-4ea7-9c91-6649f4706354', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      sessionId: 'debug-session',
-      runId: 'janitor-stuck',
-      hypothesisId: 'J1',
-      location: 'janitor.ts:start',
-      message: 'janitor run start',
-      data: {
-        cutoff: cutoff.toISOString(),
-        stuckMinutes: STUCK_MINUTES,
-        maxRetries: MAX_RETRIES,
-      },
-      timestamp: Date.now(),
-    }),
-  }).catch(() => {});
-  // #endregion
 
   const stuckFiles = await prisma.invoiceFile.findMany({
     where: {
@@ -47,54 +41,8 @@ export async function runJanitor() {
     },
   });
 
-  // #region agent log
-  agentFetch?.('http://127.0.0.1:7242/ingest/613ef4ed-1e5c-4ea7-9c91-6649f4706354', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      sessionId: 'debug-session',
-      runId: 'janitor-stuck',
-      hypothesisId: 'J2',
-      location: 'janitor.ts:found',
-      message: 'janitor found stuck files',
-      data: {
-        count: stuckFiles.length,
-        sample: stuckFiles.slice(0, 20).map((f) => ({
-          id: f.id,
-          updatedAt: f.updatedAt,
-          ocrAttemptCount: (f as any).ocrAttemptCount ?? 0,
-        })),
-      },
-      timestamp: Date.now(),
-    }),
-  }).catch(() => {});
-  // #endregion
-
-  // #region agent log
-  agentFetch?.('http://127.0.0.1:7242/ingest/613ef4ed-1e5c-4ea7-9c91-6649f4706354', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      sessionId: 'debug-session',
-      runId: 'janitor-stuck',
-      hypothesisId: 'J4',
-      location: 'janitor.ts:pending_found',
-      message: 'janitor found pending_ocr files',
-      data: {
-        count: pendingOcr.length,
-        sample: pendingOcr.slice(0, 20).map((f) => ({
-          id: f.id,
-          updatedAt: f.updatedAt,
-          ocrAttemptCount: (f as any).ocrAttemptCount ?? 0,
-        })),
-      },
-      timestamp: Date.now(),
-    }),
-  }).catch(() => {});
-  // #endregion
-
   for (const file of stuckFiles) {
-    const retryCount = (file as any).ocrAttemptCount || 0;
+    const retryCount = getOcrAttemptCount(file);
     if (retryCount >= MAX_RETRIES) {
       await prisma.invoiceFile.update({
         where: { id: file.id },
@@ -132,7 +80,7 @@ export async function runJanitor() {
   if (retryableFailed.length > 0) {
     await Promise.all(
       retryableFailed.map(async (file) => {
-        const nextCount = ((file as any).ocrAttemptCount || 0) + 1;
+        const nextCount = getOcrAttemptCount(file) + 1;
         await prisma.invoiceFile.update({
           where: { id: file.id },
           data: {
@@ -152,7 +100,7 @@ export async function runJanitor() {
   let failedPending = 0;
   if (pendingOcr.length > 0) {
     for (const file of pendingOcr) {
-      const retryCount = (file as any).ocrAttemptCount || 0;
+      const retryCount = getOcrAttemptCount(file);
       const nextCount = retryCount + 1;
       if (nextCount > MAX_RETRIES) {
         await prisma.invoiceFile.update({
@@ -181,12 +129,13 @@ export async function runJanitor() {
           },
         });
         startedPending++;
-      } catch (err: any) {
+      } catch (err: unknown) {
+        const message = getErrorMessage(err);
         await prisma.invoiceFile.update({
           where: { id: file.id },
           data: {
             processingStatus: ProcessingStatus.OCR_FAILED,
-            failureReason: `Janitor: failed to start OCR (${nextCount}/${MAX_RETRIES}): ${err?.message ?? 'unknown'}`,
+            failureReason: `Janitor: failed to start OCR (${nextCount}/${MAX_RETRIES}): ${message}`,
             ocrAttemptCount: nextCount,
             lastOcrAttemptAt: new Date(),
           },
@@ -196,27 +145,19 @@ export async function runJanitor() {
     }
   }
 
-  // #region agent log
-  agentFetch?.('http://127.0.0.1:7242/ingest/613ef4ed-1e5c-4ea7-9c91-6649f4706354', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      sessionId: 'debug-session',
-      runId: 'janitor-stuck',
-      hypothesisId: 'J3',
-      location: 'janitor.ts:complete',
-      message: 'janitor run complete',
-      data: { processed: stuckFiles.length, retriedFailed: retryableFailed.length, startedPending, failedPending },
-      timestamp: Date.now(),
-    }),
-  }).catch(() => {});
-  // #endregion
+  return {
+    stuckFilesFound: stuckFiles.length,
+    retryableFailedFound: retryableFailed.length,
+    pendingOcrFound: pendingOcr.length,
+    startedPending,
+    failedPending,
+  };
 }
 
 if (require.main === module) {
   runJanitor()
-    .then(() => {
-      console.log('[Janitor] Completed');
+    .then((summary) => {
+      console.log('[Janitor] Completed', summary);
       process.exit(0);
     })
     .catch((err) => {

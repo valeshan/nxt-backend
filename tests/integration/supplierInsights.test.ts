@@ -947,14 +947,14 @@ describe('Supplier Insights Service Integration', () => {
       });
     }, 30000);
 
-    it('should include Xero invoices without attachments in Supplier Insights', async () => {
+    it('includes Xero invoices without attachments, but excludes any Xero invoice with attachments until manual approval exists', async () => {
       const summary = await supplierInsightsService.getSupplierSpendSummary(
         attachmentOrgId,
         attachmentLocationId
       );
       
-      // Should include invoice without attachment (1000) + invoice with verified attachment (3000)
-      // Should NOT include invoice with unverified attachment (2000)
+      // Should include invoice without attachment (1000).
+      // Should NOT include invoices that have ANY attachment (2000 unverified + 3000 verified), because attachments require approval.
       expect(summary.totalSupplierSpendPerMonth).toBeGreaterThan(0);
       
       // Verify the spend breakdown includes the correct invoices
@@ -963,13 +963,13 @@ describe('Supplier Insights Service Integration', () => {
         attachmentLocationId
       );
       
-      // Should have spend from invoices without attachments and verified attachments
+      // Should have spend from invoice without attachments only
       const totalSpend = breakdown.bySupplier.reduce((sum, s) => sum + (s.totalSpend12m || 0), 0);
-      expect(totalSpend).toBeGreaterThanOrEqual(4000); // 1000 + 3000
-      expect(totalSpend).toBeLessThan(5000); // Should not include 2000 from unverified
+      expect(totalSpend).toBeGreaterThanOrEqual(1000);
+      expect(totalSpend).toBeLessThan(2000); // Should not include 2000/3000 from attached Xero invoices
     });
 
-    it('should exclude Xero invoices with unverified attachments from Supplier Insights', async () => {
+    it('excludes Xero invoices with attachments from Supplier Insights /products (only no-attachment Xero contributes)', async () => {
       // Get products to verify they don't include data from unverified attachment invoice
       const products = await supplierInsightsService.getProducts(
         attachmentOrgId,
@@ -977,20 +977,16 @@ describe('Supplier Insights Service Integration', () => {
         { page: 1, pageSize: 10 }
       );
       
-      // The product should have spend from invoices without attachments and verified attachments
-      // but NOT from the unverified attachment invoice
+      // The product should have spend from invoice without attachments only.
       const product = products.items.find(p => p.productName === 'Test Product');
       expect(product).toBeDefined();
       if (product) {
-        // Should include spend from no-attachment (1000) + verified attachment (3000) = 4000
-        // Should NOT include unverified attachment (2000)
-        expect(product.spend12m).toBeGreaterThanOrEqual(4000);
-        expect(product.spend12m).toBeLessThan(5000);
+        expect(product.spend12m).toBeGreaterThanOrEqual(1000);
+        expect(product.spend12m).toBeLessThan(2000);
       }
     });
 
-    it('should include Xero invoices with verified attachments in Supplier Insights', async () => {
-      // The verified attachment invoice should be included
+    it('does not include Xero invoices with verified attachments in Supplier Insights until manual approval exists (supplier may still appear due to no-attachment invoices)', async () => {
       const breakdown = await supplierInsightsService.getSpendBreakdown(
         attachmentOrgId,
         attachmentLocationId
@@ -999,8 +995,9 @@ describe('Supplier Insights Service Integration', () => {
       const supplierSpend = breakdown.bySupplier.find(s => s.supplierName === 'Attachment Supplier');
       expect(supplierSpend).toBeDefined();
       if (supplierSpend) {
-        // Should include verified attachment invoice (3000)
-        expect(supplierSpend.totalSpend12m).toBeGreaterThanOrEqual(3000);
+        // Only the no-attachment Xero invoice (1000) should contribute; attached invoices (2000/3000) must not.
+        expect(supplierSpend.totalSpend12m).toBeGreaterThanOrEqual(1000);
+        expect(supplierSpend.totalSpend12m).toBeLessThan(2000);
       }
     });
   });

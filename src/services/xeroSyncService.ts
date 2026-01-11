@@ -579,9 +579,22 @@ export class XeroSyncService {
                 let productId: string | null = null;
                 
                 if (locationId) {
-                    const productKey = getProductKeyFromLineItem(li.itemCode, li.description);
+                    const isBlank =
+                        (!li.itemCode || String(li.itemCode).trim().length === 0) &&
+                        (!li.description || String(li.description).trim().length === 0);
+
+                    // Xero no-attachment invoices must be displayable immediately even when a line has no itemCode/description.
+                    // For those blank lines, we key by (supplierId, accountCode) to prevent cross-supplier merging and "Unknown" supplier rows.
+                    const productKey = (() => {
+                        if (isBlank && li.accountCode && String(li.accountCode).trim().length > 0) {
+                            return `acct:${supplier.id}:${String(li.accountCode).trim().toLowerCase()}`;
+                        }
+                        return getProductKeyFromLineItem(li.itemCode, li.description);
+                    })();
                     
                     if (productKey !== 'unknown') {
+                        const isAccountFallback = productKey.startsWith('acct:');
+
                         // Upsert Product
                         const product = await tx.product.upsert({
                             where: {
@@ -591,13 +604,15 @@ export class XeroSyncService {
                                     productKey
                                 }
                             },
-                            update: {},
+                            update: {
+                                ...(isAccountFallback ? { supplierId: supplier.id } : {})
+                            },
                             create: {
                                 organisationId,
                                 locationId,
                                 productKey,
-                                name: (li.itemCode || li.description || 'Unknown').trim(),
-                                supplierId: null // Can be backfilled later
+                                name: (li.itemCode || li.description || li.accountCode || 'Unknown').trim(),
+                                supplierId: isAccountFallback ? supplier.id : null
                             }
                         });
                         productId = product.id;

@@ -68,7 +68,7 @@ describe('Supplier list attachment gating (Xero)', () => {
     return { organisationId, locationId, orgToken };
   }
 
-  it('excludes suppliers whose only Xero invoices have unverified attachments, but includes doc-less and verified-attachment Xero invoices', async () => {
+  it('includes suppliers with doc-less Xero invoices, but excludes suppliers whose only Xero invoices have attachments (regardless of verification) until manual approval exists', async () => {
     const { organisationId, locationId, orgToken } = await bootstrapOrgAndGetOrgToken();
 
     const supplierNoAttachmentId = 'sup-xero-no-attachment';
@@ -147,7 +147,7 @@ describe('Supplier list attachment gating (Xero)', () => {
       },
     });
 
-    // 3) Xero invoice with VERIFIED attachment → included
+    // 3) Xero invoice with VERIFIED attachment → excluded (attachments require manual approval; Xero line items must not contribute)
     await prisma.xeroInvoice.create({
       data: {
         organisationId,
@@ -184,7 +184,7 @@ describe('Supplier list attachment gating (Xero)', () => {
     const supplierNames = body.data.map((s) => s.name);
 
     expect(supplierNames).toContain('Xero No Attachment Supplier');
-    expect(supplierNames).toContain('Xero Verified Attachment Supplier');
+    expect(supplierNames).not.toContain('Xero Verified Attachment Supplier');
     expect(supplierNames).not.toContain('Xero Unverified Attachment Supplier');
   }, 20000);
 });

@@ -350,7 +350,9 @@ describe('Retro Auto-Approve Integration', () => {
       headers: { Authorization: `Bearer ${locationToken}` },
     });
     expect(after.statusCode).toBe(200);
-    expect(after.json().candidateCount).toBe(1);
+    const afterJson = after.json() as { candidateCount: number; preview: Array<{ invoiceId: string }> };
+    expect(afterJson.candidateCount).toBe(1);
+    expect(afterJson.preview.map((p) => p.invoiceId)).toContain(b.invoice.id);
   });
 
   it('should still return a preview even when canRun=false (e.g. location auto-approve toggle off)', async () => {

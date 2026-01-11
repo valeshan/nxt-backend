@@ -78,7 +78,9 @@ export class SupplierService {
           name: contactName,
           normalizedName,
           sourceType: SupplierSourceType.XERO,
-          status: SupplierStatus.ACTIVE,
+          // Xero-synced suppliers should not be treated as "approved" until the user verifies an invoice.
+          // This prevents retro auto-approve discovery from triggering immediately on a brand-new integration.
+          status: SupplierStatus.PENDING_REVIEW,
         },
       });
 

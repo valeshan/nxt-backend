@@ -27,12 +27,8 @@ export const feedbackController = {
       }
 
       // Get recipient email from env var
-      // #region agent log
-      // #endregion
       const recipientEmail = config.FEEDBACK_TO_EMAIL;
       if (!recipientEmail) {
-        // #region agent log
-        // #endregion
         request.log.error({ msg: 'FEEDBACK_TO_EMAIL not configured' });
         return reply.code(500).send({
           success: false,

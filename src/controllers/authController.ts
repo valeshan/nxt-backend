@@ -41,8 +41,6 @@ export const authController = {
   },
 
   async me(request: FastifyRequest, reply: FastifyReply) {
-    // #region agent log
-    // #endregion
     const { userId, organisationId, locationId, tokenType } = request.authContext;
     console.log(`[AuthController] me called for userId: ${userId}`, {
       organisationId,
@@ -55,12 +53,8 @@ export const authController = {
         locationId,
         tokenType,
       });
-      // #region agent log
-      // #endregion
       return reply.send(result);
     } catch (error: any) {
-      // #region agent log
-      // #endregion
       return reply.status(500).send({ error: 'Internal server error' });
     }
   },

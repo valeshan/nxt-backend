@@ -141,13 +141,14 @@ function getMonthLabel(date: Date): string {
 // --- Helper Logic ---
 
 /**
- * Fetches Xero invoice IDs that have attachments but are NOT verified.
- * These should be excluded from Supplier Insights.
- * 
- * Logic: Xero invoices WITH attachments are only included if they're VERIFIED.
- * Xero invoices WITHOUT attachments are automatically included.
+ * Fetches Xero invoice IDs that have ANY attachment (regardless of review status).
+ *
+ * Supplier Insights rule:
+ * - Xero invoices WITHOUT attachments → can be included immediately
+ * - Xero invoices WITH attachments → MUST be excluded until the invoice is manually approved
+ *   (and only selected line items should then contribute via verified InvoiceLineItem rows).
  */
-async function getXeroInvoiceIdsWithUnverifiedAttachments(
+async function getXeroInvoiceIdsWithAnyAttachments(
   organisationId: string,
   locationId?: string
 ): Promise<string[]> {
@@ -163,7 +164,6 @@ async function getXeroInvoiceIdsWithUnverifiedAttachments(
       sourceType: 'XERO',
       deletedAt: null,
       sourceReference: { not: null },
-      reviewStatus: { not: 'VERIFIED' }, // Exclude VERIFIED ones (they should be included)
       ...(locationId ? { locationId } : {})
     },
     select: {
@@ -266,7 +266,7 @@ async function computeWeightedAveragePrices(
         // Get superseded Xero IDs and unverified attachment IDs to exclude from price calculations
         const [supersededIds, unverifiedAttachmentIds] = await Promise.all([
           getSupersededXeroIds(organisationId, locationId, startDate, endDate),
-          getXeroInvoiceIdsWithUnverifiedAttachments(organisationId, locationId)
+          getXeroInvoiceIdsWithAnyAttachments(organisationId, locationId)
         ]);
         
         // Fetch all line items for these products in the window
@@ -281,7 +281,7 @@ async function computeWeightedAveragePrices(
                     endDate,
                     supersededIds,
                     accountCodes,
-                    xeroInvoiceIdsWithUnverifiedAttachments: unverifiedAttachmentIds
+                    xeroInvoiceIdsWithAnyAttachments: unverifiedAttachmentIds
                 })
             },
             select: {
@@ -533,7 +533,8 @@ function getVerifiedManualLineItemWhere(params: {
  * 
  * Exclusion logic for attachments:
  * - Xero invoices WITHOUT attachments → automatically included
- * - Xero invoices WITH attachments → only included if InvoiceFile.reviewStatus = 'VERIFIED'
+ * - Xero invoices WITH attachments → excluded from Supplier Insights until manual approval exists;
+ *   only selected InvoiceLineItem rows (isIncludedInAnalytics=true) contribute after approval.
  * 
  * This ensures consistent filtering across all Xero line item queries.
  */
@@ -544,8 +545,7 @@ function getXeroLineItemWhere(params: {
   endDate?: Date;
   supersededIds: string[];
   accountCodes?: string[];
-  excludeUnverifiedAttachments?: boolean; // Default: true
-  xeroInvoiceIdsWithUnverifiedAttachments?: string[]; // Pre-fetched list
+  xeroInvoiceIdsWithAnyAttachments?: string[]; // Pre-fetched list (exclude ALL of these)
 }): Prisma.XeroInvoiceLineItemWhereInput {
   const { 
     orgId, 
@@ -554,14 +554,15 @@ function getXeroLineItemWhere(params: {
     endDate, 
     supersededIds, 
     accountCodes,
-    excludeUnverifiedAttachments = true, // Default to excluding unverified attachments
-    xeroInvoiceIdsWithUnverifiedAttachments = []
+    xeroInvoiceIdsWithAnyAttachments = []
   } = params;
 
-  // Combine superseded IDs with unverified attachment IDs
+  // Combine superseded IDs with "has attachments" IDs.
+  // IMPORTANT: All Xero invoices with attachments are excluded from Supplier Insights;
+  // they only become visible after manual approval via verified InvoiceLineItem records.
   const excludedIds = [...supersededIds];
-  if (excludeUnverifiedAttachments && xeroInvoiceIdsWithUnverifiedAttachments.length > 0) {
-    excludedIds.push(...xeroInvoiceIdsWithUnverifiedAttachments);
+  if (xeroInvoiceIdsWithAnyAttachments.length > 0) {
+    excludedIds.push(...xeroInvoiceIdsWithAnyAttachments);
   }
 
   return {
@@ -657,7 +658,7 @@ export const supplierInsightsService = {
 
     const [supersededIds, unverifiedAttachmentIds] = await Promise.all([
       getSupersededXeroIds(organisationId, locationId, ninetyDaysAgo),
-      getXeroInvoiceIdsWithUnverifiedAttachments(organisationId, locationId)
+      getXeroInvoiceIdsWithAnyAttachments(organisationId, locationId)
     ]);
   const excludedIds = [...supersededIds, ...unverifiedAttachmentIds];
 
@@ -674,7 +675,7 @@ export const supplierInsightsService = {
           endDate: now,
           supersededIds,
           accountCodes: undefined,
-          xeroInvoiceIdsWithUnverifiedAttachments: unverifiedAttachmentIds
+          xeroInvoiceIdsWithAnyAttachments: unverifiedAttachmentIds
         }),
         _sum: { lineAmount: true },
       }),
@@ -999,9 +1000,9 @@ export const supplierInsightsService = {
     const ninetyDaysAgo = new Date();
     ninetyDaysAgo.setDate(ninetyDaysAgo.getDate() - 90);
 
-    const [supersededIds, xeroInvoiceIdsWithUnverifiedAttachments] = await Promise.all([
+    const [supersededIds, xeroInvoiceIdsWithAnyAttachments] = await Promise.all([
       getSupersededXeroIds(organisationId, locationId, ninetyDaysAgo),
-      getXeroInvoiceIdsWithUnverifiedAttachments(organisationId, locationId)
+      getXeroInvoiceIdsWithAnyAttachments(organisationId, locationId)
     ]);
 
     const safeSum = (agg: any) => agg?._sum?.lineAmount?.toNumber() || 0;
@@ -1016,7 +1017,7 @@ export const supplierInsightsService = {
           startDate: ninetyDaysAgo,
           supersededIds,
           accountCodes,
-          xeroInvoiceIdsWithUnverifiedAttachments
+          xeroInvoiceIdsWithAnyAttachments
         }),
         _sum: { lineAmount: true }
       }),
@@ -1045,7 +1046,7 @@ export const supplierInsightsService = {
     // Fetch superseded IDs for the wider range (last 12m)
     const [trendSupersededIds, trendUnverifiedAttachmentIds] = await Promise.all([
       getSupersededXeroIds(organisationId, locationId, prev6mStart),
-      getXeroInvoiceIdsWithUnverifiedAttachments(organisationId, locationId)
+      getXeroInvoiceIdsWithAnyAttachments(organisationId, locationId)
     ]);
 
     const [last6mAgg, last6mManualAgg, prev6mAgg, prev6mManualAgg] = await Promise.all([
@@ -1057,7 +1058,7 @@ export const supplierInsightsService = {
           endDate: last6m.end,
           supersededIds: trendSupersededIds,
           accountCodes,
-          xeroInvoiceIdsWithUnverifiedAttachments: trendUnverifiedAttachmentIds
+          xeroInvoiceIdsWithAnyAttachments: trendUnverifiedAttachmentIds
         }),
         _sum: { lineAmount: true }
       }),
@@ -1073,7 +1074,7 @@ export const supplierInsightsService = {
           endDate: prev6mEnd,
           supersededIds: trendSupersededIds,
           accountCodes,
-          xeroInvoiceIdsWithUnverifiedAttachments: trendUnverifiedAttachmentIds
+          xeroInvoiceIdsWithAnyAttachments: trendUnverifiedAttachmentIds
         }),
         _sum: { lineAmount: true }
       }),
@@ -1100,7 +1101,7 @@ export const supplierInsightsService = {
     trendStart.setMonth(trendStart.getMonth() - 12);
     const [seriesSupersededIds, seriesUnverifiedAttachmentIds] = await Promise.all([
       getSupersededXeroIds(organisationId, locationId, trendStart),
-      getXeroInvoiceIdsWithUnverifiedAttachments(organisationId, locationId)
+      getXeroInvoiceIdsWithAnyAttachments(organisationId, locationId)
     ]);
 
     // Build all month queries in parallel
@@ -1123,7 +1124,7 @@ export const supplierInsightsService = {
             endDate: end,
             supersededIds: seriesSupersededIds,
             accountCodes,
-            xeroInvoiceIdsWithUnverifiedAttachments: seriesUnverifiedAttachmentIds
+            xeroInvoiceIdsWithAnyAttachments: seriesUnverifiedAttachmentIds
           }),
           _sum: { lineAmount: true }
         }),
@@ -1190,7 +1191,7 @@ export const supplierInsightsService = {
 
     const [priceSupersededIds, priceUnverifiedAttachmentIds] = await Promise.all([
       getSupersededXeroIds(organisationId, locationId, priceMovementStart, priceMovementEnd),
-      getXeroInvoiceIdsWithUnverifiedAttachments(organisationId, locationId)
+      getXeroInvoiceIdsWithAnyAttachments(organisationId, locationId)
     ]);
 
     // Fetch all line items for the last 6 months
@@ -1203,7 +1204,7 @@ export const supplierInsightsService = {
           endDate: priceMovementEnd,
           supersededIds: priceSupersededIds,
           accountCodes,
-          xeroInvoiceIdsWithUnverifiedAttachments: priceUnverifiedAttachmentIds
+          xeroInvoiceIdsWithAnyAttachments: priceUnverifiedAttachmentIds
         }),
         quantity: { gt: 0 }
       } as any,
@@ -1334,7 +1335,7 @@ export const supplierInsightsService = {
     
     const [supersededIds, unverifiedAttachmentIds] = await Promise.all([
       getSupersededXeroIds(organisationId, locationId, last3m.start),
-      getXeroInvoiceIdsWithUnverifiedAttachments(organisationId, locationId)
+      getXeroInvoiceIdsWithAnyAttachments(organisationId, locationId)
     ]);
 
     // Fetch recent lines linked to Products - only from the last 3 months
@@ -1348,7 +1349,7 @@ export const supplierInsightsService = {
           endDate: now,
           supersededIds,
           accountCodes,
-          xeroInvoiceIdsWithUnverifiedAttachments: unverifiedAttachmentIds
+          xeroInvoiceIdsWithAnyAttachments: unverifiedAttachmentIds
         }),
         productId: { not: null }
       } as any,
@@ -1532,7 +1533,7 @@ export const supplierInsightsService = {
     const last6m = getFullCalendarMonths(6); // Changed from 12 to 6 as requested
     const [supersededIds, unverifiedAttachmentIds] = await Promise.all([
       getSupersededXeroIds(organisationId, locationId, last6m.start, new Date()),
-      getXeroInvoiceIdsWithUnverifiedAttachments(organisationId, locationId)
+      getXeroInvoiceIdsWithAnyAttachments(organisationId, locationId)
     ]);
 
     // Combine excluded IDs
@@ -1706,7 +1707,7 @@ export const supplierInsightsService = {
     const [supersededIdsThisMonth, supersededIdsLast3m, unverifiedAttachmentIds] = await Promise.all([
       getSupersededXeroIds(organisationId, locationId, thisMonth.start, thisMonth.end),
       getSupersededXeroIds(organisationId, locationId, last3m.start, last3m.end),
-      getXeroInvoiceIdsWithUnverifiedAttachments(organisationId, locationId)
+      getXeroInvoiceIdsWithAnyAttachments(organisationId, locationId)
     ]);
 
     const getAvgUnitPrices = async (start: Date, end: Date, supersededIds: string[]) => {
@@ -1721,7 +1722,7 @@ export const supplierInsightsService = {
                     endDate: end,
                     supersededIds,
                     accountCodes,
-                    xeroInvoiceIdsWithUnverifiedAttachments: unverifiedAttachmentIds
+                    xeroInvoiceIdsWithAnyAttachments: unverifiedAttachmentIds
                 }),
                 productId: { not: null },
                 quantity: { not: 0 }
@@ -1786,7 +1787,7 @@ export const supplierInsightsService = {
                  // Fallback: find latest invoice for this product to get supplier
                  const [supersededIds, unverifiedAttachmentIds] = await Promise.all([
                    getSupersededXeroIds(organisationId, locationId),
-                   getXeroInvoiceIdsWithUnverifiedAttachments(organisationId, locationId)
+                   getXeroInvoiceIdsWithAnyAttachments(organisationId, locationId)
                  ]);
                  const excludedIds = [...supersededIds, ...unverifiedAttachmentIds];
                  const latestLine = await prisma.xeroInvoiceLineItem.findFirst({
@@ -1825,11 +1826,112 @@ export const supplierInsightsService = {
     const last12m = getFullCalendarMonths(12);
     const statsAsOf = new Date();
 
+    const [supersededIds, xeroInvoiceIdsWithAnyAttachments] = await Promise.all([
+      getSupersededXeroIds(organisationId, locationId, last12m.start),
+      getXeroInvoiceIdsWithAnyAttachments(organisationId, locationId),
+    ]);
+
     // const whereInvoiceBase = {
     //   organisationId,
     //   locationId,
     //   deletedAt: null,
     // };
+
+    // Backfill: ensure Xero line items with missing itemCode/description still contribute to product stats.
+    // Some Xero bills have blank line descriptions. For Xero invoices WITHOUT attachments, these still need to be
+    // displayable immediately. We group blank lines by (supplierId, accountCode), create a Product, and link them.
+    //
+    // IMPORTANT:
+    // - We ONLY do this for Xero invoices WITHOUT attachments.
+    // - Xero invoices WITH attachments must be excluded until manual approval, where only selected
+    //   InvoiceLineItem rows (isIncludedInAnalytics=true) contribute.
+    await prisma.$transaction(async (tx) => {
+      const excludedIds = [...supersededIds, ...xeroInvoiceIdsWithAnyAttachments];
+
+      const missingKeyLines = await tx.xeroInvoiceLineItem.findMany({
+        where: {
+          productId: null,
+          accountCode: { not: null },
+          OR: [
+            { itemCode: null },
+            { itemCode: '' as any },
+          ],
+          OR: [
+            { description: null },
+            { description: '' as any },
+          ],
+          invoice: {
+            organisationId,
+            locationId,
+            deletedAt: null,
+            status: { in: ['AUTHORISED', 'PAID'] },
+            ...(excludedIds.length > 0 ? { xeroInvoiceId: { notIn: excludedIds } } : {}),
+            date: { gte: last12m.start, lte: new Date() },
+          } as any,
+        } as any,
+        // Distinct can't include nested invoice.supplierId, so we de-dupe in memory.
+        select: {
+          accountCode: true,
+          accountName: true,
+          invoice: { select: { supplierId: true } },
+        },
+        take: 2000,
+      });
+
+      const unique = new Map<string, { supplierId: string; accountCode: string; accountName: string | null }>();
+      for (const row of missingKeyLines as any[]) {
+        const supplierId = row?.invoice?.supplierId as string | null | undefined;
+        const accountCode = row?.accountCode as string | null | undefined;
+        const accountName = row?.accountName as string | null | undefined;
+        if (!supplierId || !accountCode) continue;
+        unique.set(`${supplierId}::${accountCode}`, { supplierId, accountCode, accountName: accountName ?? null });
+      }
+
+      for (const row of unique.values()) {
+        const accountCode = row.accountCode;
+        const supplierId = row.supplierId;
+        const accountName = row.accountName;
+        const productKey = `acct:${supplierId}:${String(accountCode).trim().toLowerCase()}`;
+
+        const product = await tx.product.upsert({
+          where: {
+            organisationId_locationId_productKey: {
+              organisationId,
+              locationId,
+              productKey,
+            },
+          },
+          update: { supplierId },
+          create: {
+            organisationId,
+            locationId,
+            productKey,
+            name: (accountName || `Account ${accountCode}`).trim(),
+            supplierId,
+          },
+          select: { id: true },
+        });
+
+        await tx.xeroInvoiceLineItem.updateMany({
+          where: {
+            productId: null,
+            accountCode,
+            OR: [{ itemCode: null }, { itemCode: '' as any }],
+            OR: [{ description: null }, { description: '' as any }],
+            invoice: {
+              organisationId,
+              locationId,
+              supplierId,
+              deletedAt: null,
+              status: { in: ['AUTHORISED', 'PAID'] },
+              ...(excludedIds.length > 0 ? { xeroInvoiceId: { notIn: excludedIds } } : {}),
+              date: { gte: last12m.start, lte: new Date() },
+            } as any,
+          } as any,
+          data: { productId: product.id },
+        });
+      }
+    });
 
     const xeroProducts = await prisma.product.findMany({
       where: { organisationId, locationId },
@@ -1837,10 +1939,6 @@ export const supplierInsightsService = {
     });
 
     const productIds = xeroProducts.map((p) => p.id);
-    const [supersededIds, unverifiedAttachmentIds] = await Promise.all([
-      getSupersededXeroIds(organisationId, locationId, last12m.start),
-      getXeroInvoiceIdsWithUnverifiedAttachments(organisationId, locationId)
-    ]);
 
     const xeroStats = productIds.length
       ? await prisma.xeroInvoiceLineItem.groupBy({
@@ -1853,7 +1951,7 @@ export const supplierInsightsService = {
               endDate: new Date(),
               supersededIds,
               accountCodes,
-              xeroInvoiceIdsWithUnverifiedAttachments: unverifiedAttachmentIds
+              xeroInvoiceIdsWithAnyAttachments
             }),
             productId: { in: productIds }
           } as any,
@@ -2155,8 +2253,40 @@ export const supplierInsightsService = {
         const existingCount = await (prisma as any).productStats.count({
             where: { organisationId, locationId, accountCodesHash }
         });
+
         if (existingCount === 0) {
             await this.refreshProductStatsForLocation(organisationId, locationId, params.accountCodes);
+        }
+
+        // If we still have eligible Xero-no-attachment line items with no productId (blank itemCode/description),
+        // refresh stats to backfill Product links and include them in ProductStats.
+        //
+        // IMPORTANT: Only consider Xero invoices WITHOUT attachments (those are the only ones allowed to appear pre-approval).
+        const now = new Date();
+        const [supersededIdsForCheck, xeroInvoiceIdsWithAnyAttachmentsForCheck] = await Promise.all([
+          getSupersededXeroIds(organisationId, locationId, last12m.start, now),
+          getXeroInvoiceIdsWithAnyAttachments(organisationId, locationId),
+        ]);
+        const excludedIdsForCheck = [...supersededIdsForCheck, ...xeroInvoiceIdsWithAnyAttachmentsForCheck];
+
+        const hasUnlinkedXeroLines = await prisma.xeroInvoiceLineItem.count({
+          where: {
+            productId: null,
+            accountCode: { not: null },
+            OR: [{ itemCode: null }, { itemCode: '' as any }],
+            OR: [{ description: null }, { description: '' as any }],
+            invoice: {
+              organisationId,
+              locationId,
+              deletedAt: null,
+              status: { in: ['AUTHORISED', 'PAID'] },
+              ...(excludedIdsForCheck.length > 0 ? { xeroInvoiceId: { notIn: excludedIdsForCheck } } : {}),
+              date: { gte: last12m.start, lte: now },
+            } as any,
+          } as any,
+        });
+        if (hasUnlinkedXeroLines > 0) {
+          await this.refreshProductStatsForLocation(organisationId, locationId, params.accountCodes);
         }
 
         // Search augmentation: match product "description" (from latest line item descriptions) in addition to productName + supplierName.
@@ -2166,7 +2296,10 @@ export const supplierInsightsService = {
             const q = params.search.trim();
             const now = new Date();
 
-            const supersededIds = await getSupersededXeroIds(organisationId, locationId, last12m.start, now);
+            const [supersededIds, xeroInvoiceIdsWithAnyAttachments] = await Promise.all([
+              getSupersededXeroIds(organisationId, locationId, last12m.start, now),
+              getXeroInvoiceIdsWithAnyAttachments(organisationId, locationId),
+            ]);
 
             const [xeroMatches, manualMatches] = await Promise.all([
                 prisma.xeroInvoiceLineItem.findMany({
@@ -2178,6 +2311,7 @@ export const supplierInsightsService = {
                             endDate: now,
                             supersededIds,
                             accountCodes: params.accountCodes,
+                            xeroInvoiceIdsWithAnyAttachments,
                         }),
                         description: { contains: q, mode: 'insensitive' },
                         productId: { not: null },
@@ -2830,7 +2964,7 @@ export const supplierInsightsService = {
     // 1. Calculate Stats (Spend, Qty) using raw aggregation
     const [supersededIds, unverifiedAttachmentIds] = await Promise.all([
       getSupersededXeroIds(organisationId, locationId, windowStart),
-      getXeroInvoiceIdsWithUnverifiedAttachments(organisationId, locationId)
+      getXeroInvoiceIdsWithAnyAttachments(organisationId, locationId)
     ]);
     const excludedIds = [...supersededIds, ...unverifiedAttachmentIds];
     const statsAgg = await prisma.xeroInvoiceLineItem.aggregate({
@@ -2867,7 +3001,7 @@ export const supplierInsightsService = {
                 endDate: last6m.end,
                 supersededIds,
                 accountCodes: undefined,
-                xeroInvoiceIdsWithUnverifiedAttachments: unverifiedAttachmentIds
+                xeroInvoiceIdsWithAnyAttachments: unverifiedAttachmentIds
             }),
             productId: productId
         } as any,
@@ -2882,7 +3016,7 @@ export const supplierInsightsService = {
                 endDate: prev6mEnd,
                 supersededIds,
                 accountCodes: undefined,
-                xeroInvoiceIdsWithUnverifiedAttachments: unverifiedAttachmentIds
+                xeroInvoiceIdsWithAnyAttachments: unverifiedAttachmentIds
             }),
             productId: productId
         } as any,

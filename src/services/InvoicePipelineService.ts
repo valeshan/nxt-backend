@@ -13,6 +13,7 @@ import { getProductKeyFromLineItem } from './helpers/productKey';
 import { assertCanonicalInvoiceLegacyLink, canonicalizeLine } from './canonical';
 import { computeDescriptionWarnings, getAlphaRatio, normalizePhrase, normalizePhraseKey, normalizePhraseKeyLoose } from '../utils/descriptionQuality';
 import { normalizeSupplierName } from '../utils/normalizeSupplierName';
+import { supplierInsightsService } from './supplierInsightsService';
 
 export class InvoiceFileNotFoundError extends Error {
   constructor(message: string) {
@@ -2091,7 +2092,7 @@ export const invoicePipelineService = {
       // Run everything in a transaction to ensure atomicity
       // CRITICAL: Validation + write occur in the same transaction to prevent race conditions
       // where supplier could be deleted/modified between validation and invoice update
-      return await prisma.$transaction(async (tx) => {
+      const verifiedResult = await prisma.$transaction(async (tx) => {
 
           // Fetch InvoiceFile fresh to avoid stale relation data
           let invoiceFile = null;
@@ -2145,6 +2146,15 @@ export const invoicePipelineService = {
                   supplierId: targetSupplierId,
                   supplierName: supplier.name
               });
+
+              // If a supplier is still pending review, promote it to ACTIVE when an invoice is verified/updated
+              // with an explicit supplierId. This keeps behavior consistent with name-based supplier resolution.
+              if (supplier.status === PrismaSupplierStatus.PENDING_REVIEW) {
+                  await tx.supplier.update({
+                      where: { id: supplier.id },
+                      data: { status: PrismaSupplierStatus.ACTIVE }
+                  });
+              }
           }
 
           // 3. Resolve or Create Supplier if needed (only if supplierId was not provided or invalid)
@@ -2926,6 +2936,47 @@ export const invoicePipelineService = {
               location: location || null,  // Graceful if location missing
           };
       }, { timeout: 10000 });
+
+      // Post-commit: refresh ProductStats so Supplier Insights "All Products" updates immediately after verification.
+      // This is intentionally best-effort: invoice approval must not fail due to stats refresh issues.
+      try {
+        const orgId = verifiedResult?.invoice?.organisationId || null;
+        const locId = verifiedResult?.invoice?.locationId || null;
+        const invoiceFileId =
+          (verifiedResult as any)?.invoice?.invoiceFileId ||
+          (verifiedResult as any)?.invoiceFile?.id ||
+          null;
+
+        // Re-read the InvoiceFile after commit.
+        // The verifyInvoice response can carry a stale invoiceFile snapshot because it reads via `prisma` while still inside the tx.
+        const currentFile = invoiceFileId
+          ? await prisma.invoiceFile.findUnique({
+              where: { id: invoiceFileId },
+              select: { reviewStatus: true },
+            })
+          : null;
+
+        const transitionedToVerified =
+          previousReviewStatus !== ReviewStatus.VERIFIED &&
+          currentFile?.reviewStatus === ReviewStatus.VERIFIED;
+
+        if (transitionedToVerified && orgId && locId) {
+          await supplierInsightsService.refreshProductStatsForLocation(orgId, locId, undefined);
+
+          const codes = await prisma.locationAccountConfig.findMany({
+            where: { locationId: locId, category: 'COGS' },
+            select: { accountCode: true },
+          });
+          const accountCodes = codes.map((c) => c.accountCode).filter(Boolean);
+          if (accountCodes.length > 0) {
+            await supplierInsightsService.refreshProductStatsForLocation(orgId, locId, accountCodes);
+          }
+        }
+      } catch (e: any) {
+        console.error('[InvoicePipeline] ProductStats refresh failed after verifyInvoice (continuing):', e?.message || e);
+      }
+
+      return verifiedResult;
   },
   
   async listInvoices(

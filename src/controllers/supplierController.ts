@@ -279,8 +279,11 @@ export class SupplierController {
             return rows.map(r => r.supplierId).filter(Boolean) as string[];
         }),
         // Xero suppliers should only be counted as "valid" if the invoice is eligible for analytics:
-        // - No attachment (no InvoiceFile for that xeroInvoiceId), OR
-        // - Attachment exists and is VERIFIED (manual approval or auto-approval)
+        // - No attachment (no InvoiceFile for that xeroInvoiceId)
+        //
+        // IMPORTANT: If attachments exist, the invoice must go through manual approval and only
+        // selected InvoiceLineItem rows should contribute (Supplier Insights rule). Therefore,
+        // attached Xero invoices do NOT make a supplier "valid" on their own.
         prisma
           .$queryRaw<Array<{ supplierId: string }>>(
             Prisma.sql`
@@ -295,7 +298,7 @@ export class SupplierController {
               AND xi."deletedAt" IS NULL
               AND xi."supplierId" IS NOT NULL
               ${locationId ? Prisma.sql`AND xi."locationId" = ${locationId}` : Prisma.empty}
-              AND (f.id IS NULL OR f."reviewStatus" = 'VERIFIED')
+              AND f.id IS NULL
             `
           )
           .then((rows) => {
@@ -303,12 +306,13 @@ export class SupplierController {
             return rows.map((r) => r.supplierId).filter(Boolean) as string[];
           })
     ]);
+
     const validSupplierIds = Array.from(new Set([...manualIds, ...xeroIds]));
     console.log(`[SupplierController] Total unique valid supplier IDs: ${validSupplierIds.length}`);
 
     const where: Prisma.SupplierWhereInput = {
       organisationId: orgId,
-      status: SupplierStatus.ACTIVE,
+      status: { in: [SupplierStatus.ACTIVE, SupplierStatus.PENDING_REVIEW] },
       id: { in: validSupplierIds },
       ...(search ? { name: { contains: search, mode: 'insensitive' } } : {}),
       ...accountFilter, // Merge account filter logic
